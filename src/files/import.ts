@@ -1,26 +1,42 @@
-import { metaFirst, parseChordPro } from '../chordpro/parse'
+import { looksLikeChordPro, metaFirst, parseChordPro, stripMarkup, textToChordPro } from '../chordpro/parse'
 import { db, putBlob, uid } from '../db/db'
-import { emptySong, type FileKind, type Song, type SongFile } from '../db/schema'
+import { emptySong, GROUP_FIELDS, type FileKind, type GroupField, type Song, type SongFile } from '../db/schema'
 import { parseAbcHeader } from './abcMeta'
 import { kindOf, mimeOf, stripExt } from './kinds'
-import { pdfPageCount } from './pdf'
+import { pdfMetaTitle, withPdf } from './pdf'
 
 /**
- * Filename metadata pattern, e.g. "%artist% - %title%". Tokens: %title% %artist% %composer% %album%
- * %genre% %key% %year% %collection% %source% %custom% %ignore%. Folder tokens use the same names and
- * are matched against each folder level from the right ("%genre%/%artist%").
+ * Filename metadata pattern, e.g. "%artist% - %title%". Tokens (case-insensitive): %title% %artist%
+ * %composer% %album% %genre% %key% %year% %collection% %source% (%source_type%) %custom% (%custom_group%)
+ * %custom2% %tag% %signature% %ignore%. Folder patterns use the same tokens, one per folder level,
+ * joined by "/" ("%genre%/%artist%"); each level may itself be a pattern ("%artist% - %album%").
  */
 export interface ImportOptions {
   filePattern?: string
   folderPattern?: string
+  /**
+   * Align the folder pattern with the folders at the END of the path (default) instead of the first
+   * folders below the import root.
+   */
+  folderFromEnd?: boolean
   /** Combine all selected files into one song (multi-file song). */
   combine?: boolean
   /** Put imported songs into this collection. */
   collection?: string
+  /** Extra group values added to every imported song. */
+  groups?: Partial<Record<GroupField, string[]>>
   /** Skip files whose content is already in the library. */
   skipDuplicates?: boolean
-  /** Text files: treat as ChordPro when they contain chord markup. Default true. */
+  /** When a song with the same title already exists (case-insensitive). Default 'create'. */
+  conflict?: 'create' | 'update' | 'skip'
+  /** Text files: read title/artist/key… from ChordPro directives or plain-text headers. Default true. */
   detectChordPro?: boolean
+  /** Use the PDF's metadata title when the filename pattern gives none. */
+  pdfTitle?: boolean
+  /** Detect page margins after import (needs a DOM; slow for big PDFs). */
+  autoCrop?: boolean | 'aggressive'
+  onProgress?: (done: number, total: number, name: string) => void
+  signal?: AbortSignal
 }
 
 export interface ImportSource {
@@ -30,11 +46,18 @@ export interface ImportSource {
 }
 
 export interface ImportResult {
+  /** Newly created songs. */
   songs: Song[]
+  /** Existing songs updated (conflict = 'update'). */
+  updated: Song[]
   skipped: { name: string; reason: string }[]
 }
 
-const TOKEN_FIELDS: Record<string, keyof Song | 'ignore'> = {
+export const FILE_PATTERN_PRESETS = ['%title%', '%artist% - %title%', '%title% - %artist%', '%composer% - %title%', '%title% (%key%)', '%ignore% - %title%']
+export const FOLDER_PATTERN_PRESETS = ['%artist%', '%genre%/%artist%', '%artist%/%album%', '%composer%', '%collection%']
+export const PATTERN_TOKENS = ['title', 'artist', 'composer', 'album', 'genre', 'key', 'year', 'collection', 'source', 'custom', 'custom2', 'tag', 'signature', 'ignore']
+
+const TOKEN_FIELDS: Record<string, 'title' | GroupField | 'ignore'> = {
   title: 'title',
   artist: 'artists',
   composer: 'composers',
@@ -44,12 +67,15 @@ const TOKEN_FIELDS: Record<string, keyof Song | 'ignore'> = {
   year: 'years',
   collection: 'collections',
   source: 'sources',
+  source_type: 'sources',
   book: 'sources',
   custom: 'custom',
+  custom_group: 'custom',
   custom2: 'custom2',
   tag: 'tags',
   signature: 'signatures',
   ignore: 'ignore',
+  setlist: 'ignore',
 }
 
 function escapeRe(s: string) {
@@ -60,9 +86,9 @@ function escapeRe(s: string) {
 export function matchPattern(pattern: string, value: string): Record<string, string> | null {
   const names: string[] = []
   const re = pattern
-    .split(/(%[a-z0-9]+%)/i)
+    .split(/(%[a-z0-9_]+%)/i)
     .map((part) => {
-      const m = /^%([a-z0-9]+)%$/i.exec(part)
+      const m = /^%([a-z0-9_]+)%$/i.exec(part)
       if (m) {
         names.push(m[1].toLowerCase())
         return '(.+?)'
@@ -77,33 +103,77 @@ export function matchPattern(pattern: string, value: string): Record<string, str
   return out
 }
 
-function applyFields(song: Song, fields: Record<string, string>) {
+/**
+ * Field values from the folders of `path` ("a/b/c/file.pdf"). With `fromEnd` the LAST pattern level
+ * maps to the folder containing the file; otherwise the first level maps to the first folder.
+ */
+export function folderFields(path: string, pattern: string, fromEnd = true): Record<string, string> {
+  const folders = path.split('/').slice(0, -1).filter(Boolean)
+  const parts = pattern.split('/').filter((p) => p.trim())
+  const out: Record<string, string> = {}
+  const n = Math.min(folders.length, parts.length)
+  for (let i = 0; i < n; i++) {
+    const part = fromEnd ? parts[parts.length - n + i] : parts[i]
+    const folder = fromEnd ? folders[folders.length - n + i] : folders[i]
+    const m = matchPattern(part, folder)
+    if (m) for (const [k, v] of Object.entries(m)) if (v && !(k in out)) out[k] = v
+  }
+  return out
+}
+
+/** "the long and winding road" → "The Long And Winding Road" (only first letters are touched). */
+export function capitalizeWords(s: string): string {
+  return s.replace(/(^|[\s(\-/"“])(\p{Ll})/gu, (_, pre, ch) => pre + ch.toUpperCase())
+}
+
+export function applyFields(song: Song, fields: Record<string, string>) {
   for (const [token, value] of Object.entries(fields)) {
     const field = TOKEN_FIELDS[token]
     if (!field || field === 'ignore' || !value) continue
     if (field === 'title') song.title = value
     else {
-      const arr = song[field] as string[]
+      const arr = song[field]
       for (const v of value.split(/\s*[,;&]\s*/)) if (v && !arr.includes(v)) arr.push(v)
     }
   }
 }
 
-function metadataFromText(kind: FileKind, text: string, song: Song) {
+/** Title + field values that the patterns would give a source (pure; used for the import preview). */
+export function previewSource(src: ImportSource, opts: Pick<ImportOptions, 'filePattern' | 'folderPattern' | 'folderFromEnd'>) {
+  const song = emptySong({ id: '', title: stripExt(src.file.name) })
+  if (opts.folderPattern && src.path) applyFields(song, folderFields(src.path, opts.folderPattern, opts.folderFromEnd ?? true))
+  let matched = !opts.filePattern
+  if (opts.filePattern) {
+    const m = matchPattern(opts.filePattern, stripExt(src.file.name))
+    if (m) {
+      applyFields(song, m)
+      matched = true
+    }
+  }
+  return { song, matched }
+}
+
+/** Fill song fields from ChordPro directives, plain-text "Title: …" headers or an ABC header. */
+export function metadataFromText(kind: FileKind, text: string, song: Song) {
   if (kind === 'abc') {
     const h = parseAbcHeader(text)
     if (h.title) song.title = h.title
-    if (h.composer) song.composers = [h.composer]
-    if (h.key) song.keys = [h.key]
-    if (h.meter) song.signatures = [h.meter]
+    if (h.composer && !song.composers.includes(h.composer)) song.composers.push(h.composer)
+    if (h.key && !song.keys.includes(h.key)) song.keys.push(h.key)
+    if (h.meter && !song.signatures.includes(h.meter)) song.signatures.push(h.meter)
+    const bpm = Number(/(\d+)\s*$/.exec(h.tempo ?? '')?.[1])
+    if (bpm > 0 && !song.tempos?.length) song.tempos = [bpm]
     return
   }
-  const cp = parseChordPro(text)
+  const isCp = kind === 'chordpro' || looksLikeChordPro(text)
+  const cp = parseChordPro(isCp ? text : textToChordPro(text))
   const t = metaFirst(cp, 'title')
-  if (t) song.title = t
-  const add = (field: keyof Song, key: string) => {
-    const vals = cp.meta[key]
-    if (vals?.length) (song[field] as string[]).push(...vals.filter((v) => !(song[field] as string[]).includes(v)))
+  if (t) song.title = stripMarkup(t)
+  const add = (field: GroupField, key: string) => {
+    for (const raw of cp.meta[key] ?? []) {
+      const v = stripMarkup(raw)
+      if (v && !song[field].includes(v)) song[field].push(v)
+    }
   }
   add('artists', 'artist')
   add('composers', 'composer')
@@ -116,54 +186,82 @@ function metadataFromText(kind: FileKind, text: string, song: Song) {
   const dur = metaFirst(cp, 'duration')
   if (dur) song.duration = parseDuration(dur)
   const tempo = Number(metaFirst(cp, 'tempo'))
-  if (tempo > 0) song.metronome = { ...song.metronome, bpm: tempo }
+  if (tempo > 0) {
+    song.metronome = { ...song.metronome, bpm: tempo }
+    if (!song.tempos?.length) song.tempos = [tempo]
+  }
 }
 
 export function parseDuration(s: string): number {
   const parts = s.trim().split(':').map(Number)
-  if (parts.some(isNaN)) return 0
+  if (!s.trim() || parts.some(isNaN)) return 0
   return parts.reduce((acc, p) => acc * 60 + p, 0)
 }
 
-async function readFile(src: ImportSource): Promise<{ file: SongFile; text?: string } | { error: string }> {
+export function formatDuration(sec: number): string {
+  if (!sec) return ''
+  const h = Math.floor(sec / 3600)
+  const m = Math.floor((sec % 3600) / 60)
+  const s = Math.round(sec % 60)
+  return h ? `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}` : `${m}:${String(s).padStart(2, '0')}`
+}
+
+export type ReadFileResult = { file: SongFile; text?: string; pdfTitle?: string } | { error: string }
+
+/** Store a file's content and describe it as a SongFile (does not touch any song). */
+export async function readImportFile(src: ImportSource): Promise<ReadFileResult> {
   const { file } = src
   const kind = kindOf(file.name, file.type)
   if (!kind) return { error: 'Unsupported file type' }
+  if (!file.size) return { error: 'Empty file' }
   const buf = await file.arrayBuffer()
   let pageCount = 1
   let text: string | undefined
+  let pdfTitle: string | undefined
   if (kind === 'pdf') {
     try {
-      pageCount = await pdfPageCount(buf)
-    } catch {
-      return { error: 'Could not read PDF' }
+      ;[pageCount, pdfTitle] = await withPdf(buf, async (doc) => [doc.numPages, await pdfMetaTitle(doc)] as const)
+    } catch (e) {
+      const msg = String((e as Error)?.name ?? e)
+      return { error: /Password/i.test(msg) ? 'PDF is password protected' : 'Could not read PDF' }
     }
   } else if (kind !== 'image') {
-    text = new TextDecoder().decode(buf)
+    text = new TextDecoder().decode(buf).replace(/^﻿/, '')
   }
   const { id: blobId, size } = await putBlob(buf, mimeOf(kind, file.name))
   return {
     file: { id: uid(), name: file.name, kind, blobId, pageCount, size, sourcePath: src.path },
     text,
+    pdfTitle,
   }
 }
 
+function mergeInto(target: Song, src: Song) {
+  for (const g of GROUP_FIELDS) for (const v of src[g]) if (!target[g].includes(v)) target[g].push(v)
+}
+
 export async function importFiles(sources: ImportSource[], opts: ImportOptions = {}): Promise<ImportResult> {
-  const result: ImportResult = { songs: [], skipped: [] }
+  const result: ImportResult = { songs: [], updated: [], skipped: [] }
   const existingBlobs = new Set<string>()
-  if (opts.skipDuplicates) {
-    const used = new Set<string>()
-    await db.songs.each((s) => s.files.forEach((f) => used.add(f.blobId)))
-    for (const id of used) existingBlobs.add(id)
-  }
+  if (opts.skipDuplicates) await db.songs.each((s) => s.files.forEach((f) => existingBlobs.add(f.blobId)))
+  const byTitle = new Map<string, Song>()
+  if (opts.conflict && opts.conflict !== 'create')
+    await db.songs.each((s) => {
+      const k = s.title.trim().toLowerCase()
+      if (!byTitle.has(k)) byTitle.set(k, s)
+    })
   let combined: Song | null = null
+  let done = 0
   for (const src of sources) {
-    const r = await readFile(src)
+    if (opts.signal?.aborted) break
+    opts.onProgress?.(done++, sources.length, src.file.name)
+    const r = await readImportFile(src)
     if ('error' in r) {
       result.skipped.push({ name: src.file.name, reason: r.error })
       continue
     }
-    if (opts.skipDuplicates && existingBlobs.has(r.file.blobId)) {
+    const duplicate = opts.skipDuplicates && existingBlobs.has(r.file.blobId)
+    if (duplicate && (opts.combine || opts.conflict !== 'update')) {
       result.skipped.push({ name: src.file.name, reason: 'Already in library' })
       continue
     }
@@ -172,37 +270,65 @@ export async function importFiles(sources: ImportSource[], opts: ImportOptions =
       combined.files.push(r.file)
       continue
     }
-    const song = emptySong({ id: uid(), title: stripExt(src.file.name) })
+    const { song, matched } = previewSource(src, opts)
+    song.id = uid()
+    if (opts.filePattern && !matched && opts.pdfTitle && r.pdfTitle) song.title = r.pdfTitle
+    else if (!opts.filePattern && opts.pdfTitle && r.pdfTitle) song.title = r.pdfTitle
     song.files.push(r.file)
-    if (opts.folderPattern && src.path) {
-      const folders = src.path.split('/').slice(0, -1)
-      const patParts = opts.folderPattern.split('/').filter(Boolean)
-      const tail = folders.slice(-patParts.length)
-      if (tail.length === patParts.length) {
-        patParts.forEach((p, i) => {
-          const m = matchPattern(p, tail[i])
-          if (m) applyFields(song, m)
-        })
-      }
-    }
-    if (opts.filePattern) {
-      const m = matchPattern(opts.filePattern, stripExt(src.file.name))
-      if (m) applyFields(song, m)
-    }
     if (r.text !== undefined && opts.detectChordPro !== false) metadataFromText(r.file.kind, r.text, song)
     if (opts.collection && !song.collections.includes(opts.collection)) song.collections.push(opts.collection)
+    for (const [g, vals] of Object.entries(opts.groups ?? {}) as [GroupField, string[]][])
+      for (const v of vals) if (v && !song[g].includes(v)) song[g].push(v)
+
+    const match = !opts.combine && opts.conflict && opts.conflict !== 'create' ? byTitle.get(song.title.trim().toLowerCase()) : undefined
+    if (duplicate && !match) {
+      // Same content already in the library under another title: still a duplicate.
+      result.skipped.push({ name: src.file.name, reason: 'Already in library' })
+      continue
+    }
+    if (match) {
+      if (opts.conflict === 'skip') {
+        result.skipped.push({ name: src.file.name, reason: `"${match.title}" already exists` })
+        continue
+      }
+      const next = result.updated.find((s) => s.id === match.id) ?? structuredClone(match)
+      mergeInto(next, song)
+      if (!next.files.some((f) => f.blobId === r.file.blobId)) {
+        next.files = [r.file]
+        next.pageOrder = undefined
+        next.pageSettings = {}
+      }
+      next.modifiedAt = Date.now()
+      if (!result.updated.includes(next)) result.updated.push(next)
+      byTitle.set(song.title.trim().toLowerCase(), next)
+      continue
+    }
     result.songs.push(song)
+    if (opts.conflict && opts.conflict !== 'create') byTitle.set(song.title.trim().toLowerCase(), song)
     if (opts.combine) combined = song
   }
-  await db.songs.bulkPut(result.songs)
+  if (opts.autoCrop) {
+    const { autoCropSong } = await import('./cropPages')
+    for (const s of [...result.songs, ...result.updated]) {
+      if (opts.signal?.aborted) break
+      opts.onProgress?.(sources.length, sources.length, `Cropping ${s.title}`)
+      try {
+        s.pageSettings = await autoCropSong(s, { aggressive: opts.autoCrop === 'aggressive' })
+      } catch (e) {
+        console.warn('auto-crop failed', e)
+      }
+    }
+  }
+  await db.songs.bulkPut([...result.songs, ...result.updated])
+  opts.onProgress?.(sources.length, sources.length, '')
   return result
 }
 
-/** Add files to an existing song. */
+/** Add files to an existing song (saves it). */
 export async function addFilesToSong(song: Song, files: File[]): Promise<Song> {
   const next = structuredClone(song)
   for (const f of files) {
-    const r = await readFile({ file: f })
+    const r = await readImportFile({ file: f })
     if ('file' in r) next.files.push(r.file)
   }
   if (next.pageOrder) {
@@ -214,13 +340,39 @@ export async function addFilesToSong(song: Song, files: File[]): Promise<Song> {
   return next
 }
 
-/** Create a new text (ChordPro) song from scratch. */
-export async function createTextSong(title: string, body: string, kind: FileKind = 'chordpro'): Promise<Song> {
+/** Store a text body as a new SongFile (not attached to any song yet). */
+export async function makeTextFile(name: string, body: string, kind: FileKind): Promise<SongFile> {
   const buf = new TextEncoder().encode(body).buffer as ArrayBuffer
   const { id: blobId, size } = await putBlob(buf, 'text/plain;charset=utf-8')
+  return { id: uid(), name, kind, blobId, pageCount: 1, size }
+}
+
+/** Starter content for "New ChordPro / text / ABC file". */
+export function textTemplate(kind: FileKind, song: Pick<Song, 'title' | 'artists' | 'keys'>): string {
+  const title = song.title || 'Untitled'
+  if (kind === 'abc') return `X:1\nT:${title}\nM:4/4\nL:1/8\nK:${song.keys[0] ?? 'C'}\n|: CDEF GABc | c2B2 A2G2 :|\n`
+  if (kind === 'text') return `${title}\n${song.artists[0] ?? ''}\n\nC        G\nType your lyrics here\n`
+  return [
+    `{title: ${title}}`,
+    song.artists[0] ? `{artist: ${song.artists[0]}}` : '{artist: }',
+    `{key: ${song.keys[0] ?? 'C'}}`,
+    '',
+    '{start_of_verse: Verse 1}',
+    '[C]Type your [G]lyrics with [Am]chords in [F]brackets',
+    '{end_of_verse}',
+    '',
+    '{start_of_chorus}',
+    '[F]This is the [G]chorus',
+    '{end_of_chorus}',
+    '',
+  ].join('\n')
+}
+
+/** Create a new text (ChordPro) song from scratch. */
+export async function createTextSong(title: string, body: string, kind: FileKind = 'chordpro'): Promise<Song> {
   const ext = kind === 'abc' ? 'abc' : kind === 'text' ? 'txt' : 'cho'
   const song = emptySong({ id: uid(), title })
-  song.files.push({ id: uid(), name: `${title}.${ext}`, kind, blobId, pageCount: 1, size })
+  song.files.push(await makeTextFile(`${title}.${ext}`, body, kind))
   metadataFromText(kind, body, song)
   await db.songs.put(song)
   return song
@@ -241,10 +393,11 @@ export async function updateTextFile(song: Song, fileId: string, body: string): 
   return next
 }
 
-/** Recursively collect files from a directory handle (File System Access API). */
+/** Recursively collect files from a directory handle (File System Access API). Paths exclude the root. */
 export async function collectDirectory(dir: FileSystemDirectoryHandle, prefix = ''): Promise<ImportSource[]> {
   const out: ImportSource[] = []
   for await (const [name, handle] of dir.entries() as AsyncIterable<[string, FileSystemHandle]>) {
+    if (name.startsWith('.')) continue
     const path = prefix ? `${prefix}/${name}` : name
     if (handle.kind === 'directory') out.push(...(await collectDirectory(handle as FileSystemDirectoryHandle, path)))
     else if (kindOf(name)) out.push({ file: await (handle as FileSystemFileHandle).getFile(), path })
@@ -252,9 +405,41 @@ export async function collectDirectory(dir: FileSystemDirectoryHandle, prefix = 
   return out.sort((a, b) => (a.path ?? '').localeCompare(b.path ?? '', undefined, { numeric: true }))
 }
 
-/** Files from an <input webkitdirectory> selection carry webkitRelativePath. */
+/** Files from an <input webkitdirectory> selection carry webkitRelativePath (which includes the root folder). */
 export function sourcesFromFileList(list: FileList | File[]): ImportSource[] {
   return [...list]
     .filter((f) => kindOf(f.name, f.type))
     .map((file) => ({ file, path: (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name }))
+}
+
+/** Drop the shared first folder (the picked root) from relative paths, so levels match collectDirectory. */
+export function stripCommonRoot(srcs: ImportSource[]): ImportSource[] {
+  const firsts = new Set(srcs.map((s) => (s.path?.includes('/') ? s.path.split('/')[0] : '')))
+  if (firsts.size !== 1 || firsts.has('')) return srcs
+  return srcs.map((s) => ({ ...s, path: s.path!.split('/').slice(1).join('/') }))
+}
+
+/** Files (and dropped folders, recursively) from a drag-and-drop DataTransfer. */
+export async function sourcesFromDataTransfer(dt: DataTransfer): Promise<ImportSource[]> {
+  const entries = [...dt.items].map((it) => it.webkitGetAsEntry?.()).filter(Boolean) as FileSystemEntry[]
+  if (!entries.length) return sourcesFromFileList(dt.files)
+  const out: ImportSource[] = []
+  const walk = async (entry: FileSystemEntry, prefix: string): Promise<void> => {
+    if (entry.name.startsWith('.')) return
+    const path = prefix ? `${prefix}/${entry.name}` : entry.name
+    if (entry.isFile) {
+      const file = await new Promise<File>((res, rej) => (entry as FileSystemFileEntry).file(res, rej))
+      if (kindOf(file.name, file.type)) out.push({ file, path })
+    } else if (entry.isDirectory) {
+      const reader = (entry as FileSystemDirectoryEntry).createReader()
+      // readEntries returns batches; call until empty.
+      for (;;) {
+        const batch = await new Promise<FileSystemEntry[]>((res, rej) => reader.readEntries(res, rej))
+        if (!batch.length) break
+        for (const e of batch) await walk(e, path)
+      }
+    }
+  }
+  for (const e of entries) await walk(e, '')
+  return out.sort((a, b) => (a.path ?? '').localeCompare(b.path ?? '', undefined, { numeric: true }))
 }

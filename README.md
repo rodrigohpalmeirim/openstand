@@ -1,32 +1,71 @@
-# React + TypeScript + Vite
+# OpenStand
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+**An open-source sheet-music reader, library and performance tool.** OpenStand runs in any modern browser
+and installs as an offline app (PWA) on tablets, phones and desktops. It is a clean-room
+re-implementation of the feature set of commercial music-reader apps such as MobileSheets, with a
+modernised interface.
 
-Currently, two official plugins are available:
+- 📚 **Library** — PDFs, images, ChordPro, plain-text chord sheets and ABC notation. Organise by artist,
+  composer, album, genre, key, collection, source book, year, tags and custom fields. Fast search, filters,
+  saved filters, sorting, multiple libraries.
+- 🎼 **Performance mode** — single page, two-page spreads, half-page turns, vertical/horizontal
+  scrolling; fit to page/width/height; pinch zoom; crop & rotate; night mode and paper tones; page-turn
+  animations; keep-screen-on; setlist navigation with "next up" hints.
+- 🦶 **Hands-free page turning** — configurable 3×3 touch zones, swipes, keyboard and Bluetooth pedals
+  (AirTurn, PageFlip, …) with tap and long-press bindings, MIDI messages, and face gestures (head turn /
+  mouth open, on-device).
+- ✍️ **Annotations** — pressure-sensitive pen, highlighter, shapes, text, musical stamps, eraser,
+  selection, layers, undo/redo; stylus-only mode.
+- 🎸 **Chord sheets** — ChordPro rendering with transposition (key-aware spelling), capo, chord naming
+  systems (English, German, Czech, Scandinavian, Latin, Nashville), chord diagrams, column layout and an
+  editor with live preview. ABC notation rendering and playback.
+- 🎛️ **Tools** — metronome with count-in and visual beat, auto-scroll, audio player with A–B loops,
+  bookmarks, link points for repeats/D.S./codas, song notes.
+- 🎹 **MIDI** — send program changes/CC/SysEx when songs load, recall songs from incoming MIDI, map MIDI
+  messages to actions (Web MIDI).
+- 🔄 **Devices** — leader/follower page sync between devices (same browser windows or via a tiny relay
+  server), full-library backup/restore, song packages for sharing, export with annotations.
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+## Getting started
 
-## React Compiler
-
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the Oxlint configuration
-
-If you are developing a production application, we recommend enabling type-aware lint rules by installing `oxlint-tsgolint` and editing `.oxlintrc.json`:
-
-```json
-{
-  "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["react", "typescript", "oxc"],
-  "options": {
-    "typeAware": true
-  },
-  "rules": {
-    "react/rules-of-hooks": "error",
-    "react/only-export-components": ["warn", { "allowConstantExport": true }]
-  }
-}
+```bash
+npm install       # also copies pdf.js runtime assets to public/pdfjs
+npm run dev       # http://localhost:5173
+npm test          # unit tests
+npm run build     # production build in dist/ (static files; host anywhere)
 ```
 
-See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rules) for the full list of rules and categories.
+Generate demo content with `node scripts/make-samples.mjs` (writes to `samples/`), then drag the files onto
+the app window.
+
+## Architecture
+
+| Area | Location |
+| --- | --- |
+| Data model & storage (IndexedDB via Dexie) | `src/db/` |
+| Import pipeline, pdf.js wrapper | `src/files/` |
+| Performance viewer (layout, input, actions, panels) | `src/viewer/` |
+| Library browser, song editor, importers | `src/library/` |
+| ChordPro / text / ABC | `src/chordpro/`, `src/music/`, `src/abc/`, `src/textedit/` |
+| Annotations | `src/annotations/` |
+| Metronome, auto-scroll, audio, bookmarks, links | `src/tools/` |
+| MIDI | `src/midi/` |
+| Backup, packages, export | `src/backup/` |
+| Device sync (+ relay server) | `src/sync/`, `server/` |
+| Settings | `src/settings/`, `src/state/settings.ts` |
+
+Everything is stored locally in the browser (IndexedDB). Nothing is uploaded anywhere unless you
+configure a sync relay. Ask the browser to make storage persistent from *Settings → Storage* so the OS
+doesn't evict your library.
+
+## Credits
+
+Built with [pdf.js](https://mozilla.github.io/pdf.js/), [pdf-lib](https://pdf-lib.js.org/),
+[abcjs](https://www.abcjs.net/), [Dexie](https://dexie.org/), [React](https://react.dev/),
+[Tailwind CSS](https://tailwindcss.com/), [lucide](https://lucide.dev/) and [fflate](https://github.com/101arrowz/fflate).
+
+OpenStand is not affiliated with Zubersoft or MobileSheets.
+
+## License
+
+MIT

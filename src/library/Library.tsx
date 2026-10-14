@@ -1,104 +1,149 @@
-import { useLiveQuery } from 'dexie-react-hooks'
-import { FilePlus2, FolderOpen, Music4, Search, Settings, Upload } from 'lucide-react'
-import { useMemo, useRef, useState } from 'react'
-import { db } from '../db/db'
-import type { Song } from '../db/schema'
-import { importFiles, sourcesFromFileList } from '../files/import'
-import { ACCEPT } from '../files/kinds'
-import { useNav } from '../state/nav'
-import { useViewer } from '../state/viewer'
-import { Button, Empty, Input, toast } from '../ui/primitives'
-import { Thumb } from './Thumb'
+import { useEffect, useRef, useState } from 'react'
+import type { GroupField } from '../db/schema'
+import { sourcesFromFileList, type ImportSource } from '../files/import'
+import { kindOf } from '../files/kinds'
+import { useNav, type Route } from '../state/nav'
+import { toast } from '../ui/primitives'
+import { LibraryDataProvider } from './browse/data'
+import { AddToDialog, BatchEditDialog, LibrariesDialog, LibraryPrefsDialog } from './browse/dialogs'
+import { GroupListView, GroupSongsView } from './browse/GroupsView'
+import './browse/libraries' // opens the active library before the first query
+import { SetlistDetail } from './browse/SetlistDetail'
+import { SetlistsView } from './browse/SetlistsView'
+import { BottomNav, Drawer, Sidebar } from './browse/Sidebar'
+import { isGroupSection, useTerms } from './browse/terms'
+import { useLibraryUI } from './browse/ui'
+import { BookmarksView, FavoritesView, RecentView, SongsView } from './browse/views'
+import { Welcome } from './browse/Welcome'
+import { ContextMenuHost } from './browse/widgets'
+import { SongEditor } from './editor/SongEditor'
+import { ImportDialog } from './import/ImportDialog'
 
-/** Starter library view. Will be expanded by the library module. */
+/** Library browser: sidebar (tablet/desktop) or drawer + bottom nav (phone), section views and dialogs. */
 export function Library() {
-  const songs = useLiveQuery(() => db.songs.orderBy('title').toArray(), [])
-  const query = useNav((n) => n.query)
-  const setQuery = useNav((n) => n.setQuery)
-  const go = useNav((n) => n.go)
-  const open = useViewer((v) => v.open)
-  const fileInput = useRef<HTMLInputElement>(null)
-  const dirInput = useRef<HTMLInputElement>(null)
-  const [dragging, setDragging] = useState(false)
+  const epoch = useNav((n) => n.libraryEpoch)
+  return (
+    <LibraryDataProvider key={epoch}>
+      <LibraryShell />
+    </LibraryDataProvider>
+  )
+}
 
-  const list = useMemo(() => {
-    const q = query.trim().toLowerCase()
-    if (!q || !songs) return songs ?? []
-    return songs.filter((s) => [s.title, ...s.artists, ...s.composers].some((v) => v.toLowerCase().includes(q)))
-  }, [songs, query])
-
-  const doImport = async (files: FileList | File[]) => {
-    const srcs = sourcesFromFileList(files)
-    if (!srcs.length) return toast('No supported files found', 'error')
-    const r = await importFiles(srcs, { skipDuplicates: true })
-    toast(`Imported ${r.songs.length} song${r.songs.length === 1 ? '' : 's'}${r.skipped.length ? ` · ${r.skipped.length} skipped` : ''}`, 'ok')
+function SectionView({ route }: { route: Extract<Route, { name: 'library' }> }) {
+  const { section, group, setlistId } = route
+  switch (section) {
+    case 'songs':
+      return <SongsView />
+    case 'recent':
+      return <RecentView />
+    case 'favorites':
+      return <FavoritesView />
+    case 'bookmarks':
+      return <BookmarksView />
+    case 'setlists':
+      return setlistId ? <SetlistDetail key={setlistId} id={setlistId} /> : <SetlistsView />
+    default:
+      if (!isGroupSection(section)) return <SongsView />
+      return group !== undefined ? <GroupSongsView key={group} field={section as GroupField} group={group} /> : <GroupListView field={section as GroupField} />
   }
+}
+
+function LibraryShell() {
+  const route = useNav((n) => n.route)
+  const t = useTerms()
+  const editor = useLibraryUI((u) => u.editor)
+  const importing = useLibraryUI((u) => u.importing)
+  const setUI = useLibraryUI((u) => u.set)
+  const [dragging, setDragging] = useState(false)
+  const dragDepth = useRef(0)
+
+  useEffect(() => {
+    document.title = route.name === 'library' ? `${t.section(route.section)} · OpenStand` : 'OpenStand'
+  }, [route, t])
+
+  const lib = route.name === 'library' ? route : ({ name: 'library', section: 'songs' } as const)
+  const hasFiles = (e: React.DragEvent) => [...e.dataTransfer.types].includes('Files')
 
   return (
     <div
-      className="flex h-full flex-col"
-      onDragOver={(e) => {
+      className="flex h-full"
+      onDragEnter={(e) => {
+        if (!hasFiles(e)) return
         e.preventDefault()
+        dragDepth.current++
         setDragging(true)
       }}
-      onDragLeave={() => setDragging(false)}
-      onDrop={(e) => {
+      onDragOver={(e) => {
+        if (!hasFiles(e)) return
         e.preventDefault()
+        e.dataTransfer.dropEffect = 'copy'
+      }}
+      onDragLeave={() => {
+        dragDepth.current = Math.max(0, dragDepth.current - 1)
+        if (!dragDepth.current) setDragging(false)
+      }}
+      onDrop={async (e) => {
+        if (!hasFiles(e)) return
+        e.preventDefault()
+        dragDepth.current = 0
         setDragging(false)
-        doImport(e.dataTransfer.files)
+        const sources = await sourcesFromDrop(e.dataTransfer)
+        if (!sources.length) return toast('No supported files found (PDF, images, ChordPro, text, ABC)', 'error')
+        setUI({ importing: { initial: sources } })
       }}
     >
-      <header className="flex items-center gap-3 border-b border-line bg-surface px-4 py-3">
-        <div className="flex items-center gap-2 font-semibold">
-          <Music4 className="size-5 text-accent" /> OpenStand
-        </div>
-        <div className="relative max-w-md flex-1">
-          <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-faint" />
-          <Input className="pl-9" placeholder="Search songs" value={query} onChange={(e) => setQuery(e.target.value)} />
-        </div>
-        <Button variant="primary" icon={<Upload className="size-4" />} onClick={() => fileInput.current?.click()}>
-          Import
-        </Button>
-        <Button icon={<FolderOpen className="size-4" />} onClick={() => dirInput.current?.click()}>
-          Folder
-        </Button>
-        <Button variant="ghost" icon={<Settings className="size-4" />} onClick={() => go({ name: 'settings' })} />
-        <input ref={fileInput} type="file" multiple accept={ACCEPT} hidden onChange={(e) => e.target.files && doImport(e.target.files)} />
-        <input ref={dirInput} type="file" hidden {...({ webkitdirectory: '' } as object)} onChange={(e) => e.target.files && doImport(e.target.files)} />
-      </header>
-      <main className="min-h-0 flex-1 overflow-y-auto">
-        {songs && songs.length === 0 ? (
-          <Empty icon={<FilePlus2 className="size-6" />} title="Your library is empty">
-            Import PDFs, images, ChordPro or ABC files — or drop them anywhere on this window.
-          </Empty>
-        ) : (
-          <ul className="divide-y divide-line">
-            {list.map((s, i) => (
-              <SongRow key={s.id} song={s} onOpen={() => open(list.map((x) => x.id), i)} />
-            ))}
-          </ul>
-        )}
-      </main>
+      <aside className="hidden w-64 shrink-0 border-r border-line md:flex lg:w-72">
+        <Sidebar />
+      </aside>
+      <div className="flex min-w-0 flex-1 flex-col">
+        <main className="min-h-0 flex-1">
+          <SectionView route={lib} />
+        </main>
+        <BottomNav />
+      </div>
+      <Drawer />
+
+      <ImportDialog open={!!importing} onClose={() => setUI({ importing: null })} initial={importing?.initial} />
+      {editor && <SongEditor songId={editor.songId} initialTab={editor.tab} onClose={() => setUI({ editor: null })} />}
+      <AddToDialog />
+      <BatchEditDialog />
+      <LibraryPrefsDialog />
+      <LibrariesDialog />
+      <Welcome />
+      <ContextMenuHost />
+
       {dragging && (
         <div className="pointer-events-none fixed inset-0 z-50 flex items-center justify-center bg-accent/10 backdrop-blur-sm">
-          <div className="rounded-2xl border-2 border-dashed border-accent bg-surface px-8 py-6 text-lg font-semibold">Drop files to import</div>
+          <div className="rounded-2xl border-2 border-dashed border-accent bg-surface px-8 py-6 text-center shadow-xl">
+            <div className="text-lg font-semibold">Drop to import</div>
+            <div className="text-sm text-muted">Files or whole folders</div>
+          </div>
         </div>
       )}
     </div>
   )
 }
 
-function SongRow({ song, onOpen }: { song: Song; onOpen: () => void }) {
-  return (
-    <li>
-      <button onClick={onOpen} className="flex w-full items-center gap-3 px-4 py-2.5 text-left hover:bg-surface-2">
-        <Thumb song={song} />
-        <div className="min-w-0 flex-1">
-          <div className="truncate font-medium">{song.title}</div>
-          <div className="truncate text-sm text-muted">{song.artists.join(', ')}</div>
-        </div>
-        {song.keys[0] && <span className="rounded bg-surface-2 px-1.5 py-0.5 text-xs text-muted">{song.keys[0]}</span>}
-      </button>
-    </li>
-  )
+/* Dropped folders: walk them with the (widely supported) FileSystemEntry API, keeping relative paths. */
+async function sourcesFromDrop(dt: DataTransfer): Promise<ImportSource[]> {
+  const entries = [...dt.items].map((i) => i.webkitGetAsEntry?.()).filter((e): e is FileSystemEntry => !!e)
+  if (!entries.some((e) => e.isDirectory)) return sourcesFromFileList(dt.files)
+  const out: ImportSource[] = []
+  const walk = async (entry: FileSystemEntry, prefix: string): Promise<void> => {
+    const path = prefix ? `${prefix}/${entry.name}` : entry.name
+    if (entry.isFile) {
+      const file = await new Promise<File>((res, rej) => (entry as FileSystemFileEntry).file(res, rej))
+      if (kindOf(file.name, file.type)) out.push({ file, path })
+    } else if (entry.isDirectory) {
+      const reader = (entry as FileSystemDirectoryEntry).createReader()
+      // readEntries returns batches; call until empty.
+      for (;;) {
+        const batch = await new Promise<FileSystemEntry[]>((res, rej) => reader.readEntries(res, rej))
+        if (!batch.length) break
+        for (const child of batch) await walk(child, path)
+      }
+    }
+  }
+  for (const e of entries) await walk(e, '')
+  return out.sort((a, b) => (a.path ?? '').localeCompare(b.path ?? '', undefined, { numeric: true }))
 }

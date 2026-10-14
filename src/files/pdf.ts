@@ -1,8 +1,16 @@
+import './mapPolyfill'
 import * as pdfjs from 'pdfjs-dist'
 import type { PDFDocumentProxy } from 'pdfjs-dist'
 import workerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
 
 pdfjs.GlobalWorkerOptions.workerSrc = workerUrl
+// Prefer a module worker that installs the polyfill first (see mapPolyfill.ts); fall back to the stock worker.
+try {
+  if (typeof Worker !== 'undefined' && typeof window !== 'undefined' && !navigator.userAgent.includes('jsdom'))
+    pdfjs.GlobalWorkerOptions.workerPort = new Worker(new URL('./pdfWorker.ts', import.meta.url), { type: 'module' })
+} catch {
+  /* keep workerSrc */
+}
 
 const base = import.meta.env.BASE_URL + 'pdfjs/'
 
@@ -91,6 +99,54 @@ export async function renderPdfPage(
   const bmp = await createImageBitmap(canvas)
   canvas.width = canvas.height = 0
   return bmp
+}
+
+/** Open a throwaway document (not cached) for one-off inspection. */
+export async function withPdf<T>(data: ArrayBuffer | Blob, fn: (doc: PDFDocumentProxy) => Promise<T>): Promise<T> {
+  const bytes = data instanceof Blob ? new Uint8Array(await data.arrayBuffer()) : new Uint8Array(data.slice(0))
+  const task = pdfjs.getDocument({ data: bytes, ...docOptions() })
+  try {
+    return await fn(await task.promise)
+  } finally {
+    task.destroy().catch(() => {})
+  }
+}
+
+/** Title from the PDF metadata (Info dictionary), if any. */
+export async function pdfMetaTitle(doc: PDFDocumentProxy): Promise<string | undefined> {
+  try {
+    const meta = await doc.getMetadata()
+    const t = (meta.info as { Title?: unknown })?.Title
+    return typeof t === 'string' && t.trim() ? t.trim() : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/** Flattened outline (bookmarks) with resolved 0-based page indexes (-1 when unresolvable). */
+export async function pdfOutline(doc: PDFDocumentProxy): Promise<{ title: string; pageIndex: number; depth: number }[]> {
+  const out: { title: string; pageIndex: number; depth: number }[] = []
+  type Node = { title: string; dest: string | unknown[] | null; items: Node[] }
+  const resolve = async (dest: Node['dest']): Promise<number> => {
+    try {
+      const d = typeof dest === 'string' ? await doc.getDestination(dest) : dest
+      if (!Array.isArray(d) || d[0] == null) return -1
+      const ref = d[0]
+      if (typeof ref === 'number') return ref
+      return await doc.getPageIndex(ref as Parameters<PDFDocumentProxy['getPageIndex']>[0])
+    } catch {
+      return -1
+    }
+  }
+  const walk = async (nodes: Node[], depth: number) => {
+    for (const n of nodes) {
+      out.push({ title: n.title ?? '', pageIndex: await resolve(n.dest), depth })
+      if (n.items?.length) await walk(n.items, depth + 1)
+    }
+  }
+  const outline = (await doc.getOutline()) as unknown as Node[] | null
+  if (outline) await walk(outline, 0)
+  return out
 }
 
 export { pdfjs }

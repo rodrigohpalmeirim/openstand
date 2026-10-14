@@ -36,6 +36,16 @@ export function keyLabel(id: string): string {
     .join(' + ')
 }
 
+/** Shared across touch and pedals so a bouncing pedal or a double tap can't turn two pages. */
+let lastTurn = 0
+function debounced(a: ActionId): boolean {
+  if (a !== 'nextPage' && a !== 'prevPage') return false
+  const now = performance.now()
+  if (now - lastTurn < settings().pageTurn.debounceMs) return true
+  lastTurn = now
+  return false
+}
+
 const isTyping = (t: EventTarget | null) =>
   t instanceof HTMLElement && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))
 
@@ -57,7 +67,7 @@ export function useKeyBindings(enabled: boolean) {
       const long = binds.find((b) => b.long)
       const short = binds.find((b) => !b.long)
       if (!long) {
-        if (short) runAction(short.action, 'key')
+        if (short && !debounced(short.action)) runAction(short.action, 'key')
         return
       }
       const st = { fired: false, timer: 0 }
@@ -75,7 +85,7 @@ export function useKeyBindings(enabled: boolean) {
       held.delete(id)
       if (!st.fired) {
         const short = settings().pageTurn.keys.find((k) => (k.key === id || k.key === e.key) && !k.long)
-        if (short) runAction(short.action, 'key')
+        if (short && !debounced(short.action)) runAction(short.action, 'key')
       }
     }
     window.addEventListener('keydown', down)
@@ -91,6 +101,8 @@ export function useKeyBindings(enabled: boolean) {
 interface GestureOpts {
   /** Disabled while annotating so strokes don't turn pages. */
   enabled: boolean
+  /** When disabled, still allow two-finger pinch zoom (used while annotating). */
+  pinchOnly?: boolean
   /** Current zoom; swipes are disabled when zoomed in so panning works. */
   zoomed: boolean
   onPinch?: (scale: number, cx: number, cy: number) => void
@@ -110,31 +122,34 @@ export function useStageGestures(ref: React.RefObject<HTMLElement | null>, opts:
     let longFired = false
     let lastTap = { t: 0, x: 0, y: 0 }
     let tapTimer = 0
-    let lastTurn = 0
     let multi = false
+    // Multi-finger taps: max simultaneous pointers, start time and whether fingers moved.
+    let maxPts = 0
+    let multiStart = 0
+    let multiMoved = false
 
     const fire = (a: ActionId) => {
-      if (a === 'nextPage' || a === 'prevPage') {
-        const now = performance.now()
-        if (now - lastTurn < settings().pageTurn.debounceMs) return
-        lastTurn = now
-      }
-      runAction(a, 'touch')
+      if (!debounced(a)) runAction(a, 'touch')
     }
 
     const down = (e: PointerEvent) => {
-      if (!o.current.enabled) return
+      if (!o.current.enabled && !(o.current.pinchOnly && e.pointerType === 'touch')) return
       if (e.pointerType === 'mouse' && e.button !== 0) return
       pts.set(e.pointerId, { x: e.clientX, y: e.clientY, t: performance.now(), sx: e.clientX, sy: e.clientY })
+      maxPts = Math.max(maxPts, pts.size)
       if (pts.size === 2) {
         multi = true
+        multiStart = performance.now()
+        multiMoved = false
         clearTimeout(longTimer)
         const [a, b] = [...pts.values()]
         pinchStart = Math.hypot(a.x - b.x, a.y - b.y)
       } else if (pts.size === 1) {
         multi = false
+        maxPts = 1
         longFired = false
         clearTimeout(longTimer)
+        if (!o.current.enabled) return
         longTimer = window.setTimeout(() => {
           const lp = settings().pageTurn.longPress
           if (lp !== 'none') {
@@ -149,7 +164,10 @@ export function useStageGestures(ref: React.RefObject<HTMLElement | null>, opts:
       if (!p) return
       p.x = e.clientX
       p.y = e.clientY
-      if (Math.hypot(p.x - p.sx, p.y - p.sy) > 12) clearTimeout(longTimer)
+      if (Math.hypot(p.x - p.sx, p.y - p.sy) > 12) {
+        clearTimeout(longTimer)
+        if (multi) multiMoved = true
+      }
       if (pts.size === 2 && pinchStart > 0) {
         const [a, b] = [...pts.values()]
         const d = Math.hypot(a.x - b.x, a.y - b.y)
@@ -160,12 +178,18 @@ export function useStageGestures(ref: React.RefObject<HTMLElement | null>, opts:
       const p = pts.get(e.pointerId)
       pts.delete(e.pointerId)
       clearTimeout(longTimer)
-      if (!p || !o.current.enabled) return
+      if (!p) return
+      if (!o.current.enabled && !multi) return
       if (multi) {
         if (pts.size === 0) {
           multi = false
           pinchStart = 0
           o.current.onPinchEnd?.()
+          if (o.current.enabled && !multiMoved && performance.now() - multiStart < 350) {
+            const cfg = settings().pageTurn
+            fire(maxPts >= 3 ? cfg.threeFingerTap : cfg.twoFingerTap)
+          }
+          maxPts = 0
         }
         return
       }

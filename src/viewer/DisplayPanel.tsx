@@ -1,5 +1,5 @@
 import { BookOpen, Columns2, File, GalleryHorizontal, Rows3, SplitSquareVertical } from 'lucide-react'
-import { db } from '../db/db'
+import { updateSong } from '../db/db'
 import type { DisplayMode, FitMode, PageSettings } from '../db/schema'
 import { useSettings } from '../state/settings'
 import { Segmented, Slider, Toggle } from '../ui/primitives'
@@ -37,7 +37,7 @@ export function DisplayPanel({ song, pages, currentPage, mode }: PanelProps) {
   const songMode = song.display?.mode
   const fit = song.display?.fit ?? s.display.fit
   const setSongDisplay = (patch: Partial<{ mode: DisplayMode; fit: FitMode }>) =>
-    db.songs.update(song.id, { display: { ...song.display, ...patch } })
+    updateSong(song.id, { display: { ...song.display, ...patch } })
 
   const dp = pages[currentPage]
   const pageKey = dp?.type === 'file' ? pageSettingsKey(dp.file.id, dp.page) : null
@@ -45,7 +45,7 @@ export function DisplayPanel({ song, pages, currentPage, mode }: PanelProps) {
   const rotate = (delta: number) => {
     if (!pageKey) return
     const rotation = ((((ps.rotation ?? 0) + delta) % 360) + 360) % 360
-    db.songs.update(song.id, { pageSettings: { ...song.pageSettings, [pageKey]: { ...ps, rotation: rotation as PageSettings['rotation'] } } })
+    updateSong(song.id, { pageSettings: { ...song.pageSettings, [pageKey]: { ...ps, rotation: rotation as PageSettings['rotation'] } } })
   }
 
   return (
@@ -71,7 +71,7 @@ export function DisplayPanel({ song, pages, currentPage, mode }: PanelProps) {
           {songMode ? (
             <button className="text-[var(--os-accent)]" onClick={() => {
                 const { mode: _omit, ...rest } = song.display ?? {}
-                db.songs.update(song.id, { display: rest })
+                updateSong(song.id, { display: rest })
               }}>
               Use default
             </button>
@@ -111,6 +111,8 @@ export function DisplayPanel({ song, pages, currentPage, mode }: PanelProps) {
               { value: 'white', label: 'White' },
               { value: 'cream', label: 'Cream' },
               { value: 'sepia', label: 'Sepia' },
+              { value: 'gray', label: 'Gray' },
+              { value: 'cool', label: 'Cool' },
             ]}
           />
         </Row>
@@ -130,6 +132,21 @@ export function DisplayPanel({ song, pages, currentPage, mode }: PanelProps) {
             ]}
           />
         </Row>
+        {mode === 'double' && (
+          <Row label="Turns">
+            <Segmented
+              size="sm"
+              className="!bg-white/5 !border-white/10"
+              value={s.display.twoPageTurn}
+              onChange={(v) => setIn('display', { twoPageTurn: v })}
+              options={[
+                { value: 'two', label: '2 pages', title: '[1|2] → [3|4]' },
+                { value: 'single', label: '1 page', title: '[1|2] → [2|3]' },
+                { value: 'alternate', label: 'Alternate', title: '[1|2] → [3|2] → [3|4]' },
+              ]}
+            />
+          </Row>
+        )}
         {mode === 'halfPage' && (
           <Row label="Half-page split">
             <Slider className="w-36" min={0.3} max={0.7} step={0.05} value={s.display.halfPageSplit} onChange={(v) => setIn('display', { halfPageSplit: v })} />

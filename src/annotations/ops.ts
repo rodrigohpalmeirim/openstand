@@ -1,0 +1,208 @@
+/** Editing operations used by the toolbar, keyboard shortcuts and the page layer. */
+import { uid } from '../db/db'
+import type { Annotation, ImageAnnotation } from '../db/schema'
+import { settings, useSettings } from '../state/settings'
+import { resizeItem, round, translateItem } from './geometry'
+import { getLayers } from './layers'
+import { commit, getItems, loadSong, parseKey, selectedItems, setSelection, update, useAnnotUI, visibleKeys, type PageChange } from './store'
+import { pushRecent, toolConfig, type ToolConfig, type ToolId } from './tools'
+
+/* ----------------------------------------------------------- Tool config */
+
+export function setTool(tool: ToolId) {
+  useSettings.getState().setIn('annotations', { tool })
+  if (tool !== 'select') useAnnotUI.setState({ selection: null })
+}
+
+export function currentConfig(tool = settings().annotations.tool): ToolConfig {
+  return toolConfig(tool, settings().annotations.tools)
+}
+
+/** Update the config of a tool (defaults to the current one). */
+export function patchToolConfig(patch: Partial<ToolConfig>, tool = settings().annotations.tool) {
+  const a = settings().annotations
+  const next = { ...(a.tools[tool] ?? {}), ...patch }
+  const recentColors = patch.color ? pushRecent(a.recentColors, patch.color) : a.recentColors
+  useSettings.getState().setIn('annotations', { tools: { ...a.tools, [tool]: next }, recentColors })
+}
+
+/**
+ * Change style. With a selection, the selected items change (one undo step); otherwise the
+ * current tool's settings do. `size` scales selected items proportionally.
+ */
+export function applyStyle(patch: Partial<ToolConfig>, opts: { sizeFrom?: number } = {}) {
+  const sel = selectedItems()
+  if (!sel) return patchToolConfig(patch)
+  if (patch.color) {
+    const a = settings().annotations
+    useSettings.getState().setIn('annotations', { recentColors: pushRecent(a.recentColors, patch.color) })
+  }
+  const ids = new Set(sel.items.map((i) => i.id))
+  update(sel.key, 'Change style', (items) =>
+    items.map((it) => {
+      if (!ids.has(it.id)) return it
+      let next: Annotation = it
+      if (patch.color !== undefined && it.type !== 'image') next = { ...next, color: patch.color }
+      if (patch.opacity !== undefined) next = { ...next, opacity: patch.opacity }
+      if (patch.size !== undefined && opts.sizeFrom) next = resizeItem(next, patch.size / opts.sizeFrom)
+      if (patch.dashed !== undefined && (next.type === 'pen' || next.type === 'line' || next.type === 'rect' || next.type === 'ellipse' || next.type === 'arrow'))
+        next = { ...next, dashed: patch.dashed }
+      if (patch.fill !== undefined && (next.type === 'rect' || next.type === 'ellipse')) next = { ...next, fill: patch.fill }
+      if (next.type === 'text') {
+        if (patch.bold !== undefined) next = { ...next, bold: patch.bold }
+        if (patch.italic !== undefined) next = { ...next, italic: patch.italic }
+        if (patch.font !== undefined) next = { ...next, font: patch.font }
+        if (patch.background !== undefined) next = { ...next, background: patch.background ? '#ffffff' : undefined }
+      }
+      return next
+    }),
+  )
+}
+
+/* ------------------------------------------------------------- Selection */
+
+export function deleteSelection() {
+  const sel = selectedItems()
+  if (!sel) return
+  const ids = new Set(sel.items.map((i) => i.id))
+  update(sel.key, sel.items.length > 1 ? `Delete ${sel.items.length} annotations` : 'Delete annotation', (items) => items.filter((i) => !ids.has(i.id)))
+  useAnnotUI.setState({ selection: null })
+}
+
+const cloneWithId = (it: Annotation): Annotation => ({ ...it, id: uid(), createdAt: Date.now() })
+
+export function duplicateSelection() {
+  const sel = selectedItems()
+  if (!sel) return
+  const copies = sel.items.map((i) => translateItem(cloneWithId(i), 0.02, 0.02))
+  update(sel.key, 'Duplicate', (items) => [...items, ...copies])
+  setSelection(sel.key, copies.map((c) => c.id))
+}
+
+let clipboard: Annotation[] = []
+
+export function copySelection(cut = false): number {
+  const sel = selectedItems()
+  if (!sel) return 0
+  clipboard = sel.items
+  if (cut) deleteSelection()
+  return clipboard.length
+}
+
+export const hasClipboard = () => clipboard.length > 0
+
+export async function paste(): Promise<number> {
+  const key = pasteTarget()
+  if (!key || !clipboard.length) return 0
+  const { songId } = parseKey(key)
+  const { current } = await getLayers(songId)
+  const samePage = getItems(key).some((i) => clipboard.some((c) => c.id === i.id))
+  const copies = clipboard.map((i) => {
+    const c = { ...cloneWithId(i), layer: current }
+    return samePage ? translateItem(c, 0.02, 0.02) : c
+  })
+  update(key, 'Paste', (items) => [...items, ...copies])
+  setSelection(key, copies.map((c) => c.id))
+  clipboard = copies
+  return copies.length
+}
+
+function pasteTarget(): string | null {
+  const vis = visibleKeys()
+  const active = useAnnotUI.getState().activeKey
+  return active && vis.includes(active) ? active : (vis[0] ?? active)
+}
+
+export function moveSelectionToLayer(layerId: string) {
+  const sel = selectedItems()
+  if (!sel) return
+  const ids = new Set(sel.items.map((i) => i.id))
+  update(sel.key, 'Move to layer', (items) => items.map((i) => (ids.has(i.id) ? { ...i, layer: layerId } : i)))
+}
+
+/** Bring to front / send to back within the page. */
+export function reorderSelection(front: boolean) {
+  const sel = selectedItems()
+  if (!sel) return
+  const ids = new Set(sel.items.map((i) => i.id))
+  update(sel.key, front ? 'Bring to front' : 'Send to back', (items) => {
+    const picked = items.filter((i) => ids.has(i.id))
+    const rest = items.filter((i) => !ids.has(i.id))
+    return front ? [...rest, ...picked] : [...picked, ...rest]
+  })
+}
+
+export function nudgeSelection(dx: number, dy: number) {
+  const sel = selectedItems()
+  if (!sel) return
+  const ids = new Set(sel.items.map((i) => i.id))
+  update(sel.key, 'Nudge', (items) => items.map((i) => (ids.has(i.id) ? translateItem(i, dx, dy) : i)))
+}
+
+export function selectAll() {
+  const key = pasteTarget()
+  if (!key) return
+  setSelection(key, getItems(key).map((i) => i.id))
+}
+
+/* ------------------------------------------------------------ Clearing */
+
+export function clearPages(keys: string[]): number {
+  const changes: PageChange[] = keys.map((key) => ({ key, before: getItems(key), after: [] }))
+  const n = changes.reduce((a, c) => a + c.before.length, 0)
+  if (n) commit('Clear page', changes)
+  useAnnotUI.setState({ selection: null })
+  return n
+}
+
+export async function clearSong(songId: string): Promise<number> {
+  const keys = await loadSong(songId)
+  const changes: PageChange[] = keys.map((key) => ({ key, before: getItems(key), after: [] }))
+  const n = changes.reduce((a, c) => a + c.before.length, 0)
+  if (n) commit('Clear song', changes)
+  useAnnotUI.setState({ selection: null })
+  return n
+}
+
+/* --------------------------------------------------------------- Images */
+
+async function downscale(file: File, max = 1200): Promise<{ src: string; w: number; h: number }> {
+  const bmp = await createImageBitmap(file)
+  const k = Math.min(1, max / Math.max(bmp.width, bmp.height))
+  const w = Math.max(1, Math.round(bmp.width * k))
+  const h = Math.max(1, Math.round(bmp.height * k))
+  const c = document.createElement('canvas')
+  c.width = w
+  c.height = h
+  c.getContext('2d')!.drawImage(bmp, 0, 0, w, h)
+  const png = file.type === 'image/png' || file.type === 'image/svg+xml' || file.type === 'image/gif'
+  return { src: c.toDataURL(png ? 'image/png' : 'image/jpeg', 0.85), w, h }
+}
+
+/** Place a picture on the visible page, 30 % of the page wide, selected for positioning. */
+export async function addImage(file: File): Promise<boolean> {
+  const key = pasteTarget()
+  if (!key) return false
+  const { songId } = parseKey(key)
+  const { current } = await getLayers(songId)
+  const img = await downscale(file)
+  const el = document.querySelector<HTMLElement>(`[data-annot-key="${CSS.escape(key)}"]`)
+  const aspect = el ? el.clientHeight / Math.max(1, el.clientWidth) : 1.3
+  const wN = 0.3
+  const hN = (wN * img.h) / img.w / aspect
+  const item: ImageAnnotation = {
+    id: uid(),
+    type: 'image',
+    layer: current,
+    color: '#000000',
+    opacity: 1,
+    createdAt: Date.now(),
+    a: { x: round(0.5 - wN / 2), y: round(0.4 - hN / 2) },
+    b: { x: round(0.5 + wN / 2), y: round(0.4 + hN / 2) },
+    src: img.src,
+  }
+  update(key, 'Add image', (items) => [...items, item])
+  setTool('select')
+  setSelection(key, [item.id])
+  return true
+}

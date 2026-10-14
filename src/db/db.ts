@@ -78,3 +78,11 @@ export async function getKV<T>(key: string, fallback: T): Promise<T> {
 export async function setKV<T>(key: string, value: T) {
   await db.kv.put({ key, value })
 }
+
+/**
+ * Patch a song's top-level fields. Prefer this over `db.songs.update` for nested values: Dexie's
+ * key-path typing recurses through Song and fails on self-referencing types (e.g. batch MIDI commands).
+ */
+export function updateSong(id: string, patch: Partial<import('./schema').Song>) {
+  return db.table('songs').update(id, patch as Record<string, unknown>)
+}

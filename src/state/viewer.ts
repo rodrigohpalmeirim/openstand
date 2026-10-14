@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 
-export type Panel = null | 'setlist' | 'bookmarks' | 'display' | 'metronome' | 'audio' | 'notes' | 'text' | 'goto' | 'links' | 'midi' | 'pages'
+export type Panel = null | 'setlist' | 'bookmarks' | 'display' | 'metronome' | 'audio' | 'notes' | 'text' | 'goto' | 'links' | 'midi' | 'pages' | 'autoscroll'
 
 export interface ViewerState {
   /** Songs being performed in order (a setlist, a filtered library list, or a single song). */

@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import type { LibraryFilter, SearchField } from '../library/browse/logic'
 
 /** Library sections. Group sections list distinct values of a song field. */
 export type Section =
@@ -30,6 +31,15 @@ interface NavState {
   /** Search text in the library */
   query: string
   setQuery: (q: string) => void
+  /** Field the search box looks in. */
+  searchField: SearchField
+  setSearchField: (f: SearchField) => void
+  /** Active library filter (quick + advanced). */
+  filter: LibraryFilter
+  setFilter: (f: LibraryFilter) => void
+  /** Bumped when the active library (IndexedDB) changes so views remount and re-query. */
+  libraryEpoch: number
+  bumpLibrary: () => void
 }
 
 export const useNav = create<NavState>((set) => ({
@@ -37,4 +47,11 @@ export const useNav = create<NavState>((set) => ({
   go: (route) => set({ route }),
   query: '',
   setQuery: (query) => set({ query }),
+  searchField: 'all',
+  setSearchField: (searchField) => set({ searchField }),
+  filter: {},
+  setFilter: (filter) => set({ filter }),
+  libraryEpoch: 0,
+  bumpLibrary: () =>
+    set((s) => ({ libraryEpoch: s.libraryEpoch + 1, route: { name: 'library', section: 'songs' }, query: '', filter: {} })),
 }))

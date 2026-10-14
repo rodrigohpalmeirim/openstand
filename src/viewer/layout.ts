@@ -17,12 +17,24 @@ export type Stop =
  * - double: two pages side by side ("book" pairs 1-2, 3-4…)
  * - halfPage: full page, then a stop where the next page's top replaces the current page's top, …
  */
-export function computeStops(pageCount: number, mode: DisplayMode, split = 0.5): Stop[] {
+export function computeStops(pageCount: number, mode: DisplayMode, split = 0.5, twoPageTurn: 'two' | 'single' | 'alternate' = 'two'): Stop[] {
   const stops: Stop[] = []
   if (pageCount <= 0) return stops
   switch (mode) {
     case 'double':
-      for (let i = 0; i < pageCount; i += 2) stops.push({ kind: 'spread', pages: i + 1 < pageCount ? [i, i + 1] : [i] })
+      if (pageCount === 1) stops.push({ kind: 'spread', pages: [0] })
+      else if (twoPageTurn === 'single') {
+        // [1|2] → [2|3] → [3|4]: every turn advances one page.
+        for (let i = 0; i + 1 < pageCount; i++) stops.push({ kind: 'spread', pages: [i, i + 1] })
+      } else if (twoPageTurn === 'alternate') {
+        // [1|2] → [3|2] → [3|4] → [5|4]: only the page already read is replaced.
+        let shown = [0, 1]
+        stops.push({ kind: 'spread', pages: shown })
+        for (let n = 2; n < pageCount; n++) {
+          shown = n % 2 === 0 ? [n, shown[1]] : [shown[0], n]
+          stops.push({ kind: 'spread', pages: shown })
+        }
+      } else for (let i = 0; i < pageCount; i += 2) stops.push({ kind: 'spread', pages: i + 1 < pageCount ? [i, i + 1] : [i] })
       break
     case 'halfPage':
       for (let i = 0; i < pageCount; i++) {
@@ -38,14 +50,16 @@ export function computeStops(pageCount: number, mode: DisplayMode, split = 0.5):
 
 /** Index of the stop that shows `page` (used when jumping to a bookmark or switching modes). */
 export function stopForPage(stops: Stop[], page: number): number {
-  const i = stops.findIndex((s) => (s.kind === 'spread' ? s.pages.includes(page) : false))
+  // Prefer the stop that starts with the page (matters when spreads overlap, e.g. one-page steps).
+  let i = stops.findIndex((s) => s.kind === 'spread' && s.pages[0] === page)
+  if (i < 0) i = stops.findIndex((s) => (s.kind === 'spread' ? s.pages.includes(page) : false))
   return i < 0 ? 0 : i
 }
 
 /** First page shown by a stop (for page indicators, bookmarks, sync). */
 export function firstPageOf(stop: Stop | undefined): number {
   if (!stop) return 0
-  return stop.kind === 'spread' ? stop.pages[0] : stop.bottom
+  return stop.kind === 'spread' ? Math.min(...stop.pages) : stop.bottom
 }
 
 /** Fit a page of aspect (w/h) into a box. */

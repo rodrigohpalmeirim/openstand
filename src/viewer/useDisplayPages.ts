@@ -1,6 +1,9 @@
 import { useEffect, useMemo, useState } from 'react'
 import { looksLikeChordPro, parseChordPro, textToChordPro, type ChordProSong } from '../chordpro/parse'
-import { songBlocks, type RenderOpts, type TextStyle } from '../chordpro/render'
+import { effectiveStyle, songBlocks, type RenderOpts, type TextStyle } from '../chordpro/render'
+import { ABC_PAGE_PADDING, useAbcjsReady } from '../abc/AbcView'
+import { layoutAbc, layoutWidthFor, paginateAbcLines, withPageHint } from '../abc/engine'
+import { instrumentLoaded, loadInstrument } from '../music/diagrams'
 import { getBlob } from '../db/db'
 import type { Song, SongFile } from '../db/schema'
 import { displayAspect, pageSettingsKey, pageSize, resolvePageRefs } from './pageSource'
@@ -29,7 +32,18 @@ export type DisplayPage =
       opts: RenderOpts
       aspect: number
     }
-  | { type: 'abc'; key: string; file: SongFile; source: string; transpose: number; aspect: number }
+  | {
+      type: 'abc'
+      key: string
+      file: SongFile
+      /** ABC text; paginated pages carry a leading page hint understood by AbcView. */
+      source: string
+      transpose: number
+      aspect: number
+      /** Page within the file and page count (ABC files are split by staff lines). */
+      page?: number
+      count?: number
+    }
 
 const DEFAULT_ASPECT = 612 / 792
 
@@ -46,7 +60,7 @@ export function fileText(file: SongFile): Promise<string> {
 
 export function parseTextFile(file: SongFile, text: string, style: TextStyle): ChordProSong {
   const isCp = file.kind === 'chordpro' || looksLikeChordPro(text)
-  return parseChordPro(isCp ? text : textToChordPro(text, style.naming))
+  return parseChordPro(isCp ? text : textToChordPro(text, style.sourceNaming ?? 'english'), { instrument: style.instrument })
 }
 
 /**
@@ -102,6 +116,20 @@ export function useDisplayPages(
     }
   }, [song, refs])
 
+  // ABC files (and ChordPro {start_of_abc} sections) need abcjs; bottom diagrams need the dictionary.
+  const needAbc = !!song?.files.some((f) => f.kind === 'abc' || (texts[f.id] !== undefined && /\{\s*(start_of_abc|soa)\b/.test(texts[f.id])))
+  const abcReady = useAbcjsReady(needAbc)
+  const [dictReady, setDictReady] = useState(() => instrumentLoaded(style.instrument))
+  useEffect(() => {
+    if (style.diagrams === 'off' || instrumentLoaded(style.instrument)) return setDictReady(instrumentLoaded(style.instrument))
+    let alive = true
+    setDictReady(false)
+    loadInstrument(style.instrument).then(() => alive && setDictReady(true))
+    return () => {
+      alive = false
+    }
+  }, [style.instrument, style.diagrams])
+
   const pages = useMemo(() => {
     if (!song) return []
     const out: DisplayPage[] = []
@@ -128,14 +156,36 @@ export function useDisplayPages(
       seenText.add(f.id)
       const text = texts[f.id]
       if (text === undefined) continue
+      const aspect = textBox.width / Math.max(1, textBox.height)
       if (f.kind === 'abc') {
-        out.push({ type: 'abc', key: f.id, file: f, source: text, transpose: opts.transpose, aspect: textBox.width / Math.max(1, textBox.height) })
+        // Split into pages of whole staff lines that fit the page box.
+        const pad = textBox.width * ABC_PAGE_PADDING
+        const contentW = textBox.width - pad * 2
+        const layoutWidth = layoutWidthFor(contentW, opts.zoom)
+        const layout = abcReady ? layoutAbc(text, { layoutWidth, transpose: opts.transpose, naming: style.naming }) : null
+        const ranges = layout?.lines.length ? paginateAbcLines(layout, contentW, textBox.height - pad * 2) : null
+        if (!ranges) out.push({ type: 'abc', key: f.id, file: f, source: text, transpose: opts.transpose, aspect })
+        else
+          ranges.forEach(([from, to], i) =>
+            out.push({
+              type: 'abc',
+              key: `${f.id}:a${i}`,
+              file: f,
+              source: withPageHint(text, from, to, layoutWidth),
+              transpose: opts.transpose,
+              aspect,
+              page: i,
+              count: ranges.length,
+            }),
+          )
         continue
       }
       const cp = parseTextFile(f, text, style)
-      const ro: RenderOpts = { style, transpose: opts.transpose }
-      const columns = Math.max(1, cp.columns ?? opts.columns)
-      const tp = paginate(songBlocks(cp, ro), textBox, columns, style, opts.zoom)
+      const eff = effectiveStyle(style, cp)
+      const ro: RenderOpts = { style: eff, transpose: opts.transpose, capo: song.text?.capo }
+      // An explicit per-song choice beats the file's {columns}, which beats the automatic default.
+      const columns = Math.max(1, song.text?.columns ?? cp.columns ?? opts.columns)
+      const tp = paginate(songBlocks(cp, ro), textBox, columns, eff, opts.zoom)
       tp.forEach((p, i) =>
         out.push({
           type: 'text',
@@ -147,12 +197,13 @@ export function useDisplayPages(
           columns,
           cp,
           opts: ro,
-          aspect: textBox.width / Math.max(1, textBox.height),
+          aspect,
         }),
       )
     }
     return out
-  }, [song, refs, sizes, texts, textBox, style, opts.transpose, opts.columns, opts.zoom])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [song, refs, sizes, texts, textBox, style, opts.transpose, opts.columns, opts.zoom, abcReady, dictReady])
 
   return { pages, loading }
 }

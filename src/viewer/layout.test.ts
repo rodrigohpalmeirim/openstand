@@ -9,6 +9,19 @@ describe('layout', () => {
       { kind: 'spread', pages: [2] },
     ])
   })
+  it('two-page turn variants', () => {
+    expect(computeStops(4, 'double', 0.5, 'single').map((s) => (s.kind === 'spread' ? s.pages : []))).toEqual([
+      [0, 1],
+      [1, 2],
+      [2, 3],
+    ])
+    expect(computeStops(5, 'double', 0.5, 'alternate').map((s) => (s.kind === 'spread' ? s.pages : []))).toEqual([
+      [0, 1],
+      [2, 1],
+      [2, 3],
+      [4, 3],
+    ])
+  })
   it('half page stops interleave', () => {
     const s = computeStops(3, 'halfPage')
     expect(s.map((x) => x.kind)).toEqual(['spread', 'half', 'spread', 'half', 'spread'])

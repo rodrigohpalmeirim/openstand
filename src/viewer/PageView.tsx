@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from 'react'
 import type { Crop, SongFile } from '../db/schema'
 import { cachedBitmap, renderPage } from './pageSource'
 
-export const PAPER: Record<string, string> = { white: '#ffffff', cream: '#fbf6e9', sepia: '#f3e7cf' }
+export const PAPER: Record<string, string> = { white: '#ffffff', cream: '#fbf6e9', sepia: '#f3e7cf', gray: '#ececec', cool: '#eef3f9' }
 
 /**
  * Draws one PDF/image page into a box of `width` x `height` CSS px. The page is rendered at device

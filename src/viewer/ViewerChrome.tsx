@@ -25,6 +25,8 @@ import { useSettings } from '../state/settings'
 import { useViewer, type Panel } from '../state/viewer'
 import { ViewerAddons } from '../tools/ViewerAddons'
 import { cx, Menu, useMenu } from '../ui/primitives'
+import { askGoToPage } from './askPage'
+import { PagePreview } from './PagePreview'
 import { runAction } from './actions'
 import type { Stop } from './layout'
 import { PANELS, type PanelProps } from './panels'
@@ -69,6 +71,7 @@ export function ViewerChrome(props: Props) {
   const nextSong = useLiveQuery(() => (v.queue[v.index + 1] ? db.songs.get(v.queue[v.index + 1]) : undefined), [v.queue, v.index])
   const [fs, setFs] = useState(!!document.fullscreenElement)
   const more = useMenu()
+  const [scrub, setScrub] = useState<{ index: number; left: number } | null>(null)
   const isText = pages.some((p) => p.type === 'text' || p.type === 'abc')
 
   useEffect(() => {
@@ -102,6 +105,7 @@ export function ViewerChrome(props: Props) {
 
       {/* Top bar */}
       <div
+        data-viewer-top
         className={cx(
           'absolute inset-x-0 top-0 z-20 transition-all duration-200',
           showChrome ? 'translate-y-0 opacity-100' : 'pointer-events-none -translate-y-full opacity-0',
@@ -166,6 +170,8 @@ export function ViewerChrome(props: Props) {
                   { label: 'Song notes', icon: <StickyNote className="size-4" />, onSelect: () => togglePanel('notes') },
                   { label: 'Link points', icon: <Link2 className="size-4" />, onSelect: () => togglePanel('links') },
                   { label: 'MIDI', icon: <Music2 className="size-4" />, onSelect: () => togglePanel('midi') },
+                  { label: 'Auto-scroll settings', icon: <ScrollText className="size-4" />, onSelect: () => togglePanel('autoscroll') },
+                  { label: 'Audio player', icon: <AudioLines className="size-4" />, onSelect: () => runAction('toggleAudioPlayer') },
                   { divider: true, label: '' },
                   { label: fs ? 'Exit fullscreen' : 'Fullscreen', icon: fs ? <Minimize className="size-4" /> : <Maximize className="size-4" />, onSelect: () => runAction('toggleFullscreen') },
                   { label: v.hideAnnotations ? 'Show annotations' : 'Hide annotations', onSelect: () => runAction('toggleAnnotations') },
@@ -195,11 +201,24 @@ export function ViewerChrome(props: Props) {
               min={0}
               max={Math.max(0, pages.length - 1)}
               value={currentPage}
-              onChange={(e) => goToPage(Number(e.target.value))}
+              onChange={(e) => {
+                const i = Number(e.target.value)
+                const r = e.currentTarget.getBoundingClientRect()
+                setScrub({ index: i, left: r.left + (r.width * i) / Math.max(1, pages.length - 1) })
+                goToPage(i)
+              }}
+              onPointerUp={() => setScrub(null)}
+              onBlur={() => setScrub(null)}
               className="h-1 flex-1 accent-[var(--os-accent)]"
               disabled={pages.length < 2}
             />
-            <span className="w-16 text-center text-xs tabular-nums text-white/70">{pageLabel}</span>
+            <button
+              className="w-16 rounded-md py-1 text-center text-xs tabular-nums text-white/70 hover:bg-white/10"
+              title="Go to page…"
+              onClick={() => askGoToPage(pages.length, currentPage, goToPage)}
+            >
+              {pageLabel}
+            </button>
             <ChromeButton label="Next song" onClick={() => runAction('nextSong')} className={v.index >= v.queue.length - 1 ? 'opacity-30' : ''}>
               <ChevronRight className="size-5" />
             </ChromeButton>
@@ -207,9 +226,11 @@ export function ViewerChrome(props: Props) {
         </div>
       )}
 
+      {scrub && pages[scrub.index] && <PagePreview dp={pages[scrub.index]} index={scrub.index} total={pages.length} left={scrub.left} />}
+
       {/* Side panel */}
       {panel && (
-        <div className="absolute bottom-0 right-0 top-0 z-30 flex w-full max-w-sm flex-col border-l border-white/10 bg-neutral-950/95 text-white shadow-2xl backdrop-blur-xl animate-fade-in sm:top-14 sm:bottom-14 sm:right-2 sm:rounded-2xl sm:border">
+        <div className="absolute bottom-0 right-0 top-0 z-30 flex w-full max-w-sm flex-col border-l border-white/10 bg-[#141416] text-white shadow-2xl animate-fade-in sm:top-14 sm:bottom-14 sm:right-2 sm:rounded-2xl sm:border">
           <div className="flex items-center gap-2 border-b border-white/10 px-4 py-3">
             <h2 className="flex-1 text-sm font-semibold">{panel.title}</h2>
             <button className="rounded-lg px-2 py-1 text-xs text-white/60 hover:bg-white/10" onClick={() => v.set({ panel: null })}>

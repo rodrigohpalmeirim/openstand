@@ -64,6 +64,10 @@ export interface MetronomeSettings {
   audible: boolean
   sound: 'click' | 'wood' | 'beep' | 'cowbell'
   volume: number
+  /** Start the metronome when the song opens. */
+  autoStart?: boolean
+  /** Turn the page every N beats while the metronome runs (0/undefined = off). */
+  beatsPerPage?: number
 }
 
 export interface AutoScrollSettings {
@@ -75,6 +79,8 @@ export interface AutoScrollSettings {
   speed: number
   /** Pause at the bottom of each page before turning (seconds). */
   pageDelay: number
+  /** Start scrolling when the song opens. */
+  startOnLoad?: boolean
 }
 
 export type MidiMessageType =
@@ -87,6 +93,17 @@ export type MidiMessageType =
   | 'start'
   | 'stop'
   | 'continue'
+  /** Bank MSB + bank LSB + program change; each part is sent only when set. */
+  | 'patchSelect'
+  /** Song Select (F3 ss), data1 = song number. */
+  | 'songSelect'
+  /** Start/stop sending MIDI timing clock (24 PPQN) at the song's metronome tempo. */
+  | 'clockStart'
+  | 'clockStop'
+  /** Wait `delayMs` before the next command. */
+  | 'pause'
+  /** Sends `children` in order (no nesting). */
+  | 'batch'
 
 export interface MidiCommand {
   type: MidiMessageType
@@ -96,10 +113,24 @@ export interface MidiCommand {
   data1?: number
   /** controller value / velocity / bank LSB */
   data2?: number
-  /** bank MSB for bankSelect */
+  /** bank MSB for bankSelect / patchSelect */
   msb?: number
   /** hex bytes for sysex, e.g. "F0 7E 7F 06 01 F7" */
   sysex?: string
+  /** Optional user label, e.g. "Piano patch". */
+  label?: string
+  /** bank LSB for patchSelect */
+  lsb?: number
+  /** pause length in ms (type 'pause') */
+  delayMs?: number
+  /** sub-commands (type 'batch') */
+  children?: MidiCommand[]
+  /** Send when the song opens (default true when undefined). */
+  sendOnLoad?: boolean
+  /** Receiving this message opens the song (in addition to Song.midiRecall). */
+  loadOnReceive?: boolean
+  /** Output port name; empty/undefined = all enabled outputs. */
+  output?: string
 }
 
 export interface TextDisplayOverrides {
@@ -130,7 +161,7 @@ export interface Song {
   custom2: string[]
   /** 0..5 */
   rating: number
-  /** 0 = unset, 1..5 */
+  /** 0 = unset, 1..15 (older data used 1..5; still valid). */
   difficulty: number
   /** Seconds. */
   duration: number
@@ -138,6 +169,10 @@ export interface Song {
   keywords: string
   /** Page in the source book the song starts at. */
   sourcePage?: number
+  /** Optional user song number ("Song ID" in the original), e.g. a hymnal number. */
+  songNumber?: number
+  /** Tempo marks in BPM (a song may have several, e.g. intro 90 / main 120). */
+  tempos?: number[]
 
   files: SongFile[]
   /** Custom page order; when absent all pages of all files are shown in order. */
@@ -154,6 +189,8 @@ export interface Song {
   midiRecall?: MidiCommand
   bookmarks: Bookmark[]
   links: LinkPoint[]
+  /** On-page buttons that run an action when tapped (performance tools). */
+  smartButtons?: SmartButton[]
   audio: AudioTrack[]
 
   favorite: boolean
@@ -191,6 +228,33 @@ export interface LinkPoint {
   to: { pageIndex: number; x: number; y: number }
   /** Label shown on the marker, e.g. "D.S." */
   label?: string
+}
+
+/** What a smart button does when tapped. */
+export type SmartButtonKind = 'action' | 'page' | 'song' | 'audio' | 'midi' | 'url'
+
+/** A tappable button placed on a page (position normalised 0..1 like annotations). */
+export interface SmartButton {
+  id: ID
+  label: string
+  pageIndex: number
+  x: number
+  y: number
+  kind: SmartButtonKind
+  /** kind 'action': an ActionId (kept as string so the schema stays free of viewer imports). */
+  action?: string
+  /** kind 'page' | 'song': target page index (0-based). */
+  page?: number
+  /** kind 'song': song to open. */
+  songId?: ID
+  /** kind 'audio': track of this song to play and the start offset in seconds. */
+  trackId?: ID
+  start?: number
+  /** kind 'midi': commands to send. */
+  midi?: MidiCommand[]
+  /** kind 'url': address to open in a new tab. */
+  url?: string
+  size?: 'sm' | 'md' | 'lg'
 }
 
 export interface AudioTrack {
@@ -254,6 +318,9 @@ export type AnnotationTool =
   | 'ellipse'
   | 'text'
   | 'stamp'
+  | 'crescendo'
+  | 'decrescendo'
+  | 'image'
 
 export interface Point {
   x: number
@@ -277,14 +344,18 @@ export interface StrokeAnnotation extends AnnotationBase {
   /** Stroke width as a fraction of page width. */
   width: number
   points: Point[]
+  dashed?: boolean
 }
 
 export interface ShapeAnnotation extends AnnotationBase {
-  type: 'line' | 'arrow' | 'rect' | 'ellipse'
+  type: 'line' | 'arrow' | 'rect' | 'ellipse' | 'crescendo' | 'decrescendo'
   width: number
   a: Point
   b: Point
   fill?: boolean
+  dashed?: boolean
+  /** Hairpin opening (crescendo/decrescendo) as a fraction of page width. */
+  height?: number
 }
 
 export interface TextAnnotation extends AnnotationBase {
@@ -308,7 +379,16 @@ export interface StampAnnotation extends AnnotationBase {
   size: number
 }
 
-export type Annotation = StrokeAnnotation | ShapeAnnotation | TextAnnotation | StampAnnotation
+/** A placed picture (user stamp image); `a`/`b` are opposite corners. */
+export interface ImageAnnotation extends AnnotationBase {
+  type: 'image'
+  a: Point
+  b: Point
+  /** data: URL (downscaled on import). */
+  src: string
+}
+
+export type Annotation = StrokeAnnotation | ShapeAnnotation | TextAnnotation | StampAnnotation | ImageAnnotation
 
 /** All annotations for one page of one file. */
 export interface PageAnnotations {
@@ -324,6 +404,13 @@ export interface Layer {
   id: string
   name: string
   visible: boolean
+}
+
+/** Layer definitions of one song, stored in db.kv under `layers:${songId}`. */
+export interface SongLayers {
+  layers: Layer[]
+  /** Layer new annotations go to. */
+  current: string
 }
 
 /* --------------------------------------------------------------- Storage */
@@ -342,6 +429,8 @@ export interface ThumbRecord {
   id: ID
   data: Blob
   updatedAt: number
+  /** What the thumbnail was rendered from (first page file/page/crop); re-render only when it changes. */
+  sig?: string
 }
 
 export interface KV<T = unknown> {

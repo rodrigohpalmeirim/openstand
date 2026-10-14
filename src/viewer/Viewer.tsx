@@ -3,12 +3,14 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 import { AnnotationLayer } from '../annotations/AnnotationLayer'
 import { AbcView } from '../abc/AbcView'
 import { textContainerStyle } from '../chordpro/render'
-import { db } from '../db/db'
+import { db, updateSong } from '../db/db'
 import type { DisplayMode, Song } from '../db/schema'
 import { useSettings } from '../state/settings'
 import { useViewer } from '../state/viewer'
 import { toast } from '../ui/primitives'
 import { registerActions, runAction } from './actions'
+import { setViewerApi } from './api'
+import { askGoToPage } from './askPage'
 import { emit } from './events'
 import { useKeyBindings, useStageGestures } from './input'
 import { computeStops, firstPageOf, fitPage, fitSpread, stopForPage, type Box, type Stop } from './layout'
@@ -72,9 +74,21 @@ export function Viewer() {
 
   const stageRef = useRef<HTMLDivElement>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
-  const box = useSize(stageRef)
-  const landscape = box.width > box.height
-  const textOnly = !!song && song.files.length > 0 && song.files.every((f) => f.kind === 'chordpro' || f.kind === 'text')
+  const stageBox = useSize(stageRef)
+  // While annotating, the tool bar sits over the stage; lay pages out below it so the top is drawable.
+  const [topInset, setTopInset] = useState(0)
+  const annotatingNow = useViewer((v) => v.annotating)
+  useLayoutEffect(() => {
+    if (!annotatingNow) return setTopInset(0)
+    const el = document.querySelector<HTMLElement>('[data-viewer-top]')
+    if (!el) return
+    const ro = new ResizeObserver(() => setTopInset(Math.round(el.getBoundingClientRect().height)))
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [annotatingNow])
+  const box = useMemo(() => ({ width: stageBox.width, height: Math.max(1, stageBox.height - topInset) }), [stageBox, topInset])
+  const landscape = stageBox.width > stageBox.height
+  const textOnly = !!song && song.files.length > 0 && song.files.every((f) => f.kind === 'chordpro' || f.kind === 'text' || f.kind === 'abc')
   const preferredMode: DisplayMode =
     song?.display?.mode ?? (landscape && s.display.landscapeMode !== 'same' ? s.display.landscapeMode : s.display.mode)
   // Text songs reflow, so a two-page spread is better served by one wide page with two columns.
@@ -92,16 +106,19 @@ export function Viewer() {
 
   // A text page fills the space one page occupies in the current mode.
   const textBox = useMemo<Box>(() => {
-    const w = mode === 'double' ? (box.width - gap) / 2 : box.width
-    return { width: Math.max(1, w), height: Math.max(1, mode === 'verticalScroll' ? box.height : box.height) }
-  }, [box, mode, gap])
+    const w = mode === 'double' ? (stageBox.width - gap) / 2 : stageBox.width
+    return { width: Math.max(1, w), height: Math.max(1, stageBox.height) }
+  }, [stageBox, mode, gap])
 
   const { pages, loading } = useDisplayPages(song, textBox, textStyle, {
     transpose,
-    columns: song?.text?.columns ?? (landscape && mode !== 'double' && box.width > 900 ? 2 : 1),
+    columns: song?.text?.columns ?? (landscape && mode !== 'double' && stageBox.width > 900 ? 2 : 1),
     zoom: textZoom * (song?.text?.fontScale ?? 1),
   })
-  const stops = useMemo(() => computeStops(pages.length, mode, s.display.halfPageSplit), [pages.length, mode, s.display.halfPageSplit])
+  const stops = useMemo(
+    () => computeStops(pages.length, mode, s.display.halfPageSplit, s.display.twoPageTurn),
+    [pages.length, mode, s.display.halfPageSplit, s.display.twoPageTurn],
+  )
   const paged = mode !== 'verticalScroll' && mode !== 'horizontalScroll'
 
   // Clamp/resolve the position (-1 = "last page", used when going back to the previous song).
@@ -119,7 +136,7 @@ export function Viewer() {
   useEffect(() => {
     if (!song) return
     emit('songOpened', { song, setlistId: useViewer.getState().setlistId })
-    db.songs.update(song.id, { lastPlayedAt: Date.now(), playCount: (song.playCount ?? 0) + 1 })
+    updateSong(song.id, { lastPlayedAt: Date.now(), playCount: (song.playCount ?? 0) + 1 })
     setZoom(1)
     return () => emit('songClosed', { songId: song.id })
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -159,7 +176,7 @@ export function Viewer() {
     return true
   }, [mode])
 
-  const next = useCallback(() => {
+  const next = useCallback((source?: string) => {
     if (!paged || (fit === 'width' && zoom === 1 && mode === 'single') || zoom > 1) {
       if (scrollStep(1)) return
     }
@@ -168,11 +185,13 @@ export function Viewer() {
     if (paged && v.position < max) {
       setDirection(1)
       v.setPosition(v.position + 1)
+    } else if (s.pageTurn.pedalStopsAtSongEnd && (source === 'key' || source === 'midi' || source === 'face')) {
+      toast('End of song — tap to continue')
     } else if (s.pageTurn.continueToNextSong) goSong(1)
-    else toast('Last page')
-  }, [paged, fit, zoom, mode, scrollStep, stops.length, pages.length, s.pageTurn.continueToNextSong, goSong])
+    else toast('End of song')
+  }, [paged, fit, zoom, mode, scrollStep, stops.length, pages.length, s.pageTurn.continueToNextSong, s.pageTurn.pedalStopsAtSongEnd, goSong])
 
-  const prev = useCallback(() => {
+  const prev = useCallback((source?: string) => {
     if (!paged || (fit === 'width' && zoom === 1 && mode === 'single') || zoom > 1) {
       if (scrollStep(-1)) return
     }
@@ -180,8 +199,11 @@ export function Viewer() {
     if (paged && v.position > 0) {
       setDirection(-1)
       v.setPosition(v.position - 1)
+    } else if (s.pageTurn.pedalStopsAtSongEnd && (source === 'key' || source === 'midi' || source === 'face')) {
+      toast('Start of song')
     } else if (s.pageTurn.backToPrevSong) goSong(-1)
-  }, [paged, fit, zoom, mode, scrollStep, s.pageTurn.backToPrevSong, goSong])
+    else toast('Start of song')
+  }, [paged, fit, zoom, mode, scrollStep, s.pageTurn.backToPrevSong, s.pageTurn.pedalStopsAtSongEnd, goSong])
 
   const goToPage = useCallback(
     (page: number) => {
@@ -225,10 +247,34 @@ export function Viewer() {
         prevPage: prev,
         nextHalfPage: next,
         prevHalfPage: prev,
+        nextOnePage: next,
+        prevOnePage: prev,
+        nextTwoPages: (src) => {
+          next(src)
+          if (mode !== 'double' || s.display.twoPageTurn !== 'two') next(src)
+        },
+        prevTwoPages: (src) => {
+          prev(src)
+          if (mode !== 'double' || s.display.twoPageTurn !== 'two') prev(src)
+        },
+        nextPageLoop: () => {
+          const v = useViewer.getState()
+          if (paged && v.position >= stops.length - 1) {
+            setDirection(1)
+            setV({ position: 0 })
+          } else next()
+        },
+        prevPageLoop: () => {
+          const v = useViewer.getState()
+          if (paged && v.position <= 0) {
+            setDirection(-1)
+            setV({ position: stops.length - 1 })
+          } else prev()
+        },
         firstPage: () => (paged ? setV({ position: 0 }) : goToPage(0)),
         lastPage: () => (paged ? setV({ position: stops.length - 1 }) : goToPage(pages.length - 1)),
-        scrollDown: () => scrollStep(1) || next(),
-        scrollUp: () => scrollStep(-1) || prev(),
+        scrollDown: (src) => scrollStep(1) || next(src),
+        scrollUp: (src) => scrollStep(-1) || prev(src),
         nextSong: () => goSong(1),
         prevSong: () => goSong(-1),
         zoomIn: () => setZoom((z) => Math.min(4, z * 1.25)),
@@ -243,7 +289,9 @@ export function Viewer() {
         goBack: () => {
           const v = useViewer.getState()
           const r = v.linkReturn.at(-1)
-          if (r !== undefined) setV({ position: r, linkReturn: v.linkReturn.slice(0, -1) })
+          if (r === undefined) return
+          setV({ position: r, linkReturn: v.linkReturn.slice(0, -1) })
+          if (!paged) goToPage(r)
         },
         textBigger: () => setV({ textZoom: Math.min(3, useViewer.getState().textZoom * 1.1) }),
         textSmaller: () => setV({ textZoom: Math.max(0.4, useViewer.getState().textZoom / 1.1) }),
@@ -252,10 +300,10 @@ export function Viewer() {
         cycleDisplayMode: () => {
           const order: DisplayMode[] = ['single', 'double', 'halfPage', 'verticalScroll']
           const nextMode = order[(order.indexOf(mode) + 1) % order.length]
-          if (song) db.songs.update(song.id, { display: { ...song.display, mode: nextMode } })
+          if (song) updateSong(song.id, { display: { ...song.display, mode: nextMode } })
           toast(`Display: ${nextMode}`)
         },
-        goToPage: () => setV({ panel: 'goto', toolbar: true }),
+        goToPage: () => askGoToPage(pages.length, currentPage, goToPage),
         showBookmarks: () => setV({ panel: 'bookmarks', toolbar: true }),
         showSetlist: () => setV({ panel: 'setlist', toolbar: true }),
         toggleNotes: () => setV({ panel: useViewer.getState().panel === 'notes' ? null : 'notes', toolbar: true }),
@@ -271,11 +319,29 @@ export function Viewer() {
           else v.close()
         },
       }),
-    [next, prev, goSong, paged, stops.length, pages.length, goToPage, scrollStep, setV, s.display.performanceLock, songId, mode, song],
+    [next, prev, goSong, paged, stops.length, pages.length, goToPage, scrollStep, setV, s.display.performanceLock, s.display.twoPageTurn, songId, mode, song, currentPage],
   )
+
+  useEffect(() => {
+    setViewerApi({
+      mode,
+      pageCount: pages.length,
+      currentPage,
+      scroller: scrollRef.current,
+      canScroll: () => {
+        const el = scrollRef.current
+        return !!el && (el.scrollHeight > el.clientHeight + 2 || el.scrollWidth > el.clientWidth + 2)
+      },
+      goToPage,
+      next,
+      prev,
+    })
+  })
+  useEffect(() => () => setViewerApi(null), [])
 
   useStageGestures(stageRef, {
     enabled: !annotating,
+    pinchOnly: annotating,
     zoomed: zoom > 1.01,
     onPinch: (scale) => setZoom(Math.max(1, Math.min(4, pinchBase.current * scale))),
     onPinchEnd: () => {
@@ -299,6 +365,23 @@ export function Viewer() {
     return () => el.removeEventListener('wheel', onWheel)
   }, [])
 
+  // Hide the mouse cursor while performing once the mouse is idle.
+  const [cursorHidden, setCursorHidden] = useState(false)
+  useEffect(() => {
+    if (!s.display.hideCursor) return
+    let t = window.setTimeout(() => setCursorHidden(true), 2500)
+    const onMove = () => {
+      setCursorHidden(false)
+      clearTimeout(t)
+      t = window.setTimeout(() => setCursorHidden(true), 2500)
+    }
+    window.addEventListener('mousemove', onMove)
+    return () => {
+      clearTimeout(t)
+      window.removeEventListener('mousemove', onMove)
+    }
+  }, [s.display.hideCursor])
+
   // Auto-hide toolbar.
   const toolbar = useViewer((v) => v.toolbar)
   const panel = useViewer((v) => v.panel)
@@ -314,6 +397,7 @@ export function Viewer() {
   const stageBg = night ? '#000' : 'var(--os-stage, #1a1a1c)'
   const ctx: PageCtx = {
     song,
+    textLayoutWidth: textBox.width,
     night,
     paper: s.display.paperTone,
     annotating,
@@ -326,11 +410,11 @@ export function Viewer() {
   }
 
   return (
-    <div className="fixed inset-0 z-40 flex flex-col bg-black text-white no-select" style={{ filter: s.display.brightness < 1 ? `brightness(${s.display.brightness})` : undefined }}>
+    <div className="fixed inset-0 z-40 flex flex-col bg-black text-white no-select" style={{ cursor: cursorHidden && !toolbar && !annotating ? 'none' : undefined, filter: s.display.brightness < 1 ? `brightness(${s.display.brightness})` : undefined }}>
       <div ref={stageRef} className="relative min-h-0 flex-1 overflow-hidden" style={{ background: stageBg, touchAction: zoom > 1 || !paged || fit !== 'page' ? 'pan-x pan-y' : 'none' }}>
         {song && pages.length > 0 && box.width > 0 && (
           paged ? (
-            <div ref={scrollRef} className="absolute inset-0 overflow-auto" style={{ scrollbarWidth: 'none' }}>
+            <div ref={scrollRef} className="absolute inset-x-0 bottom-0 overflow-auto" style={{ scrollbarWidth: 'none', top: topInset }}>
               <PagedStop
                 key={`${songId}:${pos}`}
                 stop={stops[pos]}
@@ -378,6 +462,8 @@ export function Viewer() {
 
 export interface PageCtx {
   song: Song | undefined
+  /** Width text pages were paginated at. */
+  textLayoutWidth: number
   night: boolean
   paper: string
   annotating: boolean
@@ -387,13 +473,15 @@ export interface PageCtx {
 
 /** Render one display page in a box. */
 export function DisplayPageView({ dp, index, size, ctx, priority = true, clip }: { dp: DisplayPage; index: number; size: Box; ctx: PageCtx; priority?: boolean; clip?: { from: number; to: number } }) {
-  const overlay =
-    ctx.song && (ctx.showAnnotations || ctx.annotating) ? (
-      <>
-        <AnnotationLayer songId={ctx.song.id} fileId={dp.file.id} page={dp.type === 'file' ? dp.page : dp.type === 'text' ? 1000 + dp.page : 0} editable={ctx.annotating} />
-        {!ctx.annotating && <LinkMarkers song={ctx.song} pageIndex={index} onFollow={ctx.onFollowLink} />}
-      </>
-    ) : null
+  // Annotations can be hidden while link points and smart buttons stay usable.
+  const overlay = ctx.song ? (
+    <>
+      {(ctx.showAnnotations || ctx.annotating) && (
+        <AnnotationLayer songId={ctx.song.id} fileId={dp.file.id} page={dp.type === 'file' ? dp.page : dp.type === 'text' ? 1000 + dp.page : 2000 + (dp.page ?? 0)} editable={ctx.annotating} />
+      )}
+      {!ctx.annotating && <LinkMarkers song={ctx.song} pageIndex={index} onFollow={ctx.onFollowLink} />}
+    </>
+  ) : null
   const inner = (() => {
     if (dp.type === 'file')
       return (
@@ -417,7 +505,7 @@ export function DisplayPageView({ dp, index, size, ctx, priority = true, clip }:
           {overlay && <div className="absolute inset-0">{overlay}</div>}
         </div>
       )
-    return <TextPageView dp={dp} size={size} night={ctx.night} paper={ctx.paper} overlay={overlay} />
+    return <TextPageView dp={dp} size={size} night={ctx.night} paper={ctx.paper} overlay={overlay} layoutWidth={ctx.textLayoutWidth} />
   })()
   if (!clip) return inner
   return (
@@ -429,32 +517,38 @@ export function DisplayPageView({ dp, index, size, ctx, priority = true, clip }:
   )
 }
 
-function TextPageView({ dp, size, night, paper, overlay }: { dp: Extract<DisplayPage, { type: 'text' }>; size: Box; night: boolean; paper: string; overlay: React.ReactNode }) {
-  const zoomScale = size.width / Math.max(1, dp.aspect * size.height) // 1 unless the box differs from the paginated box
-  const pad = size.width * TEXT_PAGE_PADDING
+/**
+ * A paginated text page. Text is laid out at the size it was paginated for (`layoutWidth`) and scaled
+ * to the box it is shown in, so zooming or shrinking the stage never re-flows or clips it.
+ */
+function TextPageView({ dp, size, night, paper, overlay, layoutWidth }: { dp: Extract<DisplayPage, { type: 'text' }>; size: Box; night: boolean; paper: string; overlay: React.ReactNode; layoutWidth: number }) {
+  const w = layoutWidth > 0 ? layoutWidth : size.width
+  const h = w / dp.aspect
+  const scale = size.width / w
+  const gap = w * 0.04
   const style: CSSProperties = {
     ...textContainerStyle(dp.opts.style, useViewer.getState().textZoom),
-    width: size.width,
-    height: size.height,
-    padding: pad,
-    background: PAPER[paper],
-    filter: night ? 'invert(1) hue-rotate(180deg)' : undefined,
-    columnGap: size.width * 0.04,
+    width: w,
+    height: h,
+    padding: w * TEXT_PAGE_PADDING,
+    transform: scale !== 1 ? `scale(${scale})` : undefined,
+    transformOrigin: '0 0',
   }
-  void zoomScale
   return (
-    <div className="relative overflow-hidden" style={style}>
-      <div className="flex h-full" style={{ gap: size.width * 0.04 }}>
-        {dp.text.columns.map((col, i) => (
-          <div key={i} className="min-w-0 flex-1">
-            {col.map((b) => (
-              <div key={b.key}>{b.node}</div>
-            ))}
-          </div>
-        ))}
-        {Array.from({ length: Math.max(0, dp.columns - dp.text.columns.length) }, (_, i) => (
-          <div key={'e' + i} className="flex-1" />
-        ))}
+    <div className="relative overflow-hidden" style={{ width: size.width, height: size.height, background: PAPER[paper], filter: night ? 'invert(1) hue-rotate(180deg)' : undefined }}>
+      <div style={style}>
+        <div className="flex h-full" style={{ gap }}>
+          {dp.text.columns.map((col, i) => (
+            <div key={i} className="min-w-0 flex-1">
+              {col.map((b) => (
+                <div key={b.key}>{b.node}</div>
+              ))}
+            </div>
+          ))}
+          {Array.from({ length: Math.max(0, dp.columns - dp.text.columns.length) }, (_, i) => (
+            <div key={'e' + i} className="flex-1" />
+          ))}
+        </div>
       </div>
       {dp.count > 1 && (
         <div className="absolute bottom-2 right-3 text-[11px] opacity-40" style={{ color: dp.opts.style.lyricsColor }}>
@@ -510,7 +604,7 @@ function Prefetch({ stops, pos, pages, box, fit, gap }: { stops: Stop[]; pos: nu
     const sizes = stopBoxes(st, pages, box, fit, gap, 1)
     st.pages.forEach((pi, k) => pages[pi].type === 'file' && items.push({ dp: pages[pi], i: pi, size: sizes[k] }))
   }
-  const ctx: PageCtx = { song: undefined, night: false, paper: 'white', annotating: false, showAnnotations: false, onFollowLink: () => {} }
+  const ctx: PageCtx = { song: undefined, textLayoutWidth: 0, night: false, paper: 'white', annotating: false, showAnnotations: false, onFollowLink: () => {} }
   return (
     <div aria-hidden className="pointer-events-none fixed -left-[20000px] top-0 opacity-0">
       {items.map(({ dp, i, size }) => (

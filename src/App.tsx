@@ -7,6 +7,7 @@ import { useViewer } from './state/viewer'
 import { AskHost, ToastProvider } from './ui/primitives'
 import { Viewer } from './viewer/Viewer'
 import { startBackgroundServices } from './services'
+import { TextEditorHost } from './textedit/TextEditor'
 
 function useTheme() {
   const theme = useSettings((s) => s.s.theme)
@@ -34,6 +35,7 @@ export default function App() {
         {route.name === 'settings' ? <SettingsScreen /> : <Library />}
       </div>
       {performing && <Viewer />}
+      <TextEditorHost />
       <AskHost />
     </ToastProvider>
   )

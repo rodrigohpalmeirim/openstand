@@ -220,6 +220,30 @@ export function Slider({
 
 /* ------------------------------------------------------------------ Dialogs */
 
+/** Open overlays, innermost last: Escape closes only the topmost one. */
+const escapeStack: { current: () => void }[] = []
+
+function onEscapeKey(e: KeyboardEvent) {
+  if (e.key !== 'Escape' || !escapeStack.length) return
+  e.stopPropagation()
+  e.preventDefault()
+  escapeStack[escapeStack.length - 1].current()
+}
+
+export function useEscape(active: boolean, onEscape: () => void) {
+  const handler = useRef(onEscape)
+  handler.current = onEscape
+  useEffect(() => {
+    if (!active) return
+    if (!escapeStack.length) window.addEventListener('keydown', onEscapeKey, true)
+    escapeStack.push(handler)
+    return () => {
+      escapeStack.splice(escapeStack.indexOf(handler), 1)
+      if (!escapeStack.length) window.removeEventListener('keydown', onEscapeKey, true)
+    }
+  }, [active])
+}
+
 export function Dialog({
   open,
   onClose,
@@ -237,17 +261,7 @@ export function Dialog({
   size?: 'sm' | 'md' | 'lg' | 'xl' | 'full'
   className?: string
 }) {
-  useEffect(() => {
-    if (!open) return
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        e.stopPropagation()
-        onClose()
-      }
-    }
-    window.addEventListener('keydown', onKey, true)
-    return () => window.removeEventListener('keydown', onKey, true)
-  }, [open, onClose])
+  useEscape(open, onClose)
   if (!open) return null
   return createPortal(
     <div
@@ -318,6 +332,7 @@ export function Popover({
 }) {
   const ref = useRef<HTMLDivElement>(null)
   const [pos, setPos] = useState<{ left: number; top: number } | null>(null)
+  useEscape(open, onClose)
   useLayoutEffect(() => {
     if (!open || !anchor || !ref.current) return
     const a = anchor.getBoundingClientRect()
@@ -334,17 +349,9 @@ export function Popover({
     const onDown = (e: PointerEvent) => {
       if (ref.current && !ref.current.contains(e.target as Node) && !anchor?.contains(e.target as Node)) onClose()
     }
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        e.stopPropagation()
-        onClose()
-      }
-    }
     window.addEventListener('pointerdown', onDown, true)
-    window.addEventListener('keydown', onKey, true)
     return () => {
       window.removeEventListener('pointerdown', onDown, true)
-      window.removeEventListener('keydown', onKey, true)
     }
   }, [open, onClose, anchor])
   if (!open) return null
@@ -502,11 +509,11 @@ type AskState =
 let askSink: ((s: AskState) => void) | null = null
 
 export function confirmDialog(opts: { title: string; message?: ReactNode; confirmLabel?: string; danger?: boolean }) {
-  return new Promise<boolean>((resolve) => askSink?.({ kind: 'confirm', ...opts, resolve }) ?? resolve(window.confirm(opts.title)))
+  return new Promise<boolean>((resolve) => (askSink ? askSink({ kind: 'confirm', ...opts, resolve }) : resolve(window.confirm(opts.title))))
 }
 
 export function promptDialog(opts: { title: string; label?: string; initial?: string }) {
-  return new Promise<string | null>((resolve) => askSink?.({ kind: 'prompt', ...opts, resolve }) ?? resolve(window.prompt(opts.title, opts.initial)))
+  return new Promise<string | null>((resolve) => (askSink ? askSink({ kind: 'prompt', ...opts, resolve }) : resolve(window.prompt(opts.title, opts.initial))))
 }
 
 export function AskHost() {

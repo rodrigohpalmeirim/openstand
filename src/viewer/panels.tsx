@@ -1,5 +1,6 @@
 import type { DisplayMode, Song } from '../db/schema'
 import { AudioPanel } from '../tools/AudioPanel'
+import { AutoScrollPanel } from '../tools/AutoScrollPanel'
 import { BookmarksPanel } from '../tools/BookmarksPanel'
 import { LinksPanel } from '../tools/LinksPanel'
 import { MetronomePanel } from '../tools/MetronomePanel'
@@ -36,4 +37,5 @@ export const PANELS: Record<Exclude<Panel, null | 'goto' | 'pages'>, { title: st
   text: { title: 'Text & chords', side: 'right', Component: TextPanel },
   links: { title: 'Link points', side: 'right', Component: LinksPanel },
   midi: { title: 'MIDI', side: 'right', Component: MidiPanel },
+  autoscroll: { title: 'Auto-scroll', side: 'right', Component: AutoScrollPanel },
 }
