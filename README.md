@@ -65,9 +65,9 @@ npm run cf:dev        # build + run the Worker locally on http://localhost:8787
 
 Or deploy from GitHub: either connect the repository in the Cloudflare dashboard (*Workers & Pages → Create →
 Import a repository*; build command `npm run build`, deploy command `npx wrangler deploy`), or add
-`CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` repository secrets and run the *Deploy* workflow. Add a
-custom domain under the Worker's *Settings → Domains & Routes*. To keep other sites from using your relay,
-set `ALLOWED_ORIGINS` in `wrangler.jsonc`.
+`CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` repository secrets: CI then deploys every push to `main`
+once the checks pass. Add a custom domain under the Worker's *Settings → Domains & Routes*. To keep other
+sites from using your relay, set `ALLOWED_ORIGINS` in `wrangler.jsonc`.
 
 ## Syncing devices
 

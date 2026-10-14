@@ -1,9 +1,13 @@
+# Checks every push and PR. Pushes to main then deploy to Cloudflare Workers, provided the repository has
+# CLOUDFLARE_API_TOKEN ("Edit Cloudflare Workers" template) and CLOUDFLARE_ACCOUNT_ID secrets; forks without
+# them skip the deploy. Re-deploy by hand with Actions › CI › Run workflow.
 name: CI
 
 on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 jobs:
   check:
@@ -20,3 +24,22 @@ jobs:
       - run: npm test
       - run: node --test server/relay-test.mjs
       - run: npm run build
+
+  deploy:
+    needs: check
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    concurrency: deploy
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@v5
+        if: env.CLOUDFLARE_API_TOKEN != ''
+      - uses: actions/setup-node@v5
+        if: env.CLOUDFLARE_API_TOKEN != ''
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci && npm run build && npx wrangler deploy
+        if: env.CLOUDFLARE_API_TOKEN != ''
