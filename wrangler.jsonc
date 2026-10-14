@@ -22,10 +22,13 @@
     "bindings": [{ "name": "RELAY", "class_name": "RelayRoom" }]
   },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["RelayRoom"] }],
+  // The official deployment. For your own, change this to a hostname in a zone on your Cloudflare
+  // account, or remove it to use https://openstand.<your-subdomain>.workers.dev only.
+  "routes": [{ "pattern": "openstand.rodlabs.dev", "custom_domain": true }],
   "vars": {
-    // Comma-separated origins allowed to use the relay. Empty = any origin (the protocol carries no
-    // secrets, but you may want to stop other sites from using your relay).
-    "ALLOWED_ORIGINS": ""
+    // Comma-separated extra origins allowed to use the relay (the site's own origin always is). Empty =
+    // any origin; the protocol carries no secrets, but this stops other sites from using your relay.
+    "ALLOWED_ORIGINS": "https://openstand.rodlabs.dev"
   },
   "observability": { "enabled": true }
 }

@@ -5,6 +5,8 @@ and installs as an offline app (PWA) on tablets, phones and desktops. It is a cl
 re-implementation of the feature set of commercial music-reader apps such as MobileSheets, with a
 modernised interface.
 
+**Try it: [openstand.rodlabs.dev](https://openstand.rodlabs.dev)** — everything stays in your browser.
+
 - 📚 **Library** — PDFs, images, ChordPro, plain-text chord sheets and ABC notation. Organise by artist,
   composer, album, genre, key, collection, source book, year, tags and custom fields. Fast search, filters,
   saved filters, sorting, multiple libraries.
