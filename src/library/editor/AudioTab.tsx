@@ -30,8 +30,9 @@ export function AudioTab({ song, update }: { song: Song; update: (p: SongPatch) 
   const setTrack = (id: string, patch: Partial<AudioTrack>) =>
     update((s) => ({ ...s, audio: s.audio.map((a) => (a.id === id ? { ...a, ...patch } : a)) }))
 
-  const add = async (list: FileList | null) => {
-    if (!list?.length) return
+  // Takes a copy: clearing the input's value empties its live FileList (Chromium) mid-loop.
+  const add = async (list: File[]) => {
+    if (!list.length) return
     setBusy(true)
     const tracks: AudioTrack[] = []
     for (const f of list) {
@@ -68,7 +69,7 @@ export function AudioTab({ song, update }: { song: Song; update: (p: SongPatch) 
           </div>
         }
       >
-        <input ref={input} type="file" accept={AUDIO_ACCEPT} multiple hidden onChange={(e) => (add(e.target.files), (e.target.value = ''))} />
+        <input ref={input} type="file" accept={AUDIO_ACCEPT} multiple hidden onChange={(e) => (add([...(e.target.files ?? [])]), (e.target.value = ''))} />
         {song.audio.length === 0 ? (
           <Empty icon={<Music2 className="size-6" />} title="No audio">
             Attach a backing track or reference recording. Set A–B loop points to practise a passage.

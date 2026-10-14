@@ -122,8 +122,8 @@ export function Section({ title, children, actions, className }: { title?: React
   return (
     <section className={cx('flex flex-col gap-3', className)}>
       {(title || actions) && (
-        <div className="flex min-h-8 items-center gap-2">
-          {title && <h3 className="flex-1 text-xs font-semibold uppercase tracking-wide text-muted">{title}</h3>}
+        <div className="flex min-h-8 flex-wrap items-center gap-2">
+          {title && <h3 className="flex-1 whitespace-nowrap text-xs font-semibold uppercase tracking-wide text-muted">{title}</h3>}
           {actions}
         </div>
       )}

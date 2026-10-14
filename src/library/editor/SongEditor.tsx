@@ -5,6 +5,7 @@ import { db, uid } from '../../db/db'
 import { emptySong, type Song } from '../../db/schema'
 import { MidiCommandsEditor } from '../../midi/MidiCommandsEditor'
 import { Button, cx, Dialog, Menu, Textarea, toast, useMenu } from '../../ui/primitives'
+import { useTerms } from '../browse/terms'
 import { AudioTab } from './AudioTab'
 import { clearGroupValueCache } from './ChipInput'
 import { CropEditor } from './CropEditor'
@@ -60,6 +61,7 @@ export function SongEditor({
   const [guard, setGuard] = useState<null | (() => void)>(null)
   const [saving, setSaving] = useState(false)
   const titleRef = useRef<HTMLInputElement>(null)
+  const t = useTerms()
   const isNew = !currentId
   const missing = useLiveQuery(async () => (currentId ? !(await db.songs.get(currentId)) : false), [currentId])
 
@@ -97,7 +99,7 @@ export function SongEditor({
     if (!draft) return null
     const title = draft.title.trim()
     if (!title) {
-      setTitleError('A title is required for every song.')
+      setTitleError(`A title is required for every ${t.song}.`)
       setTab('fields')
       requestAnimationFrame(() => titleRef.current?.focus())
       return null
@@ -168,7 +170,7 @@ export function SongEditor({
 
   const more = useMenu()
 
-  const title = isNew ? (draft?.title.trim() ? `New song: ${draft.title.trim()}` : 'New song') : 'Edit song'
+  const title = isNew ? (draft?.title.trim() ? `New ${t.song}: ${draft.title.trim()}` : `New ${t.song}`) : `Edit ${t.song}`
   const subtitle = !isNew && draft ? (
     <>
       {draft.title || 'Untitled'}
@@ -196,7 +198,7 @@ export function SongEditor({
                 onClose={more.close}
                 items={[
                   {
-                    label: 'Save as new song',
+                    label: `Save as new ${t.song}`,
                     onSelect: async () => {
                       const s = await save({ asNew: true })
                       if (s) {
@@ -223,7 +225,7 @@ export function SongEditor({
               </Button>
             )}
             <Button variant="primary" onClick={saveAndClose} disabled={saving || !draft}>
-              {isNew ? 'Create song' : 'Save'}
+              {isNew ? `Create ${t.song}` : 'Save'}
             </Button>
           </>
         }
@@ -255,7 +257,7 @@ export function SongEditor({
         </nav>
         <div id="se-panel" role="tabpanel" aria-labelledby={`se-tab-${tab}`} className="min-h-0 flex-1 overflow-y-auto">
           {missing ? (
-            <p className="p-8 text-center text-sm text-muted">This song no longer exists.</p>
+            <p className="p-8 text-center text-sm text-muted">This {t.song} no longer exists.</p>
           ) : !draft ? (
             <div className="p-8 text-center text-sm text-muted">Loading…</div>
           ) : tab === 'fields' ? (
@@ -347,7 +349,7 @@ export function SongEditor({
         }
       >
         <p className="px-5 py-4 text-sm text-muted">
-          {draft?.title.trim() ? `“${draft.title.trim()}” has unsaved changes.` : 'This song has unsaved changes.'}
+          {draft?.title.trim() ? `“${draft.title.trim()}” has unsaved changes.` : `This ${t.song} has unsaved changes.`}
         </p>
       </Dialog>
     </>

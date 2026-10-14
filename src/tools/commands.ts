@@ -4,7 +4,7 @@ import { sendCommands } from '../midi/midi'
 import { currentSongId, useViewer } from '../state/viewer'
 import { toast } from '../ui/primitives'
 import { ACTIONS, runAction, type ActionId } from '../viewer/actions'
-import { viewerApi } from '../viewer/api'
+import { goToPageWhenReady, viewerApi } from '../viewer/api'
 import { player } from './audio/player'
 import { useTools, type PagePoint } from './store'
 
@@ -49,10 +49,14 @@ export function jumpToSong(songId: string, page = 0) {
   }
   const after = v.queue.indexOf(songId, v.index + 1)
   const at = after >= 0 ? after : v.queue.indexOf(songId)
-  if (at >= 0) return v.goSong(at, page)
-  const queue = [...v.queue.slice(0, v.index + 1), songId, ...v.queue.slice(v.index + 1)]
-  useViewer.setState({ queue })
-  useViewer.getState().goSong(v.index + 1, page)
+  if (at >= 0) v.goSong(at)
+  else {
+    const queue = [...v.queue.slice(0, v.index + 1), songId, ...v.queue.slice(v.index + 1)]
+    useViewer.setState({ queue })
+    useViewer.getState().goSong(v.index + 1)
+  }
+  // Viewer positions are layout stops, not pages: let the viewer map the page once laid out.
+  if (page > 0) goToPageWhenReady(songId, page)
 }
 
 export function describeButton(b: SmartButton, song?: Song): string {

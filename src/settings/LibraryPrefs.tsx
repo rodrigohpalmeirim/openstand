@@ -6,8 +6,11 @@ import { useSettings } from '../state/settings'
 import { cx, IconButton, Input, Toggle } from '../ui/primitives'
 import { Row } from './kit'
 
-/** Library sections that can be shown as tabs/sidebar entries (everything except "Songs"). */
-const GROUP_SECTIONS: Section[] = ['recent', 'favorites', 'setlists', 'bookmarks', ...GROUP_FIELDS]
+/**
+ * Library sections that can be shown/hidden in the sidebar. Songs, Recent, Favorites and Bookmarks
+ * are always there, so they aren't offered (their toggles did nothing).
+ */
+const GROUP_SECTIONS: Section[] = ['setlists', ...GROUP_FIELDS]
 
 /** Extra per-song columns available in list view. */
 const LIST_FIELDS = [...GROUP_FIELDS, 'rating', 'difficulty', 'duration'] as const
@@ -109,7 +112,7 @@ export function GroupsEditor() {
     </li>
   )
   return (
-    <Row stacked label="Library sections" hint={`"${t.Songs}" is always shown. Turn sections on or off and set their order.`}>
+    <Row stacked label="Library sections" hint={`${t.Songs}, Recent, Favorites and Bookmarks are always shown. Turn the other sections on or off and set their order.`}>
       <ul className="-my-1 divide-y divide-line">
         {visible.filter((g) => GROUP_SECTIONS.includes(g as Section)).map((g) => row(g, visible.indexOf(g), true))}
         {hidden.map((g) => row(g, -1, false))}

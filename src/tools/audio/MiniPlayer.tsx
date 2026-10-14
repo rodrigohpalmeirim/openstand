@@ -1,4 +1,4 @@
-import { Pause, Play, Repeat, RotateCcw, RotateCw, SkipBack, SkipForward, X } from 'lucide-react'
+import { Pause, Play, Plus, Repeat, RotateCcw, RotateCw, SkipBack, SkipForward, X } from 'lucide-react'
 import type { Song } from '../../db/schema'
 import { useSettings } from '../../state/settings'
 import { useViewer } from '../../state/viewer'
@@ -59,13 +59,25 @@ export function MiniPlayer({ song }: { song: Song }) {
         <button className={btn} aria-label={`Back ${skip} seconds`} onClick={() => player.skip(-skip)} disabled={!a.trackId}>
           <RotateCcw className="size-4" />
         </button>
-        <button
-          className="flex size-11 shrink-0 items-center justify-center rounded-full bg-[var(--os-accent)] text-[var(--os-accent-fg)] hover:brightness-110"
-          aria-label={a.playing ? 'Pause' : 'Play'}
-          onClick={() => void player.toggle(song)}
-        >
-          {a.playing ? <Pause className="size-5 fill-current" /> : <Play className="size-5 translate-x-px fill-current" />}
-        </button>
+        {/* Nothing to play yet: offer to add a track instead of a dead play button. */}
+        {!a.trackId && !song.audio.length ? (
+          <button
+            className="flex size-11 shrink-0 items-center justify-center rounded-full bg-[var(--os-accent)] text-[var(--os-accent-fg)] hover:brightness-110"
+            aria-label="Add audio"
+            title="Add audio"
+            onClick={() => useViewer.getState().set({ panel: 'audio' })}
+          >
+            <Plus className="size-5" />
+          </button>
+        ) : (
+          <button
+            className="flex size-11 shrink-0 items-center justify-center rounded-full bg-[var(--os-accent)] text-[var(--os-accent-fg)] hover:brightness-110"
+            aria-label={a.playing ? 'Pause' : 'Play'}
+            onClick={() => void player.toggle(song)}
+          >
+            {a.playing ? <Pause className="size-5 fill-current" /> : <Play className="size-5 translate-x-px fill-current" />}
+          </button>
+        )}
         <button className={btn} aria-label={`Forward ${skip} seconds`} onClick={() => player.skip(skip)} disabled={!a.trackId}>
           <RotateCw className="size-4" />
         </button>

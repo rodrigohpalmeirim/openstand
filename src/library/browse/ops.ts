@@ -2,6 +2,7 @@
 import { collectGarbage, db, getKV, setKV, uid } from '../../db/db'
 import type { GroupField, Setlist, SetlistEntry, Song } from '../../db/schema'
 import { useViewer } from '../../state/viewer'
+import { goToPageWhenReady } from '../../viewer/api'
 import { addToList, normalize, removeFromList, renameInList, songHasValue, uniqueTitle } from './logic'
 
 /* ------------------------------------------------------------------ Songs */
@@ -198,6 +199,15 @@ export function perform(queue: string[], index = 0, opts: { setlistId?: string; 
   if (!queue.length) return
   useViewer.getState().open(queue, Math.max(0, Math.min(index, queue.length - 1)), opts)
   if (opts.setlistId) db.setlists.update(opts.setlistId, { lastPlayedAt: Date.now() })
+}
+
+/**
+ * Perform one song from a page index (bookmarks). Viewer positions are layout units (spreads, half
+ * pages), not page indexes, so wait until the viewer has laid the song out and let it map the page.
+ */
+export function performAtPage(songId: string, page: number) {
+  perform([songId], 0)
+  if (page > 0) goToPageWhenReady(songId, page)
 }
 
 /** Perform a setlist starting at entry `fromEntry` (a break starts at the next song). */

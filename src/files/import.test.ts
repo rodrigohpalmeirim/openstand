@@ -98,5 +98,10 @@ describe('importFiles', () => {
     expect(c.songs).toHaveLength(1)
     expect(c.songs[0].files.map((f) => f.name)).toEqual(['p1.txt', 'p2.txt'])
     expect(c.songs[0].collections).toEqual(['Book'])
+    // Combining keeps files that are already in the library (they are pages of the new song).
+    const c2 = await importFiles([txt('q1.txt', 'p1'), txt('q2.txt', 'new')], { combine: true, skipDuplicates: true })
+    expect(c2.skipped).toEqual([])
+    expect(c2.songs[0].title).toBe('q1')
+    expect(c2.songs[0].files.map((f) => f.name)).toEqual(['q1.txt', 'q2.txt'])
   })
 })

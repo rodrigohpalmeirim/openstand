@@ -152,9 +152,10 @@ const SongRow = memo(function SongRow(p: RowProps) {
         <div className="truncate font-medium leading-snug">{s.title}</div>
         {caption && <div className={cx('truncate text-muted', p.view === 'compact' ? 'text-xs' : 'text-sm')}>{caption}</div>}
       </div>
-      {showKey && <Badge>{s.keys[0]}</Badge>}
-      {p.fields.includes('duration') && s.duration > 0 && (
-        <span className="hidden w-11 text-right text-xs tabular-nums text-muted sm:block">{formatDuration(s.duration)}</span>
+      {/* Fixed-width cells (even when empty) keep keys and durations aligned down the list. */}
+      {p.fields.includes('keys') && <span className="flex min-w-10 shrink-0 justify-center">{showKey && <Badge>{s.keys[0]}</Badge>}</span>}
+      {p.fields.includes('duration') && (
+        <span className="hidden w-11 shrink-0 text-right text-xs tabular-nums text-muted sm:block">{s.duration > 0 ? formatDuration(s.duration) : ''}</span>
       )}
       {p.fields.includes('rating') && (
         <span className="hidden w-[68px] justify-end lg:flex">

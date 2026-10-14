@@ -2,13 +2,13 @@ import { registerService } from '../services'
 import { useSettings, type AccentId } from '../state/settings'
 
 /** Accent presets: [light accent, dark accent, text-on-accent light, text-on-accent dark]. */
-export const ACCENTS: Record<AccentId, { label: string; light: string; dark: string; fgLight: string; fgDark: string }> = {
-  ember: { label: 'Ember', light: '#c2410c', dark: '#fb923c', fgLight: '#ffffff', fgDark: '#1a0d03' },
-  ocean: { label: 'Ocean', light: '#1d4ed8', dark: '#60a5fa', fgLight: '#ffffff', fgDark: '#06142b' },
-  forest: { label: 'Forest', light: '#15803d', dark: '#4ade80', fgLight: '#ffffff', fgDark: '#04210f' },
-  violet: { label: 'Violet', light: '#6d28d9', dark: '#a78bfa', fgLight: '#ffffff', fgDark: '#160a33' },
+export const ACCENTS: Record<AccentId, { label: string; hint: string; light: string; dark: string; fgLight: string; fgDark: string }> = {
+  ember: { label: 'Ember', hint: 'A warm orange — the default.', light: '#c2410c', dark: '#fb923c', fgLight: '#ffffff', fgDark: '#1a0d03' },
+  ocean: { label: 'Ocean', hint: 'A calm, classic blue.', light: '#1d4ed8', dark: '#60a5fa', fgLight: '#ffffff', fgDark: '#06142b' },
+  forest: { label: 'Forest', hint: 'A soft green that’s easy on the eyes.', light: '#15803d', dark: '#4ade80', fgLight: '#ffffff', fgDark: '#04210f' },
+  violet: { label: 'Violet', hint: 'A deep purple.', light: '#6d28d9', dark: '#a78bfa', fgLight: '#ffffff', fgDark: '#160a33' },
   // High-visibility red that stays readable on a dark stage.
-  stage: { label: 'Stage', light: '#b91c1c', dark: '#f87171', fgLight: '#ffffff', fgDark: '#2a0505' },
+  stage: { label: 'Stage', hint: 'A strong red that stays easy to spot on a dark stage.', light: '#b91c1c', dark: '#f87171', fgLight: '#ffffff', fgDark: '#2a0505' },
 }
 
 function css(): string {

@@ -30,6 +30,8 @@ export type DisplayPage =
       columns: number
       cp: ChordProSong
       opts: RenderOpts
+      /** Text zoom the page was paginated at (must be rendered at the same size). */
+      zoom: number
       aspect: number
     }
   | {
@@ -77,6 +79,8 @@ export function useDisplayPages(
   const [sizes, setSizes] = useState<Record<string, number>>({})
   const [texts, setTexts] = useState<Record<string, string>>({})
   const [loading, setLoading] = useState(true)
+  // Which song the sizes/texts belong to: they are stale for a moment after switching songs.
+  const [loadedId, setLoadedId] = useState<string>()
 
   // Page sizes and text contents.
   useEffect(() => {
@@ -106,10 +110,12 @@ export function useDisplayPages(
         if (++n === 2 || n % 16 === 0) {
           setSizes({ ...sz })
           setLoading(false)
+          setLoadedId(song.id)
         }
       }
       setSizes(sz)
       setLoading(false)
+      setLoadedId(song.id)
     })()
     return () => {
       cancelled = true
@@ -135,6 +141,14 @@ export function useDisplayPages(
     const out: DisplayPage[] = []
     const byId = new Map(song.files.map((f) => [f.id, f]))
     const seenText = new Set<string>()
+    // A page order may repeat a page (e.g. a repeated chorus page); React keys must stay unique while
+    // the page identity used by annotations remains fileId + page.
+    const uses = new Map<string, number>()
+    const uniqueKey = (k: string) => {
+      const n = uses.get(k) ?? 0
+      uses.set(k, n + 1)
+      return n ? `${k}#${n}` : k
+    }
     const fallbackAspect = Object.values(sizes)[0] ?? DEFAULT_ASPECT
     for (const r of refs) {
       const f = byId.get(r.fileId)
@@ -143,7 +157,7 @@ export function useDisplayPages(
         const ps = song.pageSettings[pageSettingsKey(f.id, r.page)]
         out.push({
           type: 'file',
-          key: `${f.id}:${r.page}`,
+          key: uniqueKey(`${f.id}:${r.page}`),
           file: f,
           page: r.page,
           rotation: ps?.rotation ?? 0,
@@ -197,6 +211,7 @@ export function useDisplayPages(
           columns,
           cp,
           opts: ro,
+          zoom: opts.zoom,
           aspect,
         }),
       )
@@ -205,5 +220,5 @@ export function useDisplayPages(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [song, refs, sizes, texts, textBox, style, opts.transpose, opts.columns, opts.zoom, abcReady, dictReady])
 
-  return { pages, loading }
+  return { pages, loading: loading || loadedId !== song?.id }
 }

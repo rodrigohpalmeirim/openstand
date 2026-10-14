@@ -82,8 +82,9 @@ export async function importPackage(
       const n = conflicts.size
       const update = await confirmDialog({
         title: `${n} song${n === 1 ? ' is' : 's are'} already in your library`,
-        message: `Update ${n === 1 ? 'it' : 'them'} with the version from the package (keeps play history), or cancel to import ${n === 1 ? 'a copy' : 'copies'} alongside?`,
+        message: `Update ${n === 1 ? 'it' : 'them'} with the version from the package (keeps play history), or import ${n === 1 ? 'a copy' : 'copies'} alongside?`,
         confirmLabel: 'Update existing',
+        cancelLabel: n === 1 ? 'Import a copy' : 'Import copies',
       })
       onConflict = update ? 'update' : 'copy'
     }

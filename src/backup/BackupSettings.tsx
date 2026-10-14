@@ -1,6 +1,7 @@
 import { ArchiveRestore, FolderOpen, HardDriveDownload, Loader2, PackageOpen, ShieldAlert, ShieldCheck } from 'lucide-react'
 import { useRef, useState } from 'react'
-import { useSettings } from '../state/settings'
+import { terms, useTerms } from '../library/browse/terms'
+import { settings, useSettings } from '../state/settings'
 import { Button, Dialog, Field, Segmented, Select, Toggle, confirmDialog, cx, toast } from '../ui/primitives'
 import type { OpenedArchive, Progress, RestoreResult } from './archive'
 import { BACKUP_EXT, chooseAutoDir, createBackup, daysSince, forgetAutoDir, inspectBackup, restoreBackup, runAutoBackup, useBackupJob } from './backup'
@@ -66,6 +67,7 @@ function SwitchRow({ label, hint, checked, onChange }: { label: string; hint?: s
 
 function RestoreDialog({ file, archive, onClose }: { file: File; archive: OpenedArchive; onClose: () => void }) {
   const [mode, setMode] = useState<'replace' | 'merge'>('merge')
+  const t = useTerms()
   const [conflict, setConflict] = useState<'newer' | 'keepBoth'>('newer')
   const [withSettings, setWithSettings] = useState(true)
   const [result, setResult] = useState<RestoreResult | null>(null)
@@ -118,15 +120,15 @@ function RestoreDialog({ file, archive, onClose }: { file: File; archive: Opened
         <div className="rounded-xl border border-line bg-surface-2 px-4 py-3 text-sm">
           <div className="truncate font-medium">{file.name}</div>
           <div className="mt-0.5 text-muted">
-            {new Date(m.createdAt).toLocaleString()} · {m.counts.songs} songs · {m.counts.setlists} setlists · {fmtBytes(m.counts.bytes)}
+            {new Date(m.createdAt).toLocaleString()} · {t.count(m.counts.songs)} · {m.counts.setlists} setlists · {fmtBytes(m.counts.bytes)}
             {m.library ? ` · library “${m.library}”` : ''}
           </div>
         </div>
         {result ? (
           <ul className="grid gap-1 text-sm">
-            <li>{plural(result.songsAdded, 'song')} added</li>
-            {result.songsUpdated > 0 && <li>{plural(result.songsUpdated, 'song')} updated from the backup</li>}
-            {result.songsKept > 0 && <li>{plural(result.songsKept, 'song')} kept as they are on this device</li>}
+            <li>{plural(result.songsAdded, t.song)} added</li>
+            {result.songsUpdated > 0 && <li>{plural(result.songsUpdated, t.song)} updated from the backup</li>}
+            {result.songsKept > 0 && <li>{plural(result.songsKept, t.song)} kept as they are on this device</li>}
             <li>{plural(result.setlists, 'setlist')} restored</li>
             {result.missingFiles > 0 && <li className="text-warn">{result.missingFiles} files were missing from the backup</li>}
             {result.settingsRestored && <li>Settings restored</li>}
@@ -213,7 +215,7 @@ export function BackupSettings() {
     setImporting(true)
     try {
       const r = await importPackage(file)
-      if (r.songs || r.setlists) toast(`Imported ${r.songs} song${r.songs === 1 ? '' : 's'}${r.setlists ? ` and ${r.setlists} setlist${r.setlists === 1 ? '' : 's'}` : ''}`, 'ok')
+      if (r.songs || r.setlists) toast(`Imported ${terms(settings()).count(r.songs)}${r.setlists ? ` and ${r.setlists} setlist${r.setlists === 1 ? '' : 's'}` : ''}`, 'ok')
     } catch (e) {
       toast((e as Error).message ?? String(e), 'error')
     } finally {

@@ -53,7 +53,7 @@ export interface ImportResult {
   skipped: { name: string; reason: string }[]
 }
 
-export const FILE_PATTERN_PRESETS = ['%title%', '%artist% - %title%', '%title% - %artist%', '%composer% - %title%', '%title% (%key%)', '%ignore% - %title%']
+export const FILE_PATTERN_PRESETS = ['%title%', '%artist% - %title%', '%title% - %artist%', '%composer% - %title%', '%title% - %composer%', '%title% (%key%)', '%ignore% - %title%']
 export const FOLDER_PATTERN_PRESETS = ['%artist%', '%genre%/%artist%', '%artist%/%album%', '%composer%', '%collection%']
 export const PATTERN_TOKENS = ['title', 'artist', 'composer', 'album', 'genre', 'key', 'year', 'collection', 'source', 'custom', 'custom2', 'tag', 'signature', 'ignore']
 
@@ -151,6 +151,35 @@ export function previewSource(src: ImportSource, opts: Pick<ImportOptions, 'file
     }
   }
   return { song, matched }
+}
+
+export interface SourceContent {
+  /** Decoded text of a ChordPro/text/ABC file. */
+  text?: string
+  /** Title from the PDF's document properties. */
+  pdfTitle?: string
+}
+
+type PreviewOptions = Pick<ImportOptions, 'filePattern' | 'folderPattern' | 'folderFromEnd' | 'pdfTitle' | 'detectChordPro'>
+
+/**
+ * Title + fields a source gets on import, including what is read from its content (ChordPro/text/ABC
+ * headers, PDF title). Pure: `importFiles` and the import preview both use it so they always agree.
+ */
+export function previewWithContent(src: ImportSource, opts: PreviewOptions, content: SourceContent = {}) {
+  const p = previewSource(src, opts)
+  const kind = kindOf(src.file.name, src.file.type)
+  const before = p.song.title
+  if (opts.pdfTitle && content.pdfTitle && (!opts.filePattern || !p.matched)) p.song.title = content.pdfTitle
+  if (kind && content.text !== undefined && opts.detectChordPro !== false) metadataFromText(kind, content.text, p.song)
+  return { ...p, titleFromContent: p.song.title !== before }
+}
+
+/** Decoded text of a text-format source (for the preview), or undefined for PDFs/images/huge files. */
+export async function readSourceText(src: ImportSource, maxBytes = 512 * 1024): Promise<string | undefined> {
+  const kind = kindOf(src.file.name, src.file.type)
+  if (!kind || kind === 'pdf' || kind === 'image' || src.file.size > maxBytes) return undefined
+  return (await src.file.text()).replace(/^\uFEFF/, '')
 }
 
 /** Fill song fields from ChordPro directives, plain-text "Title: …" headers or an ABC header. */
@@ -260,8 +289,9 @@ export async function importFiles(sources: ImportSource[], opts: ImportOptions =
       result.skipped.push({ name: src.file.name, reason: r.error })
       continue
     }
-    const duplicate = opts.skipDuplicates && existingBlobs.has(r.file.blobId)
-    if (duplicate && (opts.combine || opts.conflict !== 'update')) {
+    // Combining: every picked file is a page of the new song, so library duplicates are kept.
+    const duplicate = opts.skipDuplicates && !opts.combine && existingBlobs.has(r.file.blobId)
+    if (duplicate && opts.conflict !== 'update') {
       result.skipped.push({ name: src.file.name, reason: 'Already in library' })
       continue
     }
@@ -270,12 +300,9 @@ export async function importFiles(sources: ImportSource[], opts: ImportOptions =
       combined.files.push(r.file)
       continue
     }
-    const { song, matched } = previewSource(src, opts)
+    const { song } = previewWithContent(src, opts, r)
     song.id = uid()
-    if (opts.filePattern && !matched && opts.pdfTitle && r.pdfTitle) song.title = r.pdfTitle
-    else if (!opts.filePattern && opts.pdfTitle && r.pdfTitle) song.title = r.pdfTitle
     song.files.push(r.file)
-    if (r.text !== undefined && opts.detectChordPro !== false) metadataFromText(r.file.kind, r.text, song)
     if (opts.collection && !song.collections.includes(opts.collection)) song.collections.push(opts.collection)
     for (const [g, vals] of Object.entries(opts.groups ?? {}) as [GroupField, string[]][])
       for (const v of vals) if (v && !song[g].includes(v)) song[g].push(v)

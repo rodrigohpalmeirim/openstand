@@ -3,6 +3,7 @@ import { HardDrive, ImageOff, ShieldCheck, Trash2 } from 'lucide-react'
 import { useCallback, useEffect, useState } from 'react'
 import { collectGarbage, db } from '../db/db'
 import { Button, confirmDialog, toast } from '../ui/primitives'
+import { useTerms } from '../library/browse/terms'
 import { Row } from './kit'
 
 export function formatBytes(n: number): string {
@@ -74,6 +75,7 @@ export function StorageUsage() {
 }
 
 export function LibraryStorage() {
+  const t = useTerms()
   const stats = useLiveQuery(async () => {
     let fileBytes = 0
     await db.blobs.each((b) => (fileBytes += b.size ?? 0))
@@ -82,7 +84,7 @@ export function LibraryStorage() {
   }, [])
   return (
     <>
-      <Row label="Library" hint={stats ? `${stats.songs.toLocaleString()} songs, ${stats.files.toLocaleString()} stored files` : 'Counting…'}>
+      <Row label="Library" hint={stats ? `${t.count(stats.songs)}, ${stats.files.toLocaleString()} stored files` : 'Counting…'}>
         <span className="inline-flex items-center gap-1.5 text-sm text-muted">
           <HardDrive className="size-4" /> {stats ? formatBytes(stats.fileBytes) : '…'}
         </span>

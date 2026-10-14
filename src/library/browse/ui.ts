@@ -5,7 +5,8 @@ import type { ImportSource } from '../../files/import'
 export type EditorTab = 'fields' | 'files' | 'audio' | 'midi'
 
 interface LibraryUI {
-  editor: { songId: string | null; tab?: EditorTab } | null
+  /** `queue`: the list the song was opened from, for the editor's "Save & next". */
+  editor: { songId: string | null; tab?: EditorTab; queue?: string[] } | null
   importing: { initial?: ImportSource[] } | null
   addTo: { kind: 'setlist' | 'collection'; ids: string[] } | null
   batch: string[] | null
@@ -27,7 +28,7 @@ export const useLibraryUI = create<LibraryUI>((set) => ({
 }))
 
 export const ui = {
-  edit: (songId: string | null, tab?: EditorTab) => useLibraryUI.getState().set({ editor: { songId, tab } }),
+  edit: (songId: string | null, tab?: EditorTab, queue?: string[]) => useLibraryUI.getState().set({ editor: { songId, tab, queue } }),
   import: (initial?: ImportSource[]) => useLibraryUI.getState().set({ importing: { initial } }),
   addTo: (kind: 'setlist' | 'collection', ids: string[]) => useLibraryUI.getState().set({ addTo: { kind, ids } }),
   batch: (ids: string[]) => useLibraryUI.getState().set({ batch: ids }),

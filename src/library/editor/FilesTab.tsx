@@ -57,8 +57,9 @@ export function FilesTab({
   const newMenu = useMenu()
   const capitalize = useSettings((s) => s.s.editor.capitalizeWords)
 
-  const add = async (list: FileList | null) => {
-    if (!list?.length) return
+  // Takes a copy: clearing the input's value empties its live FileList (Chromium) mid-loop.
+  const add = async (list: File[]) => {
+    if (!list.length) return
     setBusy('Adding files…')
     const files: SongFile[] = []
     const errors: string[] = []
@@ -146,7 +147,7 @@ export function FilesTab({
             { label: 'New ABC notation file', icon: <Music className="size-4" />, onSelect: () => newText('abc') },
           ]}
         />
-        <input ref={addInput} type="file" multiple accept={ACCEPT} hidden onChange={(e) => (add(e.target.files), (e.target.value = ''))} />
+        <input ref={addInput} type="file" multiple accept={ACCEPT} hidden onChange={(e) => (add([...(e.target.files ?? [])]), (e.target.value = ''))} />
         <input ref={replaceInput} type="file" accept={ACCEPT} hidden onChange={(e) => (replace(e.target.files), (e.target.value = ''))} />
         {busy && <div className="text-sm text-muted">{busy}</div>}
         {song.files.length === 0 ? (
@@ -328,7 +329,7 @@ function PageOrderField({ song, update }: { song: Song; update: (p: SongPatch) =
       <p id="page-order-help" className={cx('text-xs', parsed.ok ? 'text-faint' : 'text-danger')}>
         {!parsed.ok
           ? parsed.error
-          : `${parsed.refs.length} page${parsed.refs.length === 1 ? '' : 's'} · repeats ("1-4, 2-3") and backwards ranges ("5-3") are allowed${multi ? ' · "2:1-4" = pages 1-4 of file 2' : ''}`}
+          : `${parsed.refs.length} page${parsed.refs.length === 1 ? '' : 's'} · repeats ("1-4, 2-3") and backwards ranges ("5-3") are allowed${multi ? ' · "2:1-4" = pages 1-4 of file 2 (later numbers stay in file 2 until another "N:")' : ''}`}
       </p>
     </div>
   )

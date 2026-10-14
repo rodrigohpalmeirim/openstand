@@ -109,7 +109,18 @@ export function Select({ className, children, ...rest }: SelectHTMLAttributes<HT
 
 export function Field({ label, hint, children, className }: { label: ReactNode; hint?: ReactNode; children: ReactNode; className?: string }) {
   return (
-    <label className={cx('flex flex-col gap-1.5', className)}>
+    <label
+      className={cx('flex flex-col gap-1.5', className)}
+      onClick={(e) => {
+        // A <label> forwards clicks to its first labelable descendant. When that is a button (chip ✕,
+        // star, segment) a click on the caption would press it, and a button removed by its own click
+        // makes the browser re-target the NEXT button. Buttons handle their own clicks; skip forwarding.
+        const t = e.target as Element
+        const btn = t.closest('button')
+        if ((btn && e.currentTarget.contains(btn) && !(btn.type === 'submit' && btn.form)) || (!btn && e.currentTarget.control instanceof HTMLButtonElement))
+          e.preventDefault()
+      }}
+    >
       <span className="text-xs font-medium uppercase tracking-wide text-muted">{label}</span>
       {children}
       {hint && <span className="text-xs text-faint">{hint}</span>}
@@ -454,7 +465,9 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   const [toasts, setToasts] = useState<Toast[]>([])
   const push = useCallback((t: Omit<Toast, 'id'>) => {
     const id = Date.now() + Math.random()
-    setToasts((ts) => [...ts.slice(-3), { ...t, id }])
+    // Repeating the same text message (e.g. a pedal held at the end of a list) refreshes it instead of stacking.
+    const same = (x: Toast) => typeof t.message === 'string' && x.message === t.message && x.tone === t.tone
+    setToasts((ts) => [...ts.filter((x) => !same(x)).slice(-3), { ...t, id }])
     setTimeout(() => setToasts((ts) => ts.filter((x) => x.id !== id)), t.action ? 6000 : 3200)
   }, [])
   useEffect(() => {
@@ -503,12 +516,13 @@ export const useToast = () => useContext(ToastCtx)
 /* ------------------------------------------------------------ Confirm/prompt */
 
 type AskState =
-  | { kind: 'confirm'; title: string; message?: ReactNode; confirmLabel?: string; danger?: boolean; resolve: (v: boolean) => void }
+  | { kind: 'confirm'; title: string; message?: ReactNode; confirmLabel?: string; cancelLabel?: string; danger?: boolean; resolve: (v: boolean) => void }
   | { kind: 'prompt'; title: string; label?: string; initial?: string; resolve: (v: string | null) => void }
 
 let askSink: ((s: AskState) => void) | null = null
 
-export function confirmDialog(opts: { title: string; message?: ReactNode; confirmLabel?: string; danger?: boolean }) {
+/** Resolves true for the confirm button; false for the other button (`cancelLabel`), Escape or close. */
+export function confirmDialog(opts: { title: string; message?: ReactNode; confirmLabel?: string; cancelLabel?: string; danger?: boolean }) {
   return new Promise<boolean>((resolve) => (askSink ? askSink({ kind: 'confirm', ...opts, resolve }) : resolve(window.confirm(opts.title))))
 }
 
@@ -543,7 +557,7 @@ export function AskHost() {
       footer={
         <>
           <Button variant="ghost" onClick={() => close(false)}>
-            Cancel
+            {(s.kind === 'confirm' && s.cancelLabel) || 'Cancel'}
           </Button>
           <Button variant={s.kind === 'confirm' && s.danger ? 'danger' : 'primary'} onClick={() => close(true)}>
             {s.kind === 'confirm' ? s.confirmLabel ?? 'OK' : 'OK'}

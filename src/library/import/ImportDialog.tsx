@@ -7,15 +7,18 @@ import {
   FILE_PATTERN_PRESETS,
   FOLDER_PATTERN_PRESETS,
   importFiles,
-  previewSource,
+  previewWithContent,
+  readSourceText,
   sourcesFromDataTransfer,
   sourcesFromFileList,
   stripCommonRoot,
   type ImportResult,
   type ImportSource,
+  type SourceContent,
 } from '../../files/import'
 import { ACCEPT, kindOf } from '../../files/kinds'
-import { withPdf } from '../../files/pdf'
+import { importPackagesIn, PACKAGE_ACCEPT } from './packages'
+import { pdfMetaTitle, withPdf } from '../../files/pdf'
 import { useSettings } from '../../state/settings'
 import { Button, cx, Empty, Field, IconButton, Input, Segmented, Select } from '../../ui/primitives'
 import { ChipInput } from '../editor/ChipInput'
@@ -23,6 +26,7 @@ import { KindIcon } from '../editor/FilesTab'
 import { Section, Sheet, ToggleRow } from '../editor/Sheet'
 import { SongEditor } from '../editor/SongEditor'
 import { formatBytes } from '../editor/songEdit'
+import { useTerms } from '../browse/terms'
 import { IndexImport } from './IndexImport'
 
 const srcKey = (s: ImportSource) => `${s.path ?? s.file.name}|${s.file.size}|${s.file.lastModified}`
@@ -33,6 +37,7 @@ export function ImportDialog({ open, onClose, initial }: { open: boolean; onClos
   const [sources, setSources] = useState<ImportSource[]>([])
   const [result, setResult] = useState<ImportResult | null>(null)
   const [editId, setEditId] = useState<string | null>(null)
+  const t = useTerms()
 
   // Reset when (re)opened; files dropped while already open are appended.
   const wasOpen = useRef(false)
@@ -57,7 +62,7 @@ export function ImportDialog({ open, onClose, initial }: { open: boolean; onClos
       <Sheet
         onClose={onClose}
         title="Import"
-        subtitle={mode === 'files' ? 'PDFs, images, ChordPro, text and ABC files' : 'Split a songbook PDF into songs'}
+        subtitle={mode === 'files' ? 'PDFs, images, ChordPro, text and ABC files' : `Split a songbook PDF into ${t.songs}`}
         bodyClassName="flex flex-col overflow-hidden"
         actions={
           !result && (
@@ -81,7 +86,7 @@ export function ImportDialog({ open, onClose, initial }: { open: boolean; onClos
           <IndexImport onDone={setResult} onCancel={onClose} />
         )}
       </Sheet>
-      {editId && <SongEditor songId={editId} onClose={() => setEditId(null)} />}
+      {editId && <SongEditor songId={editId} queue={result ? [...result.songs, ...result.updated].map((s) => s.id) : undefined} onClose={() => setEditId(null)} />}
     </>
   )
 }
@@ -98,6 +103,7 @@ function FilesImport({
   onCancel: () => void
 }) {
   const prefs = useSettings((s) => s.s.importPrefs)
+  const t = useTerms()
   const aggressive = useSettings((s) => s.s.editor.aggressiveCrop)
   const setIn = useSettings((s) => s.setIn)
   const [combine, setCombine] = useState(false)
@@ -108,6 +114,9 @@ function FilesImport({
   const [dragOver, setDragOver] = useState(false)
   const [titles, setTitles] = useState<Set<string>>(new Set())
   const [pages, setPages] = useState<Record<string, number | 'err'>>({})
+  // Text content / PDF titles, so the preview shows the titles the import will really use.
+  const [content, setContent] = useState<Record<string, SourceContent>>({})
+  const [showAll, setShowAll] = useState(false)
   const abort = useRef<AbortController | null>(null)
   const fileInput = useRef<HTMLInputElement>(null)
   const dirInput = useRef<HTMLInputElement>(null)
@@ -117,15 +126,20 @@ function FilesImport({
     db.songs.each((s) => void t.add(s.title.trim().toLowerCase())).then(() => setTitles(t))
   }, [])
 
-  // Page counts for the first PDFs (lazy, a few at a time).
+  // Page counts + PDF titles for the first PDFs (lazy, one at a time); text files are read in one go.
   useEffect(() => {
     let alive = true
     const todo = sources.filter((s) => kindOf(s.file.name, s.file.type) === 'pdf' && pages[srcKey(s)] === undefined).slice(0, 60)
+    const texts = sources.filter((s) => !['pdf', 'image'].includes(kindOf(s.file.name, s.file.type) ?? 'image') && !content[srcKey(s)])
     ;(async () => {
+      const read = await Promise.all(texts.map(async (s) => [srcKey(s), { text: await readSourceText(s).catch(() => undefined) }] as const))
+      if (alive && read.length) setContent((c) => ({ ...c, ...Object.fromEntries(read) }))
       for (const s of todo) {
         if (!alive) return
-        const n = await withPdf(s.file, async (d) => d.numPages).catch(() => 'err' as const)
-        if (alive) setPages((p) => ({ ...p, [srcKey(s)]: n }))
+        const r = await withPdf(s.file, async (d) => [d.numPages, await pdfMetaTitle(d)] as const).catch(() => null)
+        if (!alive) return
+        setPages((p) => ({ ...p, [srcKey(s)]: r ? r[0] : 'err' }))
+        if (r?.[1]) setContent((c) => ({ ...c, [srcKey(s)]: { pdfTitle: r[1] } }))
       }
     })()
     return () => {
@@ -136,8 +150,19 @@ function FilesImport({
 
   const hasFolders = sources.some((s) => s.path?.includes('/'))
   const opts = { filePattern: prefs.filePattern, folderPattern: hasFolders ? prefs.folderPattern : '', folderFromEnd: prefs.folderFromEnd }
-  const previews = useMemo(() => sources.map((s) => previewSource(s, opts)), [sources, opts.filePattern, opts.folderPattern, opts.folderFromEnd]) // eslint-disable-line react-hooks/exhaustive-deps
-  const unmatched = previews.filter((p) => !p.matched).length
+  const previews = useMemo(
+    () => sources.map((s) => previewWithContent(s, { ...opts, pdfTitle }, content[srcKey(s)])),
+    [sources, content, pdfTitle, opts.filePattern, opts.folderPattern, opts.folderFromEnd], // eslint-disable-line react-hooks/exhaustive-deps
+  )
+  // A title read from the file's content makes a pattern mismatch irrelevant (unknown until it's read).
+  const unmatched = previews.filter((p, i) => {
+    const kind = kindOf(sources[i].file.name, sources[i].file.type)
+    const pending = kind !== 'pdf' && kind !== 'image' && !content[srcKey(sources[i])]
+    return !p.matched && !p.titleFromContent && !pending
+  }).length
+  // Phones stack the options under the list: keep long lists short so they stay reachable.
+  const COLLAPSED = 5
+  const collapsible = sources.length > COLLAPSED + 1 && !showAll
 
   const addSources = (more: ImportSource[], fromFolder = false) => {
     const list = fromFolder ? stripCommonRoot(more) : more
@@ -193,7 +218,19 @@ function FilesImport({
         addSources(await sourcesFromDataTransfer(e.dataTransfer), true)
       }}
     >
-      <input ref={fileInput} type="file" multiple accept={ACCEPT} hidden onChange={(e) => (e.target.files && addSources(sourcesFromFileList(e.target.files)), (e.target.value = ''))} />
+      <input
+        ref={fileInput}
+        type="file"
+        multiple
+        accept={`${ACCEPT},${PACKAGE_ACCEPT}`}
+        hidden
+        onChange={async (e) => {
+          const input = e.currentTarget
+          const files = await importPackagesIn([...(input.files ?? [])])
+          input.value = ''
+          if (files.length) addSources(sourcesFromFileList(files))
+        }}
+      />
       <input
         ref={dirInput}
         type="file"
@@ -242,7 +279,7 @@ function FilesImport({
                   const n = pages[srcKey(s)]
                   const meta = [...p.song.artists, ...p.song.composers, ...p.song.albums, ...p.song.genres, ...p.song.keys, ...p.song.collections, ...p.song.years].join(' · ')
                   return (
-                    <li key={srcKey(s)} className="flex items-center gap-3 py-2 pl-3 pr-1">
+                    <li key={srcKey(s)} className={cx('flex items-center gap-3 py-2 pl-3 pr-1', collapsible && i >= COLLAPSED && 'max-lg:hidden')}>
                       <div className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-surface-2 text-muted">
                         <KindIcon kind={kind} className="size-4.5" />
                       </div>
@@ -250,7 +287,7 @@ function FilesImport({
                         <div className="flex items-center gap-2">
                           <span className={cx('truncate text-sm font-medium', combine && i > 0 && 'text-muted')}>{combine && i > 0 ? `+ file ${i + 1}` : p.song.title}</span>
                           {exists && (
-                            <span className="shrink-0 rounded bg-warn/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-warn" title="A song with this title already exists">
+                            <span className="shrink-0 rounded bg-warn/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-warn" title={`A ${t.song} with this title already exists`}>
                               {prefs.conflict === 'update' ? 'update' : prefs.conflict === 'skip' ? 'skip' : 'exists'}
                             </span>
                           )}
@@ -268,6 +305,11 @@ function FilesImport({
                   )
                 })}
               </ul>
+              {collapsible && (
+                <Button variant="ghost" size="sm" className="self-start lg:hidden" onClick={() => setShowAll(true)}>
+                  Show all {sources.length} files
+                </Button>
+              )}
             </>
           )}
         </div>
@@ -317,14 +359,16 @@ function FilesImport({
             )}
             <ToggleRow label="Use PDF titles" hint="Take the title from the PDF’s properties when available" checked={pdfTitle} onChange={setPdfTitle} />
           </Section>
-          <Section title="Songs">
-            <ToggleRow label="Combine into one song" hint="All files become pages of a single song, in this order" checked={combine} onChange={setCombine} />
+          <Section title={t.Songs}>
+            <ToggleRow label={`Combine into one ${t.song}`} hint={`All files become pages of a single ${t.song}, in this order`} checked={combine} onChange={setCombine} />
             <Field label="Add to collection">
               <ChipInput aria-label="Add to collection" field="collections" value={collections} onChange={setCollections} placeholder="Optional" showAllOnFocus />
             </Field>
-            <ToggleRow label="Skip files already in the library" hint="Same file content" checked={prefs.skipDuplicates} onChange={(v) => setIn('importPrefs', { skipDuplicates: v })} />
             {!combine && (
-              <Field label="When a song with the same title exists">
+              <ToggleRow label="Skip files already in the library" hint="Same file content" checked={prefs.skipDuplicates} onChange={(v) => setIn('importPrefs', { skipDuplicates: v })} />
+            )}
+            {!combine && (
+              <Field label={`When a ${t.song} with the same title exists`}>
                 <Segmented
                   size="sm"
                   className="w-full"
@@ -348,7 +392,7 @@ function FilesImport({
           Cancel
         </Button>
         <Button variant="primary" disabled={!sources.length || !!progress} onClick={run}>
-          {combine ? 'Import as one song' : `Import ${sources.length || ''} file${sources.length === 1 ? '' : 's'}`}
+          {combine ? `Import as one ${t.song}` : `Import ${sources.length || ''} file${sources.length === 1 ? '' : 's'}`}
         </Button>
       </footer>
 
@@ -387,6 +431,7 @@ function PatternHint() {
 }
 
 function Results({ result, onMore, onDone, onEdit }: { result: ImportResult; onMore: () => void; onDone: () => void; onEdit: (id: string) => void }) {
+  const t = useTerms()
   const all: (Song & { updated?: boolean })[] = [...result.songs, ...result.updated.map((s) => ({ ...s, updated: true }))]
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -396,7 +441,7 @@ function Results({ result, onMore, onDone, onEdit }: { result: ImportResult; onM
             <CheckCircle2 className={cx('size-9 shrink-0', all.length ? 'text-ok' : 'text-muted')} />
             <div>
               <div className="text-lg font-semibold">
-                {result.songs.length} song{result.songs.length === 1 ? '' : 's'} imported
+                {result.songs.length} {result.songs.length === 1 ? t.song : t.songs} imported
                 {result.updated.length > 0 && `, ${result.updated.length} updated`}
               </div>
               {result.skipped.length > 0 && <div className="text-sm text-muted">{result.skipped.length} skipped</div>}
@@ -409,7 +454,7 @@ function Results({ result, onMore, onDone, onEdit }: { result: ImportResult; onM
                   <div className="min-w-0 flex-1">
                     <div className="truncate text-sm font-medium">{s.title}</div>
                     <div className="truncate text-xs text-muted">
-                      {[s.updated ? 'Updated' : null, ...s.artists, `${s.files.length} file${s.files.length === 1 ? '' : 's'}`].filter(Boolean).join(' · ')}
+                      {[s.updated ? 'Updated' : null, ...(s.artists.length ? s.artists : s.composers), `${s.files.length} file${s.files.length === 1 ? '' : 's'}`].filter(Boolean).join(' · ')}
                     </div>
                   </div>
                   <Button size="sm" variant="ghost" onClick={() => onEdit(s.id)}>

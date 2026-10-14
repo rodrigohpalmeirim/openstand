@@ -23,6 +23,7 @@ import { useLiveQuery } from 'dexie-react-hooks'
 import { db } from '../db/db'
 import { useSettings } from '../state/settings'
 import { useViewer, type Panel } from '../state/viewer'
+import { SyncStatus } from '../sync/SyncStatus'
 import { ViewerAddons } from '../tools/ViewerAddons'
 import { cx, Menu, useMenu } from '../ui/primitives'
 import { askGoToPage } from './askPage'
@@ -42,6 +43,20 @@ interface Props {
   currentPage: number
   goToPage: (p: number) => void
   zoom: number
+}
+
+/** Phones: secondary tools move into the More menu so the song title stays readable. */
+function useNarrow() {
+  const query = '(max-width: 639px)'
+  const [narrow, setNarrow] = useState(() => window.matchMedia?.(query).matches ?? false)
+  useEffect(() => {
+    const mq = window.matchMedia?.(query)
+    if (!mq) return
+    const on = () => setNarrow(mq.matches)
+    mq.addEventListener('change', on)
+    return () => mq.removeEventListener('change', on)
+  }, [])
+  return narrow
 }
 
 function ChromeButton({ label, active, onClick, children, className }: { label: string; active?: boolean; onClick: () => void; children: React.ReactNode; className?: string }) {
@@ -73,6 +88,7 @@ export function ViewerChrome(props: Props) {
   const more = useMenu()
   const [scrub, setScrub] = useState<{ index: number; left: number } | null>(null)
   const isText = pages.some((p) => p.type === 'text' || p.type === 'abc')
+  const narrow = useNarrow()
 
   useEffect(() => {
     const on = () => setFs(!!document.fullscreenElement)
@@ -84,7 +100,10 @@ export function ViewerChrome(props: Props) {
   const panelProps: PanelProps = { ...props, close: () => v.set({ panel: null }) }
   const panel = v.panel && v.panel !== 'goto' && v.panel !== 'pages' ? PANELS[v.panel] : null
   const showChrome = v.toolbar || v.annotating
-  const pageLabel = pages.length ? `${currentPage + 1} / ${pages.length}` : ''
+  // Two-page spreads show both page numbers ("3–4 / 9").
+  const stop = paged ? stops[pos] : undefined
+  const shown = stop?.kind === 'spread' && stop.pages.length > 1 ? `${Math.min(...stop.pages) + 1}–${Math.max(...stop.pages) + 1}` : `${currentPage + 1}`
+  const pageLabel = pages.length ? `${shown} / ${pages.length}` : ''
   const atLastStop = paged ? pos >= stops.length - 1 : currentPage >= pages.length - 1
 
   return (
@@ -122,6 +141,7 @@ export function ViewerChrome(props: Props) {
                 (v.queue.length > 1 ? `${v.index + 1} of ${v.queue.length}` : '')}
             </div>
           </div>
+          {!v.annotating && <SyncStatus className="mr-1 hidden sm:inline-flex" />}
           {v.annotating ? null : (
             <div className="flex items-center gap-0.5">
               <ChromeButton label="Annotate" onClick={() => runAction('toggleAnnotate')}>
@@ -132,20 +152,24 @@ export function ViewerChrome(props: Props) {
                   <Type className="size-[18px]" />
                 </ChromeButton>
               )}
-              <ChromeButton label="Metronome" active={v.panel === 'metronome' || v.metronomeOn} onClick={() => togglePanel('metronome')}>
-                <Timer className="size-[18px]" />
-              </ChromeButton>
-              <ChromeButton label="Auto-scroll" active={v.autoScrollOn} onClick={() => runAction('toggleAutoScroll')}>
-                <ScrollText className="size-[18px]" />
-              </ChromeButton>
-              {song.audio.length > 0 && (
-                <ChromeButton label="Audio" active={v.panel === 'audio'} onClick={() => togglePanel('audio')}>
-                  <AudioLines className="size-[18px]" />
-                </ChromeButton>
+              {!narrow && (
+                <>
+                  <ChromeButton label="Metronome" active={v.panel === 'metronome' || v.metronomeOn} onClick={() => togglePanel('metronome')}>
+                    <Timer className="size-[18px]" />
+                  </ChromeButton>
+                  <ChromeButton label="Auto-scroll" active={v.autoScrollOn} onClick={() => runAction('toggleAutoScroll')}>
+                    <ScrollText className="size-[18px]" />
+                  </ChromeButton>
+                  {song.audio.length > 0 && (
+                    <ChromeButton label="Audio" active={v.panel === 'audio'} onClick={() => togglePanel('audio')}>
+                      <AudioLines className="size-[18px]" />
+                    </ChromeButton>
+                  )}
+                  <ChromeButton label="Bookmarks" active={v.panel === 'bookmarks'} onClick={() => togglePanel('bookmarks')}>
+                    <Bookmark className="size-[18px]" />
+                  </ChromeButton>
+                </>
               )}
-              <ChromeButton label="Bookmarks" active={v.panel === 'bookmarks'} onClick={() => togglePanel('bookmarks')}>
-                <Bookmark className="size-[18px]" />
-              </ChromeButton>
               {v.queue.length > 1 && (
                 <ChromeButton label="Setlist" active={v.panel === 'setlist'} onClick={() => togglePanel('setlist')}>
                   <ListMusic className="size-[18px]" />
@@ -167,6 +191,14 @@ export function ViewerChrome(props: Props) {
                 open={more.open}
                 onClose={more.close}
                 items={[
+                  ...(narrow
+                    ? [
+                        { label: v.metronomeOn ? 'Metronome (on)' : 'Metronome', icon: <Timer className="size-4" />, onSelect: () => togglePanel('metronome') },
+                        { label: v.autoScrollOn ? 'Stop auto-scroll' : 'Start auto-scroll', icon: <ScrollText className="size-4" />, onSelect: () => runAction('toggleAutoScroll') },
+                        { label: 'Bookmarks', icon: <Bookmark className="size-4" />, onSelect: () => togglePanel('bookmarks') },
+                        { divider: true, label: '' },
+                      ]
+                    : []),
                   { label: 'Song notes', icon: <StickyNote className="size-4" />, onSelect: () => togglePanel('notes') },
                   { label: 'Link points', icon: <Link2 className="size-4" />, onSelect: () => togglePanel('links') },
                   { label: 'MIDI', icon: <Music2 className="size-4" />, onSelect: () => togglePanel('midi') },
@@ -213,7 +245,7 @@ export function ViewerChrome(props: Props) {
               disabled={pages.length < 2}
             />
             <button
-              className="w-16 rounded-md py-1 text-center text-xs tabular-nums text-white/70 hover:bg-white/10"
+              className="min-w-16 rounded-md px-1 py-1 text-center text-xs tabular-nums text-white/70 hover:bg-white/10"
               title="Go to page…"
               onClick={() => askGoToPage(pages.length, currentPage, goToPage)}
             >

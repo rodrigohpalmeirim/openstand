@@ -1,13 +1,23 @@
-import { useEffect } from 'react'
+import { lazy, Suspense, useEffect } from 'react'
 import { Library } from './library/Library'
-import { SettingsScreen } from './settings/SettingsScreen'
 import { useNav } from './state/nav'
 import { useSettings } from './state/settings'
 import { useViewer } from './state/viewer'
 import { AskHost, ToastProvider } from './ui/primitives'
-import { Viewer } from './viewer/Viewer'
 import { startBackgroundServices } from './services'
 import { TextEditorHost } from './textedit/TextEditor'
+
+// Screens not needed to show the library are split out to keep startup light on tablets.
+const SettingsScreen = lazy(() => import('./settings/SettingsScreen').then((m) => ({ default: m.SettingsScreen })))
+const Viewer = lazy(() => import('./viewer/Viewer').then((m) => ({ default: m.Viewer })))
+
+function Loading({ dark }: { dark?: boolean }) {
+  return (
+    <div className={`fixed inset-0 z-40 flex items-center justify-center ${dark ? 'bg-black' : ''}`}>
+      <div className="size-8 animate-spin rounded-full border-2 border-current border-t-transparent opacity-40" />
+    </div>
+  )
+}
 
 function useTheme() {
   const theme = useSettings((s) => s.s.theme)
@@ -32,9 +42,19 @@ export default function App() {
   return (
     <ToastProvider>
       <div className="h-full" aria-hidden={performing || undefined} inert={performing || undefined}>
-        {route.name === 'settings' ? <SettingsScreen /> : <Library />}
+        {route.name === 'settings' ? (
+          <Suspense fallback={<Loading />}>
+            <SettingsScreen />
+          </Suspense>
+        ) : (
+          <Library />
+        )}
       </div>
-      {performing && <Viewer />}
+      {performing && (
+        <Suspense fallback={<Loading dark />}>
+          <Viewer />
+        </Suspense>
+      )}
       <TextEditorHost />
       <AskHost />
     </ToastProvider>

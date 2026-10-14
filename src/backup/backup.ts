@@ -4,6 +4,7 @@
 import { create } from 'zustand'
 import { db, getKV, setKV } from '../db/db'
 import { registerService } from '../services'
+import { terms } from '../library/browse/terms'
 import { settings, useSettings } from '../state/settings'
 import { toast } from '../ui/primitives'
 import { openArchive, restoreArchive, writeArchive, type Manifest, type OnProgress, type Progress, type RestoreOptions, type RestoreResult } from './archive'
@@ -84,7 +85,7 @@ export async function createBackup(): Promise<boolean> {
       downloadBlob(sink.blob(BACKUP_MIME), name)
     }
     await markBackedUp()
-    toast(`Backed up ${manifest.counts.songs} songs`, 'ok')
+    toast(`Backed up ${terms(settings()).count(manifest.counts.songs)}`, 'ok')
     return true
   } catch (e) {
     console.error(e)

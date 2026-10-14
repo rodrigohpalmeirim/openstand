@@ -64,7 +64,7 @@ export function FilterBar({ onAdvanced }: { onAdvanced: () => void }) {
   const setFilter = useNav((n) => n.setFilter)
   const n = filterCount(filter)
   return (
-    <div className="flex items-center gap-3 overflow-x-auto px-3 pb-2.5 md:px-4">
+    <div className="flex items-center gap-3 overflow-x-auto px-3 pb-2.5 md:flex-wrap md:gap-y-2 md:px-4">
       {QUICK.map((f) => (
         <QuickSelect key={f} field={f} filter={filter} onChange={setFilter} />
       ))}

@@ -298,7 +298,7 @@ export function SongBrowser(p: SongBrowserProps) {
 
   const onOpen = useCallback((i: number) => (loadEntire ? perform(ids, i) : perform([ids[i]])), [ids, loadEntire])
   const { rowExtra } = p
-  const menu = useCallback((s: Song, i: number) => songMenu(s, t, { queue: loadEntire ? ids : undefined, index: i, extra: rowExtra?.(s) }), [t, ids, loadEntire, rowExtra])
+  const menu = useCallback((s: Song, i: number) => songMenu(s, t, { queue: loadEntire ? ids : undefined, editQueue: ids, index: i, extra: rowExtra?.(s) }), [t, ids, loadEntire, rowExtra])
 
   // Selection keyboard shortcuts.
   const selRef = useRef(sel)

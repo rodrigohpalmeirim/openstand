@@ -33,10 +33,13 @@ export type Body =
   | { type: 'hello'; reply?: boolean }
   | { type: 'bye' }
   /** A new song is showing (also the answer to requestState). */
-  | { type: 'openSong'; song: SongRef; position: number; queue: SongRef[]; index: number; setlistName?: string }
+  | { type: 'openSong'; song: SongRef; position: number; queue: SongRef[]; index: number; setlistName?: string; page?: number }
   | { type: 'closeSong' }
-  /** Absolute position within the current song (display stops). */
-  | { type: 'page'; songId: string; position: number }
+  /**
+   * Absolute position within the current song. `position` is in the sender's display stops; `page`
+   * (first visible page) is layout-independent and preferred, since devices may use other layouts.
+   */
+  | { type: 'page'; songId: string; position: number; page?: number }
   /** Mirrored navigation action. */
   | { type: 'action'; action: ActionId; songId?: string }
   | { type: 'setlist'; name: string; items: SetlistItemRef[] }

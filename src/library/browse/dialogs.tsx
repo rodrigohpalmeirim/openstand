@@ -211,7 +211,8 @@ function BatchEdit({ ids }: { ids: string[] }) {
               Rating
               <Toggle label="Set rating" checked={rating !== null} onChange={(on) => enable(on, () => setRating(0), () => setRating(null))} />
             </label>
-            <div className={cx(rating === null && 'pointer-events-none opacity-40')}>
+            {/* Picking a value switches the change on; the toggle is there to switch it off again. */}
+            <div className={cx(rating === null && 'opacity-40')}>
               <StarInput value={rating ?? 0} onChange={setRating} />
             </div>
           </div>
@@ -220,7 +221,7 @@ function BatchEdit({ ids }: { ids: string[] }) {
               Difficulty
               <Toggle label="Set difficulty" checked={difficulty !== null} onChange={(on) => enable(on, () => setDifficulty(0), () => setDifficulty(null))} />
             </label>
-            <Select disabled={difficulty === null} value={difficulty ?? 0} onChange={(e) => setDifficulty(Number(e.target.value))}>
+            <Select className={cx(difficulty === null && 'opacity-40')} value={difficulty ?? 0} onChange={(e) => setDifficulty(Number(e.target.value))}>
               <option value={0}>Not set</option>
               {Array.from({ length: 15 }, (_, i) => (
                 <option key={i} value={i + 1}>
@@ -234,7 +235,7 @@ function BatchEdit({ ids }: { ids: string[] }) {
               Key
               <Toggle label="Set key" checked={key !== null} onChange={(on) => enable(on, () => setKey(''), () => setKey(null))} />
             </label>
-            <Select disabled={key === null} value={key ?? ''} onChange={(e) => setKey(e.target.value)}>
+            <Select className={cx(key === null && 'opacity-40')} value={key ?? ''} onChange={(e) => setKey(e.target.value)}>
               <option value="">Not set</option>
               {KEYS.map((k) => (
                 <option key={k} value={k}>

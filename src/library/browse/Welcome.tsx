@@ -135,7 +135,7 @@ export function Welcome() {
               finish()
             }}
           >
-            Try a demo {terminology === 'piece' ? 'piece' : 'song'}
+            Try demo {terminology === 'piece' ? 'pieces' : 'songs'}
           </Button>
           <Button variant="ghost" onClick={finish}>
             Start with an empty library

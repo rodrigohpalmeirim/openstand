@@ -13,10 +13,10 @@ import { setViewerApi } from './api'
 import { askGoToPage } from './askPage'
 import { emit } from './events'
 import { useKeyBindings, useStageGestures } from './input'
-import { computeStops, firstPageOf, fitPage, fitSpread, stopForPage, type Box, type Stop } from './layout'
+import { computeStops, firstPageOf, fitPage, fitSpread, prefetchPages, stopForPage, type Box, type Stop } from './layout'
 import { LinkMarkers } from './LinkMarkers'
 import { PAPER, PageView } from './PageView'
-import { TEXT_PAGE_PADDING } from './textPagination'
+import { TEXT_BLOCK_STYLE, TEXT_PAGE_PADDING } from './textPagination'
 import { useDisplayPages, type DisplayPage } from './useDisplayPages'
 import { ViewerChrome } from './ViewerChrome'
 
@@ -34,6 +34,9 @@ function useSize(ref: React.RefObject<HTMLElement | null>): Box {
   }, [ref])
   return size
 }
+
+/** Last song whose play was counted (see the songOpened effect). */
+let lastPlay = { id: '', at: 0 }
 
 function useWakeLock(active: boolean) {
   useEffect(() => {
@@ -70,7 +73,10 @@ export function Viewer() {
   const setV = useViewer((v) => v.set)
   const s = useSettings((st) => st.s)
   const songId = queue[index]
-  const song = useLiveQuery(() => (songId ? db.songs.get(songId) : undefined), [songId])
+  const liveSong = useLiveQuery(() => (songId ? db.songs.get(songId) : undefined), [songId])
+  // useLiveQuery keeps returning the previous song until the new query resolves; never lay out
+  // (or clamp positions against) the wrong song.
+  const song = liveSong?.id === songId ? liveSong : undefined
 
   const stageRef = useRef<HTMLDivElement>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -129,6 +135,7 @@ export function Viewer() {
     else if (position > max) setV({ position: max })
   }, [position, stops.length, pages.length, paged, loading, setV])
 
+  const hasPages = pages.length > 0
   const pos = Math.max(0, Math.min(position, (paged ? stops.length : pages.length) - 1))
   const currentPage = paged ? firstPageOf(stops[pos]) : pos
 
@@ -136,7 +143,12 @@ export function Viewer() {
   useEffect(() => {
     if (!song) return
     emit('songOpened', { song, setlistId: useViewer.getState().setlistId })
-    updateSong(song.id, { lastPlayedAt: Date.now(), playCount: (song.playCount ?? 0) + 1 })
+    // StrictMode (and quick remounts) run this twice for one opening: count a play once.
+    const now = Date.now()
+    if (lastPlay.id !== song.id || now - lastPlay.at > 2000) {
+      updateSong(song.id, { lastPlayedAt: now, playCount: (song.playCount ?? 0) + 1 })
+    }
+    lastPlay = { id: song.id, at: now }
     setZoom(1)
     return () => emit('songClosed', { songId: song.id })
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -152,7 +164,8 @@ export function Viewer() {
   /* ------------------------------------------------------------ navigation */
 
   const [direction, setDirection] = useState<1 | -1>(1)
-  const goSong = useCallback((delta: number) => {
+  /** `toEnd`: turning back past page one lands on the previous song's last page. */
+  const goSong = useCallback((delta: number, toEnd = false) => {
     const v = useViewer.getState()
     const next = v.index + delta
     if (next < 0 || next >= v.queue.length) {
@@ -160,9 +173,9 @@ export function Viewer() {
       return false
     }
     setDirection(delta > 0 ? 1 : -1)
-    v.goSong(next, delta < 0 && s.pageTurn.backToPrevSong ? -1 : 0)
+    v.goSong(next, toEnd ? -1 : 0)
     return true
-  }, [s.pageTurn.backToPrevSong])
+  }, [])
 
   const scrollStep = useCallback((dir: 1 | -1): boolean => {
     const el = scrollRef.current
@@ -176,7 +189,15 @@ export function Viewer() {
     return true
   }, [mode])
 
+  // Turning a page means the performer is playing: get the auto-hiding toolbar out of the way.
+  const autoHide = s.display.toolbarAutoHide > 0
+  const hideChrome = useCallback(() => {
+    const v = useViewer.getState()
+    if (autoHide && v.toolbar && !v.panel && !v.annotating) setV({ toolbar: false })
+  }, [autoHide, setV])
+
   const next = useCallback((source?: string) => {
+    hideChrome()
     if (!paged || (fit === 'width' && zoom === 1 && mode === 'single') || zoom > 1) {
       if (scrollStep(1)) return
     }
@@ -189,9 +210,10 @@ export function Viewer() {
       toast('End of song — tap to continue')
     } else if (s.pageTurn.continueToNextSong) goSong(1)
     else toast('End of song')
-  }, [paged, fit, zoom, mode, scrollStep, stops.length, pages.length, s.pageTurn.continueToNextSong, s.pageTurn.pedalStopsAtSongEnd, goSong])
+  }, [paged, fit, zoom, mode, scrollStep, stops.length, pages.length, s.pageTurn.continueToNextSong, s.pageTurn.pedalStopsAtSongEnd, goSong, hideChrome])
 
   const prev = useCallback((source?: string) => {
+    hideChrome()
     if (!paged || (fit === 'width' && zoom === 1 && mode === 'single') || zoom > 1) {
       if (scrollStep(-1)) return
     }
@@ -201,9 +223,9 @@ export function Viewer() {
       v.setPosition(v.position - 1)
     } else if (s.pageTurn.pedalStopsAtSongEnd && (source === 'key' || source === 'midi' || source === 'face')) {
       toast('Start of song')
-    } else if (s.pageTurn.backToPrevSong) goSong(-1)
+    } else if (s.pageTurn.backToPrevSong) goSong(-1, true)
     else toast('Start of song')
-  }, [paged, fit, zoom, mode, scrollStep, s.pageTurn.backToPrevSong, s.pageTurn.pedalStopsAtSongEnd, goSong])
+  }, [paged, fit, zoom, mode, scrollStep, s.pageTurn.backToPrevSong, s.pageTurn.pedalStopsAtSongEnd, goSong, hideChrome])
 
   const goToPage = useCallback(
     (page: number) => {
@@ -216,29 +238,41 @@ export function Viewer() {
     [paged, stops, setV],
   )
 
+  // Keep the same page in view when the layout changes (display mode, two-page turn, text reflow):
+  // positions are stop indexes in paged modes and page indexes in scroll modes.
+  const shown = useRef<{ songId?: string; page: number; paged: boolean; stops: Stop[] }>({ page: 0, paged, stops })
+  useEffect(() => {
+    const prevShown = shown.current
+    shown.current = { songId, page: currentPage, paged, stops }
+    if (prevShown.songId !== songId || loading || !pages.length || position < 0) return
+    if (prevShown.stops === stops && prevShown.paged === paged) return
+    const page = Math.min(prevShown.page, pages.length - 1)
+    if (paged) {
+      const p = stopForPage(stops, page)
+      if (p !== position) setV({ position: p })
+    } else {
+      if (page !== position) setV({ position: page })
+      if (prevShown.paged) goToPage(page)
+    }
+  })
+
   // When a page turns in fit-width/zoomed mode, start at the top of the new page.
   useEffect(() => {
     if (paged) scrollRef.current?.scrollTo({ top: direction > 0 ? 0 : 0, left: 0 })
   }, [pos, paged, direction])
 
-  // Track the visible page in scroll modes.
+  // Scroll modes: the strip reports the page in view.
+  const onStripPage = useCallback((page: number) => {
+    if (page !== useViewer.getState().position) setV({ position: page })
+  }, [setV])
+
+  // Scroll modes: a song opened at a given page (e.g. its last page when going back) scrolls there.
+  const openedAt = useRef<string | undefined>(undefined)
   useEffect(() => {
-    if (paged) return
-    const el = scrollRef.current
-    if (!el) return
-    const onScroll = () => {
-      const items = el.querySelectorAll<HTMLElement>('[data-page]')
-      const horizontal = mode === 'horizontalScroll'
-      const ref = horizontal ? el.scrollLeft + el.clientWidth * 0.3 : el.scrollTop + el.clientHeight * 0.3
-      let cur = 0
-      items.forEach((it) => {
-        if ((horizontal ? it.offsetLeft : it.offsetTop) <= ref) cur = Number(it.dataset.page)
-      })
-      if (cur !== useViewer.getState().position) setV({ position: cur })
-    }
-    el.addEventListener('scroll', onScroll, { passive: true })
-    return () => el.removeEventListener('scroll', onScroll)
-  }, [paged, mode, setV])
+    if (loading || !hasPages || box.width <= 0 || openedAt.current === songId) return
+    openedAt.current = songId
+    if (!paged && position !== 0) goToPage(position < 0 ? pages.length - 1 : position)
+  })
 
   useEffect(
     () =>
@@ -324,6 +358,7 @@ export function Viewer() {
 
   useEffect(() => {
     setViewerApi({
+      songId,
       mode,
       pageCount: pages.length,
       currentPage,
@@ -339,17 +374,43 @@ export function Viewer() {
   })
   useEffect(() => () => setViewerApi(null), [])
 
+  // Zoom keeps the point under the fingers (or mouse) in place; applied once the new size is laid out.
+  const zoomRef = useRef(zoom)
+  zoomRef.current = zoom
+  const zoomFocus = useRef<{ x: number; y: number; from: number } | null>(null)
+  const zoomAt = useCallback((next: number, clientX: number, clientY: number) => {
+    const r = scrollRef.current?.getBoundingClientRect()
+    const z = Math.max(1, Math.min(4, next))
+    if (r && z !== zoomRef.current) zoomFocus.current = { x: clientX - r.left, y: clientY - r.top, from: zoomRef.current }
+    setZoom(z)
+  }, [])
+  useLayoutEffect(() => {
+    const f = zoomFocus.current
+    const el = scrollRef.current
+    zoomFocus.current = null
+    if (!f || !el || f.from === zoom) return
+    const k = zoom / f.from
+    el.scrollLeft = (el.scrollLeft + f.x) * k - f.x
+    el.scrollTop = (el.scrollTop + f.y) * k - f.y
+  }, [zoom])
+
+  // The pinch scale is relative to the start of the gesture, so the base only moves between pinches.
+  const pinching = useRef(false)
   useStageGestures(stageRef, {
     enabled: !annotating,
     pinchOnly: annotating,
     zoomed: zoom > 1.01,
-    onPinch: (scale) => setZoom(Math.max(1, Math.min(4, pinchBase.current * scale))),
+    onPinch: (scale, cx, cy) => {
+      pinching.current = true
+      zoomAt(pinchBase.current * scale, cx, cy)
+    },
     onPinchEnd: () => {
-      pinchBase.current = zoom
+      pinching.current = false
+      pinchBase.current = zoomRef.current
     },
   })
   useEffect(() => {
-    pinchBase.current = zoom
+    if (!pinching.current) pinchBase.current = zoom
   }, [zoom])
 
   // Ctrl/Cmd + wheel zoom on desktop.
@@ -359,11 +420,11 @@ export function Viewer() {
     const onWheel = (e: WheelEvent) => {
       if (!e.ctrlKey && !e.metaKey) return
       e.preventDefault()
-      setZoom((z) => Math.max(1, Math.min(4, z * (e.deltaY < 0 ? 1.1 : 1 / 1.1))))
+      zoomAt(zoomRef.current * (e.deltaY < 0 ? 1.1 : 1 / 1.1), e.clientX, e.clientY)
     }
     el.addEventListener('wheel', onWheel, { passive: false })
     return () => el.removeEventListener('wheel', onWheel)
-  }, [])
+  }, [zoomAt])
 
   // Hide the mouse cursor while performing once the mouse is idle.
   const [cursorHidden, setCursorHidden] = useState(false)
@@ -431,7 +492,7 @@ export function Viewer() {
               <Prefetch stops={stops} pos={pos} pages={pages} box={box} fit={fit} gap={gap} />
             </div>
           ) : (
-            <ScrollStrip scrollRef={scrollRef} pages={pages} box={box} zoom={zoom} gap={gap} ctx={ctx} horizontal={mode === 'horizontalScroll'} />
+            <ScrollStrip key={songId} onPage={onStripPage} scrollRef={scrollRef} pages={pages} box={box} zoom={zoom} gap={gap} ctx={ctx} horizontal={mode === 'horizontalScroll'} />
           )
         )}
         {song && !loading && pages.length === 0 && (
@@ -522,12 +583,13 @@ export function DisplayPageView({ dp, index, size, ctx, priority = true, clip }:
  * to the box it is shown in, so zooming or shrinking the stage never re-flows or clips it.
  */
 function TextPageView({ dp, size, night, paper, overlay, layoutWidth }: { dp: Extract<DisplayPage, { type: 'text' }>; size: Box; night: boolean; paper: string; overlay: React.ReactNode; layoutWidth: number }) {
+  const pageBadge = useSettings((st) => st.s.display.showPageNumber)
   const w = layoutWidth > 0 ? layoutWidth : size.width
   const h = w / dp.aspect
   const scale = size.width / w
   const gap = w * 0.04
   const style: CSSProperties = {
-    ...textContainerStyle(dp.opts.style, useViewer.getState().textZoom),
+    ...textContainerStyle(dp.opts.style, dp.zoom),
     width: w,
     height: h,
     padding: w * TEXT_PAGE_PADDING,
@@ -537,11 +599,13 @@ function TextPageView({ dp, size, night, paper, overlay, layoutWidth }: { dp: Ex
   return (
     <div className="relative overflow-hidden" style={{ width: size.width, height: size.height, background: PAPER[paper], filter: night ? 'invert(1) hue-rotate(180deg)' : undefined }}>
       <div style={style}>
-        <div className="flex h-full" style={{ gap }}>
+        <div data-text-columns className="flex h-full" style={{ gap }}>
           {dp.text.columns.map((col, i) => (
             <div key={i} className="min-w-0 flex-1">
               {col.map((b) => (
-                <div key={b.key}>{b.node}</div>
+                <div key={b.key} style={TEXT_BLOCK_STYLE}>
+                  {b.node}
+                </div>
               ))}
             </div>
           ))}
@@ -550,7 +614,8 @@ function TextPageView({ dp, size, night, paper, overlay, layoutWidth }: { dp: Ex
           ))}
         </div>
       </div>
-      {dp.count > 1 && (
+      {/* The stage's page-number badge sits in the same corner; only number text pages without it. */}
+      {dp.count > 1 && !pageBadge && (
         <div className="absolute bottom-2 right-3 text-[11px] opacity-40" style={{ color: dp.opts.style.lyricsColor }}>
           {dp.page + 1}/{dp.count}
         </div>
@@ -596,14 +661,9 @@ function PagedStop({ stop, pages, box, fit, zoom, gap, ctx, direction, transitio
 }
 
 function Prefetch({ stops, pos, pages, box, fit, gap }: { stops: Stop[]; pos: number; pages: DisplayPage[]; box: Box; fit: 'page' | 'width' | 'height'; gap: number }) {
-  const neighbours = [pos + 1, pos - 1, pos + 2].filter((i) => i >= 0 && i < stops.length)
-  const items: { dp: DisplayPage; i: number; size: Box }[] = []
-  for (const n of neighbours) {
-    const st = stops[n]
-    if (st.kind !== 'spread') continue
-    const sizes = stopBoxes(st, pages, box, fit, gap, 1)
-    st.pages.forEach((pi, k) => pages[pi].type === 'file' && items.push({ dp: pages[pi], i: pi, size: sizes[k] }))
-  }
+  const items = prefetchPages(stops, pos)
+    .filter(({ page }) => pages[page]?.type === 'file')
+    .map(({ stop, slot, page }) => ({ dp: pages[page], i: page, size: stopBoxes(stops[stop], pages, box, fit, gap, 1)[slot] }))
   const ctx: PageCtx = { song: undefined, textLayoutWidth: 0, night: false, paper: 'white', annotating: false, showAnnotations: false, onFollowLink: () => {} }
   return (
     <div aria-hidden className="pointer-events-none fixed -left-[20000px] top-0 opacity-0">
@@ -614,8 +674,23 @@ function Prefetch({ stops, pos, pages, box, fit, gap }: { stops: Stop[]; pos: nu
   )
 }
 
-function ScrollStrip({ scrollRef, pages, box, zoom, gap, ctx, horizontal }: { scrollRef: React.RefObject<HTMLDivElement | null>; pages: DisplayPage[]; box: Box; zoom: number; gap: number; ctx: PageCtx; horizontal: boolean }) {
+function ScrollStrip({ scrollRef, pages, box, zoom, gap, ctx, horizontal, onPage }: { scrollRef: React.RefObject<HTMLDivElement | null>; pages: DisplayPage[]; box: Box; zoom: number; gap: number; ctx: PageCtx; horizontal: boolean; onPage: (page: number) => void }) {
   const [visible, setVisible] = useState<Set<number>>(() => new Set([0, 1, 2]))
+  // Report the page in view (the strip owns the element, so this is attached whenever it exists).
+  useEffect(() => {
+    const el = scrollRef.current
+    if (!el) return
+    const onScroll = () => {
+      const ref = horizontal ? el.scrollLeft + el.clientWidth * 0.3 : el.scrollTop + el.clientHeight * 0.3
+      let cur = 0
+      el.querySelectorAll<HTMLElement>('[data-page]').forEach((it) => {
+        if ((horizontal ? it.offsetLeft : it.offsetTop) <= ref) cur = Number(it.dataset.page)
+      })
+      onPage(cur)
+    }
+    el.addEventListener('scroll', onScroll, { passive: true })
+    return () => el.removeEventListener('scroll', onScroll)
+  }, [scrollRef, horizontal, onPage])
   useEffect(() => {
     const root = scrollRef.current
     if (!root) return

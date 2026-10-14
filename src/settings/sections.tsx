@@ -72,8 +72,9 @@ const pct = (n: number) => `${Math.round(n * 100)}%`
 function AccentPicker() {
   const accent = useSettings((s) => s.s.accent)
   const set = useSettings((s) => s.set)
+  const current = ACCENTS[accent] ?? ACCENTS.ember
   return (
-    <Row label="Accent colour" hint="“Stage” is a strong red that stays easy to spot on a dark stage.">
+    <Row label="Accent colour" hint={`${current.label}: ${current.hint}`}>
       <div className="flex flex-wrap gap-2" role="radiogroup" aria-label="Accent colour">
         {(Object.keys(ACCENTS) as (keyof typeof ACCENTS)[]).map((id) => (
           <button

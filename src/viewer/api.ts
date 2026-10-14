@@ -5,6 +5,7 @@ import type { DisplayMode } from '../db/schema'
  * link points, sync). Populated by Viewer while a song is open; every member is safe to call when absent.
  */
 export interface ViewerApi {
+  songId: string
   mode: DisplayMode
   /** Number of display pages in the current song. */
   pageCount: number
@@ -27,4 +28,20 @@ export function setViewerApi(api: ViewerApi | null) {
 
 export function viewerApi(): ViewerApi | null {
   return current
+}
+
+/**
+ * Show a display page of a song once the viewer has laid that song out. Positions are layout units
+ * (spreads, half pages), so callers that know a page index (bookmarks, links to other songs, sync from
+ * a device with another layout) must go through the viewer instead of setting a position.
+ */
+export function goToPageWhenReady(songId: string, page: number, timeoutMs = 5000) {
+  const until = Date.now() + timeoutMs
+  const tick = () => {
+    const api = current
+    if (api?.songId === songId && api.pageCount > page) {
+      if (api.currentPage !== page) api.goToPage(page)
+    } else if (Date.now() < until) setTimeout(tick, 50)
+  }
+  tick()
 }

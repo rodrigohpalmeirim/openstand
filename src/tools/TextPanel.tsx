@@ -1,4 +1,4 @@
-import { Minus, Pause, PencilLine, Play, Plus, RotateCcw } from 'lucide-react'
+import { Minus, PencilLine, Play, Plus, RotateCcw, Square } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { playAbc, splitPageHint, tuneTitles, type AbcPlayer } from '../abc/engine'
 import { chordContext, songDiagrams } from '../chordpro/render'
@@ -347,7 +347,7 @@ function AbcPlayback({ source, transpose }: { source: string; transpose: number 
         disabled={state === 'loading'}
         className="flex h-11 w-full items-center justify-center gap-2 rounded-lg bg-[var(--os-accent)] text-sm font-semibold text-[var(--os-accent-fg)] disabled:opacity-60"
       >
-        {state === 'playing' ? <Pause className="size-4" /> : <Play className="size-4" />}
+        {state === 'playing' ? <Square className="size-4" /> : <Play className="size-4" />}
         {state === 'playing' ? 'Stop' : state === 'loading' ? 'Loading sounds…' : 'Play'}
       </button>
       <p className="mt-1.5 text-xs text-white/40">Instrument sounds are downloaded on first use.</p>

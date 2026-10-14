@@ -56,6 +56,26 @@ export function stopForPage(stops: Stop[], page: number): number {
   return i < 0 ? 0 : i
 }
 
+/**
+ * Pages of the neighbouring stops worth pre-rendering (next, previous, the one after next), each page
+ * once and none already visible; overlapping spreads (one-page or alternate turns) share pages.
+ */
+export function prefetchPages(stops: Stop[], pos: number): { stop: number; slot: number; page: number }[] {
+  const cur = stops[pos]
+  const seen = new Set(cur?.kind === 'spread' ? cur.pages : [])
+  const out: { stop: number; slot: number; page: number }[] = []
+  for (const n of [pos + 1, pos - 1, pos + 2]) {
+    const st = stops[n]
+    if (!st || st.kind !== 'spread') continue
+    st.pages.forEach((page, slot) => {
+      if (seen.has(page)) return
+      seen.add(page)
+      out.push({ stop: n, slot, page })
+    })
+  }
+  return out
+}
+
 /** First page shown by a stop (for page indicators, bookmarks, sync). */
 export function firstPageOf(stop: Stop | undefined): number {
   if (!stop) return 0

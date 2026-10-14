@@ -223,7 +223,7 @@ export function PageOrderEditor({
               onKeyDown={(e) => e.key === 'Enter' && applyText()}
             />
             <p className={cx('mt-1 text-xs', parsed.ok ? 'text-faint' : 'text-danger')}>
-              {parsed.ok ? `Pages are 1-based; ranges may run backwards; repeats allowed${files.length > 1 ? '; "2:1-3" = file 2' : ''}` : parsed.error}
+              {parsed.ok ? `Pages are 1-based; ranges may run backwards; repeats allowed${files.length > 1 ? '; "2:1-3" = file 2, and later numbers stay in it until another "N:"' : ''}` : parsed.error}
             </p>
           </div>
         </div>
@@ -280,7 +280,7 @@ export function PageOrderEditor({
               gridRef.current = el
               sort.ref(el)
             }}
-            className="grid grid-cols-[repeat(auto-fill,minmax(104px,1fr))] gap-3 sm:grid-cols-[repeat(auto-fill,minmax(132px,1fr))]">
+            className="grid grid-cols-[repeat(auto-fill,minmax(124px,1fr))] gap-3 sm:grid-cols-[repeat(auto-fill,minmax(132px,1fr))]">
             {st.items.map((it, i) => {
               const f = fileMap.get(it.ref.fileId)
               if (!f) return null
@@ -291,7 +291,7 @@ export function PageOrderEditor({
                   key={it.k}
                   data-sort-index={i}
                   className={cx(
-                    'group relative flex select-none flex-col items-center gap-1 rounded-xl border p-1.5 transition',
+                    'group relative flex min-w-0 select-none flex-col items-center gap-1 rounded-xl border p-1.5 transition',
                     sel === i ? 'border-accent bg-accent-soft' : 'border-transparent hover:bg-surface-2',
                     sort.dragging === i && 'z-10 scale-[1.03] shadow-xl ring-2 ring-accent',
                   )}

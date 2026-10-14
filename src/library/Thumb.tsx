@@ -61,7 +61,10 @@ async function makeThumb(song: Song): Promise<string | null> {
 
 /** Thumbnail of a song's first page (PDF/image), or an icon for text formats. */
 export function Thumb({ song, className = 'h-12 w-9' }: { song: Song; className?: string }) {
-  const key = `${song.id}:${thumbSource(song)?.sig ?? song.files[0]?.kind}`
+  // The icon follows the file of the first page in the page order, not simply the first file.
+  const first = resolvePageRefs(song)[0]
+  const kind = (first && song.files.find((f) => f.id === first.fileId)?.kind) ?? song.files[0]?.kind
+  const key = `${song.id}:${thumbSource(song)?.sig ?? kind}`
   const [url, setUrl] = useState<string | null>(urls.get(key) ?? null)
   useEffect(() => {
     if (urls.has(key)) return setUrl(urls.get(key)!)
@@ -81,9 +84,8 @@ export function Thumb({ song, className = 'h-12 w-9' }: { song: Song; className?
       alive = false
     }
   }, [key])
-  const kind = song.files[0]?.kind
   return (
-    <div className={cx(className, 'shrink-0 overflow-hidden rounded-md border border-line bg-white shadow-sm')}>
+    <div className={cx(className, 'shrink-0 overflow-hidden rounded-md border border-line shadow-sm', url ? 'bg-white' : 'bg-surface')}>
       {url ? (
         <img src={url} alt="" className="size-full object-cover object-top" loading="lazy" draggable={false} />
       ) : (

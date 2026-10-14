@@ -10,6 +10,7 @@ import { settings, useSettings } from '../state/settings'
 import { useViewer } from '../state/viewer'
 import { toast } from '../ui/primitives'
 import { ACTIONS, onAction, runAction, type ActionId } from '../viewer/actions'
+import { goToPageWhenReady, viewerApi } from '../viewer/api'
 import { on } from '../viewer/events'
 import {
   MIRRORED_ACTIONS,
@@ -65,7 +66,6 @@ let seq = 0
 const seen = new SeenSet()
 /** Last time we applied something from the room; local echoes inside this window aren't re-sent. */
 let lastRemoteApply = 0
-let lastLocalAction = 0
 let lastRemoteSongId: string | undefined
 const ECHO_MS = 700
 
@@ -115,7 +115,9 @@ async function currentState(): Promise<Extract<Body, { type: 'openSong' }> | nul
   const song = await songRef(id, songs)
   if (!song) return null
   const setlistName = v.setlistId ? (await db.setlists.get(v.setlistId))?.name : undefined
-  return { type: 'openSong', song, position: v.position, queue, index, setlistName }
+  const api = viewerApi()
+  const page = api?.songId === id ? api.currentPage : undefined
+  return { type: 'openSong', song, position: v.position, queue, index, setlistName, ...(page !== undefined ? { page } : {}) }
 }
 
 /** Re-announce what this device shows; followers jump to it. */
@@ -169,10 +171,12 @@ async function applyOpenSong(b: Extract<Body, { type: 'openSong' }>, from: strin
   const queue = q.index >= 0 ? q.ids : [current]
   const index = q.index >= 0 ? q.index : 0
   if (v.queue[v.index] === current && v.queue.length === queue.length && v.queue.every((id, i) => id === queue[i])) {
-    if (v.position !== b.position) v.setPosition(b.position)
+    if (b.page !== undefined) goToPageWhenReady(current, b.page)
+    else if (v.position !== b.position) v.setPosition(b.position)
     return
   }
-  v.open(queue, index, { position: b.position })
+  v.open(queue, index, { position: b.page !== undefined ? 0 : b.position })
+  if (b.page) goToPageWhenReady(current, b.page)
 }
 
 async function applySetlist(b: Extract<Body, { type: 'setlist' }>, fromName: string) {
@@ -248,7 +252,13 @@ function handle(data: string) {
       const v = useViewer.getState()
       const cur = v.queue[v.index]
       if (!cur || (cur !== b.songId && cur !== lastRemoteSongId)) return
-      if (v.position !== b.position) {
+      if (b.page !== undefined) {
+        const api = viewerApi()
+        if (api?.songId === cur && api.currentPage !== b.page) {
+          lastRemoteApply = Date.now()
+          api.goToPage(b.page)
+        }
+      } else if (v.position !== b.position) {
         lastRemoteApply = Date.now()
         v.setPosition(b.position)
       }
@@ -317,7 +327,6 @@ registerService(() => {
       if (source === 'remote' || !transports.length || !sends(settings().sync.role) || !MIRRORED_ACTIONS.includes(a)) return
       const v = useViewer.getState()
       if (!v.queue.length) return
-      lastLocalAction = Date.now()
       broadcast({ type: 'action', action: a, songId: v.queue[v.index] })
     }),
   )
@@ -329,11 +338,12 @@ registerService(() => {
       if (song.id === lastRemoteSongId && Date.now() - lastRemoteApply < 3000) return
       void currentState().then((st) => st && broadcast(st))
     }),
-    on('pageChanged', ({ songId, position }) => {
+    on('pageChanged', ({ songId, page, position }) => {
       if (!transports.length || !sends(settings().sync.role)) return
-      const now = Date.now()
-      if (now - lastLocalAction < ECHO_MS || now - lastRemoteApply < ECHO_MS) return
-      broadcast({ type: 'page', songId, position })
+      // Also sent after mirrored actions: receivers with another layout (two pages vs one) land on
+      // the same page instead of drifting; with the same layout it is a no-op.
+      if (Date.now() - lastRemoteApply < ECHO_MS) return
+      broadcast({ type: 'page', songId, position, page })
     }),
     useViewer.subscribe((st, prev) => {
       if (prev.queue.length && !st.queue.length && transports.length && sends(settings().sync.role) && Date.now() - lastRemoteApply > ECHO_MS) broadcast({ type: 'closeSong' })

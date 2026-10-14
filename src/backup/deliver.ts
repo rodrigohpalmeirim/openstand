@@ -43,6 +43,11 @@ export function downloadBlob(blob: Blob, name: string) {
   setTimeout(() => URL.revokeObjectURL(url), 60_000)
 }
 
+/** The save picker rejects MIME types with parameters ("text/plain;charset=utf-8"). */
+function pickerMime(mime: string) {
+  return mime.split(';')[0].trim() || 'application/octet-stream'
+}
+
 function extOf(name: string) {
   const m = /\.[^.]+$/.exec(name)
   return m ? m[0].toLowerCase() : ''
@@ -57,7 +62,7 @@ export async function pickSaveFile(name: string, description: string, mime: stri
   try {
     const picker = (window as unknown as { showSaveFilePicker: SavePicker }).showSaveFilePicker
     const ext = extOf(name)
-    return await picker({ suggestedName: name, types: ext ? [{ description, accept: { [mime]: [ext] } }] : undefined })
+    return await picker({ suggestedName: name, types: ext ? [{ description, accept: { [pickerMime(mime)]: [ext] } }] : undefined })
   } catch (e) {
     if (isAbort(e)) return null
     // Activation expired or picker blocked: fall back to download.
@@ -120,7 +125,7 @@ export async function deliverFiles(files: File[], opts: DeliverOptions = {}): Pr
       const ext = extOf(f.name)
       const handle = await picker({
         suggestedName: f.name,
-        types: ext ? [{ description: opts.description ?? 'File', accept: { [f.type || 'application/octet-stream']: [ext] } }] : undefined,
+        types: ext ? [{ description: opts.description ?? 'File', accept: { [pickerMime(f.type)]: [ext] } }] : undefined,
       })
       await writeToHandle(handle, f)
       toast(`Saved ${handle.name}`, 'ok')

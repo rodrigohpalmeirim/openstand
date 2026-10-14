@@ -8,6 +8,7 @@ import { pdfOutline, withPdf } from '../../files/pdf'
 import { db } from '../../db/db'
 import { useSettings } from '../../state/settings'
 import { Button, cx, Empty, Field, Input, Segmented, toast } from '../../ui/primitives'
+import { useTerms } from '../browse/terms'
 import { ChipInput } from '../editor/ChipInput'
 import { Section, ToggleRow } from '../editor/Sheet'
 import { createIndexSongs } from '../editor/songOps'
@@ -24,6 +25,7 @@ function pagesLabel(p: number[]) {
  */
 export function IndexImport({ onDone, onCancel }: { onDone: (r: ImportResult) => void; onCancel: () => void }) {
   const [pdf, setPdf] = useState<File | null>(null)
+  const t = useTerms()
   const [csv, setCsv] = useState<{ name: string; text: string } | null>(null)
   const [source, setSource] = useState<'bookmarks' | 'csv'>('bookmarks')
   const [numPages, setNumPages] = useState(0)
@@ -40,8 +42,9 @@ export function IndexImport({ onDone, onCancel }: { onDone: (r: ImportResult) =>
   const setIn = useSettings((s) => s.setIn)
   const input = useRef<HTMLInputElement>(null)
 
-  const pick = async (list: FileList | null) => {
-    for (const f of list ?? []) {
+  // Takes a copy: clearing the input's value empties its live FileList (Chromium) mid-loop.
+  const pick = async (list: File[]) => {
+    for (const f of list) {
       if (/\.pdf$/i.test(f.name) || f.type === 'application/pdf') {
         setPdf(f)
         setCollections((c) => (c.length ? c : [stripExt(f.name)]))
@@ -104,7 +107,7 @@ export function IndexImport({ onDone, onCancel }: { onDone: (r: ImportResult) =>
         return
       }
       const { id: _id, ...file } = r.file
-      setBusy(`Creating ${chosen.length} songs…`)
+      setBusy(`Creating ${t.count(chosen.length)}…`)
       const songs = await createIndexSongs(file, chosen, { collection: collections[0] })
       for (const extra of collections.slice(1)) for (const s of songs) s.collections.push(extra)
       if (autoCrop) {
@@ -125,7 +128,7 @@ export function IndexImport({ onDone, onCancel }: { onDone: (r: ImportResult) =>
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <input ref={input} type="file" multiple accept=".pdf,.csv,.txt,.tsv,application/pdf,text/csv" hidden onChange={(e) => (pick(e.target.files), (e.target.value = ''))} />
+      <input ref={input} type="file" multiple accept=".pdf,.csv,.txt,.tsv,application/pdf,text/csv" hidden onChange={(e) => (pick([...(e.target.files ?? [])]), (e.target.value = ''))} />
       <div className="flex min-h-0 flex-1 flex-col overflow-y-auto lg:flex-row lg:overflow-hidden">
         <div className="flex shrink-0 flex-col gap-3 p-4 sm:p-5 lg:min-h-0 lg:flex-1 lg:shrink lg:overflow-y-auto">
           <div className="flex flex-wrap items-center gap-2">
@@ -148,8 +151,8 @@ export function IndexImport({ onDone, onCancel }: { onDone: (r: ImportResult) =>
           </div>
           {!pdf && !csv ? (
             <div className="flex min-h-64 flex-1 items-center justify-center rounded-2xl border-2 border-dashed border-line">
-              <Empty icon={<BookOpen className="size-6" />} title="Split a songbook into songs">
-                Pick a PDF with bookmarks, or a PDF plus a CSV index (<code className="font-mono text-xs">title;pages;artist</code>). Every song shares the one PDF — no copies are made.
+              <Empty icon={<BookOpen className="size-6" />} title={`Split a songbook into ${t.songs}`}>
+                Pick a PDF with bookmarks, or a PDF plus a CSV index (<code className="font-mono text-xs">title;pages;artist</code>). Every {t.song} shares the one PDF — no copies are made.
               </Empty>
             </div>
           ) : (
@@ -167,7 +170,7 @@ export function IndexImport({ onDone, onCancel }: { onDone: (r: ImportResult) =>
                   <div className="flex items-center gap-2">
                     <div className="relative flex-1">
                       <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-faint" />
-                      <Input className="pl-9" placeholder={`Search ${entries.length} songs`} value={query} onChange={(e) => setQuery(e.target.value)} />
+                      <Input className="pl-9" placeholder={`Search ${t.count(entries.length)}`} value={query} onChange={(e) => setQuery(e.target.value)} />
                     </div>
                     <Button variant="ghost" size="sm" onClick={() => setSelected(selected.size === entries.length ? new Set() : new Set(entries.map((_, i) => i)))}>
                       {selected.size === entries.length ? 'Select none' : 'Select all'}
@@ -254,7 +257,7 @@ export function IndexImport({ onDone, onCancel }: { onDone: (r: ImportResult) =>
               </>
             )}
           </Section>
-          <Section title="Songs">
+          <Section title={t.Songs}>
             <Field label="Add to collection">
               <ChipInput aria-label="Add to collection" field="collections" value={collections} onChange={setCollections} placeholder="Optional" />
             </Field>
@@ -268,7 +271,7 @@ export function IndexImport({ onDone, onCancel }: { onDone: (r: ImportResult) =>
           Cancel
         </Button>
         <Button variant="primary" disabled={!pdf || !selected.size || !!busy} onClick={run} className={cx(busy && 'opacity-60')}>
-          Create {selected.size || ''} song{selected.size === 1 ? '' : 's'}
+          Create {selected.size ? t.count(selected.size) : t.songs}
         </Button>
       </footer>
     </div>

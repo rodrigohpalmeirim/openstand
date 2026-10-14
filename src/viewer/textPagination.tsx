@@ -10,6 +10,12 @@ export interface TextPage {
 export const TEXT_PAGE_PADDING = 0.05
 
 /**
+ * Wrapper style for every block, both when measuring and when rendering: a new block formatting
+ * context keeps each block's margins inside its own box, so measured heights add up exactly.
+ */
+export const TEXT_BLOCK_STYLE = { display: 'flow-root' } as const
+
+/**
  * Pack blocks into pages of the given CSS size. Each block is measured off-screen at the column width,
  * then greedily placed; explicit column/page breaks are honoured and headers stay with the next block.
  */
@@ -42,7 +48,7 @@ export function paginate(
     host.innerHTML = renderToStaticMarkup(
       <div style={textContainerStyle(style, zoom)}>
         {blocks.map((b) => (
-          <div key={b.key} data-block="">
+          <div key={b.key} data-block="" style={TEXT_BLOCK_STYLE}>
             {b.node}
           </div>
         ))}

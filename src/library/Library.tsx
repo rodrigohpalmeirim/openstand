@@ -18,6 +18,7 @@ import { Welcome } from './browse/Welcome'
 import { ContextMenuHost } from './browse/widgets'
 import { SongEditor } from './editor/SongEditor'
 import { ImportDialog } from './import/ImportDialog'
+import { importPackagesIn } from './import/packages'
 
 /** Library browser: sidebar (tablet/desktop) or drawer + bottom nav (phone), section views and dialogs. */
 export function Library() {
@@ -87,8 +88,14 @@ function LibraryShell() {
         e.preventDefault()
         dragDepth.current = 0
         setDragging(false)
+        const dropped = [...e.dataTransfer.files]
+        const hasPackages = dropped.some((f) => /\.(ospkg|osbackup)$/i.test(f.name))
         const sources = await sourcesFromDrop(e.dataTransfer)
-        if (!sources.length) return toast('No supported files found (PDF, images, ChordPro, text, ABC)', 'error')
+        if (hasPackages) await importPackagesIn(dropped)
+        if (!sources.length) {
+          if (!hasPackages) toast('No supported files found (PDF, images, ChordPro, text, ABC)', 'error')
+          return
+        }
         setUI({ importing: { initial: sources } })
       }}
     >
@@ -104,7 +111,7 @@ function LibraryShell() {
       <Drawer />
 
       <ImportDialog open={!!importing} onClose={() => setUI({ importing: null })} initial={importing?.initial} />
-      {editor && <SongEditor songId={editor.songId} initialTab={editor.tab} onClose={() => setUI({ editor: null })} />}
+      {editor && <SongEditor songId={editor.songId} initialTab={editor.tab} queue={editor.queue} onClose={() => setUI({ editor: null })} />}
       <AddToDialog />
       <BatchEditDialog />
       <LibraryPrefsDialog />

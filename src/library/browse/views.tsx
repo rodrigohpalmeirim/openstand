@@ -6,7 +6,7 @@ import { Button, confirmDialog, cx, Empty, IconButton, toast } from '../../ui/pr
 import { Thumb } from '../Thumb'
 import { useLibrary } from './data'
 import { collator, matchesTerms, normalize, queryTerms } from './logic'
-import { clearRecent, getRecentClearedAt, perform, performSetlist } from './ops'
+import { clearRecent, getRecentClearedAt, performAtPage, performSetlist } from './ops'
 import { setlistStats } from './SetlistsView'
 import { SearchBox, SongBrowser } from './SongBrowser'
 import { openSetlist } from './songActions'
@@ -212,7 +212,7 @@ export function BookmarksView() {
             <button
               key={b.key}
               className="flex w-full items-center gap-3 border-b border-line/60 px-3 py-2 text-left hover:bg-surface-2 md:px-4"
-              onClick={() => perform([b.song.id], 0, { position: b.pageIndex })}
+              onClick={() => performAtPage(b.song.id, b.pageIndex)}
             >
               <Thumb song={b.song} className="h-12 w-9" />
               <div className="min-w-0 flex-1">

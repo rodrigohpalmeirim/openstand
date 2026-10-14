@@ -5,6 +5,7 @@ import { capitalizeWords, formatDuration, parseDuration } from '../../files/impo
 import { ALL_KEYS, KEYS } from '../../music/chords'
 import { useSettings } from '../../state/settings'
 import { cx, Field, IconButton, Input, Popover, Select, Toggle, useMenu } from '../../ui/primitives'
+import { useTerms } from '../browse/terms'
 import { ChipInput } from './ChipInput'
 
 export type SongPatch = Partial<Song> | ((s: Song) => Song)
@@ -41,6 +42,7 @@ export function FieldsTab({ song, update, titleError, titleRef }: { song: Song; 
   const hidden = useSettings((s) => s.s.editor.hiddenFields)
   const capitalize = useSettings((s) => s.s.editor.capitalizeWords)
   const labels = useSettings((s) => s.s.fieldLabels)
+  const t = useTerms()
   const show = (k: string) => !hidden.includes(k)
   const label = (k: string) => labels[k] || CONFIGURABLE_FIELDS.find((f) => f.key === k)?.label || k
 
@@ -70,7 +72,7 @@ export function FieldsTab({ song, update, titleError, titleRef }: { song: Song; 
             ref={titleRef}
             value={song.title}
             autoCapitalize={capitalize ? 'words' : 'sentences'}
-            placeholder="Song title"
+            placeholder={`${t.Song} title`}
             aria-invalid={!!titleError}
             className={cx('h-11 text-base font-medium', titleError && 'border-danger')}
             onChange={(e) => update({ title: e.target.value })}
