@@ -1,20 +1,23 @@
 import { useLiveQuery } from 'dexie-react-hooks'
 import { AudioLines, FileStack, ListChecks, MoreHorizontal, NotebookPen, SlidersVertical } from 'lucide-react'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { db, uid } from '../../db/db'
 import { emptySong, type Song } from '../../db/schema'
 import { MidiCommandsEditor } from '../../midi/MidiCommandsEditor'
 import { Button, cx, Dialog, Menu, Textarea, toast, useMenu } from '../../ui/primitives'
 import { useTerms } from '../browse/terms'
+import { useBackHandler } from '../history'
 import { AudioTab } from './AudioTab'
 import { clearGroupValueCache } from './ChipInput'
-import { CropEditor } from './CropEditor'
 import { FieldsTab, type SongPatch } from './FieldsTab'
 import { FilesTab } from './FilesTab'
 import { normalizePageOrder } from './pageOrder'
-import { PageOrderEditor } from './PageOrderEditor'
 import { Sheet } from './Sheet'
 import { tidySettings } from './songEdit'
+
+// Full-screen sub-editors (pdf.js page rendering, pdf-lib flattening) load when first opened.
+const CropEditor = lazy(() => import('./CropEditor').then((m) => ({ default: m.CropEditor })))
+const PageOrderEditor = lazy(() => import('./PageOrderEditor').then((m) => ({ default: m.PageOrderEditor })))
 
 export type EditorTab = 'fields' | 'files' | 'audio' | 'midi' | 'notes'
 
@@ -43,6 +46,7 @@ export function SongEditor({
   initialTab = 'fields',
   queue,
   onSaved,
+  backLayer = 'editor',
 }: {
   songId: string | null
   onClose: () => void
@@ -51,6 +55,8 @@ export function SongEditor({
   queue?: string[]
   /** Called after every successful save. */
   onSaved?: (song: Song) => void
+  /** History layer whose Back press this editor handles (see library/history.ts). */
+  backLayer?: string
 }) {
   const [currentId, setCurrentId] = useState(songId)
   const [draft, setDraft] = useState<Song | null>(null)
@@ -140,6 +146,8 @@ export function SongEditor({
     else then()
   }
   const requestClose = () => guarded(onClose)
+  // Back closes the crop/page-order editor or the save prompt first, and asks before discarding edits.
+  useBackHandler(backLayer, () => (sub ? setSub(null) : guard ? setGuard(null) : requestClose()))
 
   const saveAndClose = async () => {
     const s = await save()
@@ -292,6 +300,7 @@ export function SongEditor({
         </div>
       </Sheet>
 
+      <Suspense fallback={<SubLoading />}>
       {draft && sub?.kind === 'order' && (
         <PageOrderEditor
           song={draft}
@@ -313,6 +322,7 @@ export function SongEditor({
           }}
         />
       )}
+      </Suspense>
 
       <Dialog
         open={!!guard}
@@ -353,5 +363,13 @@ export function SongEditor({
         </p>
       </Dialog>
     </>
+  )
+}
+
+function SubLoading() {
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-bg/60">
+      <div className="size-8 animate-spin rounded-full border-2 border-current border-t-transparent opacity-40" />
+    </div>
   )
 }

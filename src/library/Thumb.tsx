@@ -3,7 +3,7 @@ import { useEffect, useState } from 'react'
 import { db } from '../db/db'
 import type { Song } from '../db/schema'
 import { cx } from '../ui/primitives'
-import { pageSettingsKey, renderPage, resolvePageRefs } from '../viewer/pageSource'
+import { pageSettingsKey, resolvePageRefs } from '../files/pageRefs'
 
 const THUMB_WIDTH = 240
 const urls = new Map<string, string>()
@@ -24,21 +24,26 @@ async function limited<T>(fn: () => Promise<T>): Promise<T> {
 }
 
 /** Identity of what the thumbnail shows, so metadata-only edits don't trigger a re-render. */
-function thumbSource(song: Song) {
-  const ref = resolvePageRefs(song)[0]
+function thumbSource(song: Song, page = 0) {
+  const refs = resolvePageRefs(song)
+  const ref = refs[page] ?? refs[0]
   const file = ref && song.files.find((f) => f.id === ref.fileId)
   if (!file || (file.kind !== 'pdf' && file.kind !== 'image')) return null
   const ps = song.pageSettings?.[pageSettingsKey(file.id, ref.page)]
   return { file, ref, ps, sig: JSON.stringify([file.blobId, ref.page, ps?.rotation ?? 0, ps?.crop ?? null]) }
 }
 
-async function makeThumb(song: Song): Promise<string | null> {
-  const src = thumbSource(song)
+async function makeThumb(song: Song, page: number): Promise<string | null> {
+  const src = thumbSource(song, page)
   if (!src) return null
   const { file, ref, ps, sig } = src
-  const cached = await db.thumbs.get(song.id)
+  // Only first-page thumbnails are persisted (keyed by song id); other pages are cached in memory.
+  const persist = page === 0
+  const cached = persist ? await db.thumbs.get(song.id) : undefined
   if (cached && (cached.sig ? cached.sig === sig : cached.updatedAt >= song.modifiedAt)) return URL.createObjectURL(cached.data)
   const blob = await limited(async () => {
+    // The renderer (pdf.js) loads on the first thumbnail that isn't cached yet.
+    const { renderPage } = await import('../viewer/pageSource')
     const bmp = await renderPage(file, ref.page, THUMB_WIDTH, ps?.rotation ?? 0)
     const crop = ps?.crop ?? { top: 0, bottom: 0, left: 0, right: 0 }
     const sx = bmp.width * crop.left
@@ -55,16 +60,20 @@ async function makeThumb(song: Song): Promise<string | null> {
     return new Promise<Blob | null>((r) => c.toBlob(r, 'image/webp', 0.8))
   })
   if (!blob) return null
-  await db.thumbs.put({ id: song.id, data: blob, updatedAt: Date.now(), sig })
+  if (persist) await db.thumbs.put({ id: song.id, data: blob, updatedAt: Date.now(), sig })
   return URL.createObjectURL(blob)
 }
 
-/** Thumbnail of a song's first page (PDF/image), or an icon for text formats. */
-export function Thumb({ song, className = 'h-12 w-9' }: { song: Song; className?: string }) {
-  // The icon follows the file of the first page in the page order, not simply the first file.
-  const first = resolvePageRefs(song)[0]
-  const kind = (first && song.files.find((f) => f.id === first.fileId)?.kind) ?? song.files[0]?.kind
-  const key = `${song.id}:${thumbSource(song)?.sig ?? kind}`
+/**
+ * Thumbnail of a song's first page (PDF/image), or an icon for text formats. `page` (an index into the
+ * song's page order) shows another page instead, e.g. a bookmarked one.
+ */
+export function Thumb({ song, page = 0, className = 'h-12 w-9' }: { song: Song; page?: number; className?: string }) {
+  // The icon follows the file of the shown page in the page order, not simply the first file.
+  const refs = resolvePageRefs(song)
+  const shown = refs[page] ?? refs[0]
+  const kind = (shown && song.files.find((f) => f.id === shown.fileId)?.kind) ?? song.files[0]?.kind
+  const key = `${song.id}:${thumbSource(song, page)?.sig ?? kind}`
   const [url, setUrl] = useState<string | null>(urls.get(key) ?? null)
   useEffect(() => {
     if (urls.has(key)) return setUrl(urls.get(key)!)
@@ -72,7 +81,7 @@ export function Thumb({ song, className = 'h-12 w-9' }: { song: Song; className?
     let alive = true
     let p = pending.get(key)
     if (!p) {
-      p = makeThumb(song).catch(() => null)
+      p = makeThumb(song, page).catch(() => null)
       pending.set(key, p)
     }
     p.then((u) => {

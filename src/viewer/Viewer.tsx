@@ -13,10 +13,11 @@ import { setViewerApi } from './api'
 import { askGoToPage } from './askPage'
 import { emit } from './events'
 import { useKeyBindings, useStageGestures } from './input'
-import { computeStops, firstPageOf, fitPage, fitSpread, prefetchPages, stopForPage, type Box, type Stop } from './layout'
+import { computeStops, firstPageOf, fitPage, fitSpread, prefetchPages, scrollPageSize, stopForPage, type Box, type Stop } from './layout'
 import { LinkMarkers } from './LinkMarkers'
 import { PAPER, PageView } from './PageView'
 import { TEXT_BLOCK_STYLE, TEXT_PAGE_PADDING } from './textPagination'
+import { TextLayoutNotice, type TextLayoutSig } from './TextLayoutNotice'
 import { useDisplayPages, type DisplayPage } from './useDisplayPages'
 import { ViewerChrome } from './ViewerChrome'
 
@@ -81,17 +82,20 @@ export function Viewer() {
   const stageRef = useRef<HTMLDivElement>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
   const stageBox = useSize(stageRef)
-  // While annotating, the tool bar sits over the stage; lay pages out below it so the top is drawable.
-  const [topInset, setTopInset] = useState(0)
+  // Height of the top bar (title row, plus the tool bar while annotating). While annotating, paged
+  // layouts sit below it so the top is drawable; scroll modes always start the first page below it.
+  const [barH, setBarH] = useState(0)
   const annotatingNow = useViewer((v) => v.annotating)
   useLayoutEffect(() => {
-    if (!annotatingNow) return setTopInset(0)
     const el = document.querySelector<HTMLElement>('[data-viewer-top]')
     if (!el) return
-    const ro = new ResizeObserver(() => setTopInset(Math.round(el.getBoundingClientRect().height)))
+    const measure = () => setBarH(el.offsetHeight)
+    measure()
+    const ro = new ResizeObserver(measure)
     ro.observe(el)
     return () => ro.disconnect()
-  }, [annotatingNow])
+  }, [annotatingNow, !!song])
+  const topInset = annotatingNow ? barH : 0
   const box = useMemo(() => ({ width: stageBox.width, height: Math.max(1, stageBox.height - topInset) }), [stageBox, topInset])
   const landscape = stageBox.width > stageBox.height
   const textOnly = !!song && song.files.length > 0 && song.files.every((f) => f.kind === 'chordpro' || f.kind === 'text' || f.kind === 'abc')
@@ -121,6 +125,14 @@ export function Viewer() {
     columns: song?.text?.columns ?? (landscape && mode !== 'double' && stageBox.width > 900 ? 2 : 1),
     zoom: textZoom * (song?.text?.fontScale ?? 1),
   })
+  // The layout text pages were paginated at (annotations on them only line up at the same layout).
+  const firstText = pages.find((p) => p.type === 'text')
+  const textCols = firstText?.type === 'text' ? firstText.columns : 0
+  const fontScale = song?.text?.fontScale ?? 1
+  const layoutSig = useMemo<TextLayoutSig | null>(
+    () => (textCols ? { zoom: textZoom * fontScale, columns: textCols, width: Math.round(textBox.width), height: Math.round(textBox.height), transpose } : null),
+    [textCols, textZoom, fontScale, textBox, transpose],
+  )
   const stops = useMemo(
     () => computeStops(pages.length, mode, s.display.halfPageSplit, s.display.twoPageTurn),
     [pages.length, mode, s.display.halfPageSplit, s.display.twoPageTurn],
@@ -492,7 +504,20 @@ export function Viewer() {
               <Prefetch stops={stops} pos={pos} pages={pages} box={box} fit={fit} gap={gap} />
             </div>
           ) : (
-            <ScrollStrip key={songId} onPage={onStripPage} scrollRef={scrollRef} pages={pages} box={box} zoom={zoom} gap={gap} ctx={ctx} horizontal={mode === 'horizontalScroll'} />
+            <ScrollStrip
+              key={songId}
+              onPage={onStripPage}
+              scrollRef={scrollRef}
+              pages={pages}
+              box={stageBox}
+              fit={fit}
+              zoom={zoom}
+              gap={gap}
+              ctx={ctx}
+              horizontal={mode === 'horizontalScroll'}
+              topPad={barH}
+              scrollPad={toolbar || annotating ? barH : 0}
+            />
           )
         )}
         {song && !loading && pages.length === 0 && (
@@ -515,6 +540,18 @@ export function Viewer() {
           currentPage={currentPage}
           goToPage={goToPage}
           zoom={zoom}
+        />
+      )}
+      {song && (
+        <TextLayoutNotice
+          song={song}
+          pages={pages}
+          currentPage={currentPage}
+          sig={layoutSig}
+          top={toolbar || annotating ? barH : 0}
+          fontScale={fontScale}
+          savedTranspose={song.text?.transpose ?? 0}
+          annotationsShown={ctx.showAnnotations}
         />
       )}
     </div>
@@ -674,7 +711,7 @@ function Prefetch({ stops, pos, pages, box, fit, gap }: { stops: Stop[]; pos: nu
   )
 }
 
-function ScrollStrip({ scrollRef, pages, box, zoom, gap, ctx, horizontal, onPage }: { scrollRef: React.RefObject<HTMLDivElement | null>; pages: DisplayPage[]; box: Box; zoom: number; gap: number; ctx: PageCtx; horizontal: boolean; onPage: (page: number) => void }) {
+function ScrollStrip({ scrollRef, pages, box, fit, zoom, gap, ctx, horizontal, onPage, topPad, scrollPad }: { scrollRef: React.RefObject<HTMLDivElement | null>; pages: DisplayPage[]; box: Box; fit: 'page' | 'width' | 'height'; zoom: number; gap: number; ctx: PageCtx; horizontal: boolean; onPage: (page: number) => void; topPad: number; scrollPad: number }) {
   const [visible, setVisible] = useState<Set<number>>(() => new Set([0, 1, 2]))
   // Report the page in view (the strip owns the element, so this is attached whenever it exists).
   useEffect(() => {
@@ -711,13 +748,19 @@ function ScrollStrip({ scrollRef, pages, box, zoom, gap, ctx, horizontal, onPage
     root.querySelectorAll('[data-page]').forEach((el) => io.observe(el))
     return () => io.disconnect()
   }, [scrollRef, pages])
-  const maxW = Math.min(box.width, 1400)
+  // A thin seam between pages (the page-gap setting widens it); the strip starts below the top bar and
+  // ends above the bottom bar so neither hides the first or last system.
+  const seam = Math.max(gap, 4)
   return (
-    <div ref={scrollRef} className={`absolute inset-0 overflow-auto ${horizontal ? 'flex snap-x snap-mandatory' : ''}`} style={{ gap: Math.max(gap, 8) }}>
+    <div
+      ref={scrollRef}
+      className={`absolute inset-0 overflow-auto ${horizontal ? 'flex snap-x snap-mandatory' : ''}`}
+      style={horizontal ? { gap: Math.max(gap, 8) } : { paddingTop: topPad, paddingBottom: 56, scrollPaddingTop: scrollPad }}
+    >
       {pages.map((dp, i) => {
-        const size = horizontal ? fitPage(dp.aspect, box, 'page') : fitPage(dp.aspect, { width: maxW * zoom, height: Infinity }, 'width')
+        const size = horizontal ? fitPage(dp.aspect, box, 'page') : scrollPageSize(dp.aspect, box, fit, zoom)
         return (
-          <div key={dp.key} data-page={i} className={horizontal ? 'flex shrink-0 snap-start items-center justify-center' : 'mx-auto'} style={horizontal ? { width: box.width, height: box.height } : { width: size.width, height: size.height, marginBottom: Math.max(gap, 8) }}>
+          <div key={dp.key} data-page={i} className={horizontal ? 'flex shrink-0 snap-start items-center justify-center' : 'mx-auto'} style={horizontal ? { width: box.width, height: box.height } : { width: size.width, height: size.height, marginTop: i ? seam : 0 }}>
             {visible.has(i) ? <DisplayPageView dp={dp} index={i} size={size} ctx={ctx} /> : <div style={size} className="bg-white/5" />}
           </div>
         )

@@ -1,6 +1,5 @@
 import { ArrowDownUp, ChevronRight, FileDown, FolderMinus, ListMusic, ListPlus, MoreVertical, Pencil, Play, Plus, Trash2 } from 'lucide-react'
 import { useCallback, useDeferredValue, useMemo, useRef, useState } from 'react'
-import { exportTitleList } from '../../backup/exportSongs'
 import type { GroupField, Song } from '../../db/schema'
 import { useNav } from '../../state/nav'
 import { useSettings } from '../../state/settings'
@@ -78,7 +77,10 @@ function groupMenu(field: GroupField, g: GroupValue, songs: Song[], values: Grou
       label: 'Export title list',
       icon: <FileDown className="size-4" />,
       disabled: !g.count,
-      onSelect: () => exportTitleList(ids(), none ? t.group(field) : g.name, 'txt').catch((e) => toast(String(e), 'error')),
+      onSelect: () =>
+        import('../../backup/exportSongs')
+          .then((m) => m.exportTitleList(ids(), none ? t.group(field) : g.name, 'txt'))
+          .catch((e) => toast(String(e), 'error')),
     },
     ...(none
       ? []

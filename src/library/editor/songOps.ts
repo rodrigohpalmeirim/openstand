@@ -4,7 +4,7 @@
  */
 import { db, uid } from '../../db/db'
 import { emptySong, type GroupField, type PageRef, type Song, type SongFile } from '../../db/schema'
-import { resolvePageRefs } from '../../viewer/pageSource'
+import { resolvePageRefs } from '../../files/pageRefs'
 import type { IndexEntry } from '../../files/indexImport'
 import { parseDuration } from '../../files/import'
 import { uniqueTitle } from '../browse/logic'

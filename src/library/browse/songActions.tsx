@@ -13,7 +13,6 @@ import {
   type LucideIcon,
   Printer,
 } from 'lucide-react'
-import { exportSongFiles, exportSongsPackage, exportTitleList, printSongs } from '../../backup/exportSongs'
 import type { Song } from '../../db/schema'
 import { useNav } from '../../state/nav'
 import { confirmDialog, toast, type MenuItem } from '../../ui/primitives'
@@ -46,13 +45,18 @@ export async function confirmDelete(ids: string[], t: Terms, titles?: string): P
   return true
 }
 
+/** Export code (pdf-lib, zip) is loaded on first use to keep the library's startup bundle small. */
+const exporter = () => import('../../backup/exportSongs')
+
 export function exportItems(ids: string[], title: string, opts: { setlistIds?: string[] } = {}): MenuItem[] {
+  // A single setlist's title list keeps its order, set breaks and entry notes.
+  const list = { setlistId: opts.setlistIds?.length === 1 ? opts.setlistIds[0] : undefined }
   return [
-    { label: 'Share / export package', icon: ic(Package), onSelect: () => run('Export', () => exportSongsPackage(ids, opts)) },
-    { label: 'Export files', icon: ic(FileDown), onSelect: () => run('Export', () => exportSongFiles(ids)) },
-    { label: 'Title list (.txt)', icon: ic(FileDown), onSelect: () => run('Export', () => exportTitleList(ids, title, 'txt')) },
-    { label: 'Title list (.pdf)', icon: ic(FileDown), onSelect: () => run('Export', () => exportTitleList(ids, title, 'pdf')) },
-    { label: 'Print…', icon: ic(Printer), onSelect: () => run('Print', () => printSongs(ids, { withAnnotations: true, title })) },
+    { label: 'Share / export package', icon: ic(Package), onSelect: () => run('Export', async () => (await exporter()).exportSongsPackage(ids, opts)) },
+    { label: 'Export files', icon: ic(FileDown), onSelect: () => run('Export', async () => (await exporter()).exportSongFiles(ids)) },
+    { label: 'Title list (.txt)', icon: ic(FileDown), onSelect: () => run('Export', async () => (await exporter()).exportTitleList(ids, title, 'txt', list)) },
+    { label: 'Title list (.pdf)', icon: ic(FileDown), onSelect: () => run('Export', async () => (await exporter()).exportTitleList(ids, title, 'pdf', list)) },
+    { label: 'Print…', icon: ic(Printer), onSelect: () => run('Print', async () => (await exporter()).printSongs(ids, { withAnnotations: true, title })) },
   ]
 }
 

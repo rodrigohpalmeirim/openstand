@@ -15,9 +15,12 @@ import {
   StickyNote,
   Timer,
   Type,
+  X,
 } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { AnnotationToolbar } from '../annotations/AnnotationToolbar'
+import { chordContext } from '../chordpro/render'
+import { formatKey, makeTransposer } from '../music/chords'
 import type { DisplayMode, Song } from '../db/schema'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { db } from '../db/db'
@@ -25,7 +28,8 @@ import { useSettings } from '../state/settings'
 import { useViewer, type Panel } from '../state/viewer'
 import { SyncStatus } from '../sync/SyncStatus'
 import { ViewerAddons } from '../tools/ViewerAddons'
-import { cx, Menu, useMenu } from '../ui/primitives'
+import { cx, useMenu } from '../ui/primitives'
+import { DARK_VARS, DarkMenu } from './dark'
 import { askGoToPage } from './askPage'
 import { PagePreview } from './PagePreview'
 import { runAction } from './actions'
@@ -45,9 +49,7 @@ interface Props {
   zoom: number
 }
 
-/** Phones: secondary tools move into the More menu so the song title stays readable. */
-function useNarrow() {
-  const query = '(max-width: 639px)'
+function useMedia(query: string) {
   const [narrow, setNarrow] = useState(() => window.matchMedia?.(query).matches ?? false)
   useEffect(() => {
     const mq = window.matchMedia?.(query)
@@ -55,8 +57,28 @@ function useNarrow() {
     const on = () => setNarrow(mq.matches)
     mq.addEventListener('change', on)
     return () => mq.removeEventListener('change', on)
-  }, [])
+  }, [query])
   return narrow
+}
+
+/** Phones: secondary tools move into the More menu so the song title stays readable. */
+const useNarrow = () => useMedia('(max-width: 639px)')
+
+/** The key the song sounds in after transposition, with the original when it differs. */
+function keyLabel(song: Song, pages: DisplayPage[]): string | undefined {
+  const tp = pages.find((p) => p.type === 'text')
+  if (tp?.type === 'text') {
+    const c = chordContext(tp.cp, tp.opts)
+    if (c.soundKey) return c.originalKey && c.soundKey !== c.originalKey ? `Key ${c.soundKey} (orig. ${c.originalKey})` : `Key ${c.soundKey}`
+  }
+  const orig = song.keys[0]
+  if (!orig) return undefined
+  const ab = pages.find((p) => p.type === 'abc')
+  if (ab?.type === 'abc' && ab.transpose) {
+    const k = makeTransposer({ key: orig, semitones: ab.transpose }).key
+    if (k && formatKey(k) !== orig) return `Key ${formatKey(k)} (orig. ${orig})`
+  }
+  return `Key ${orig}`
 }
 
 function ChromeButton({ label, active, onClick, children, className }: { label: string; active?: boolean; onClick: () => void; children: React.ReactNode; className?: string }) {
@@ -68,7 +90,7 @@ function ChromeButton({ label, active, onClick, children, className }: { label: 
       aria-pressed={active}
       onClick={onClick}
       className={cx(
-        'inline-flex size-10 shrink-0 items-center justify-center rounded-xl transition',
+        'inline-flex size-10 shrink-0 items-center justify-center rounded-xl transition pointer-coarse:size-11',
         active ? 'bg-[var(--os-accent)] text-[var(--os-accent-fg)]' : 'text-white/85 hover:bg-white/10',
         className,
       )}
@@ -89,6 +111,9 @@ export function ViewerChrome(props: Props) {
   const [scrub, setScrub] = useState<{ index: number; left: number } | null>(null)
   const isText = pages.some((p) => p.type === 'text' || p.type === 'abc')
   const narrow = useNarrow()
+  // While annotating on small screens the drawing area matters more than the title row.
+  const compactAnnot = useMedia('(max-width: 639px), (max-height: 500px)') && v.annotating
+  const keyText = useMemo(() => keyLabel(song, pages), [song, pages])
 
   useEffect(() => {
     const on = () => setFs(!!document.fullscreenElement)
@@ -130,14 +155,15 @@ export function ViewerChrome(props: Props) {
           showChrome ? 'translate-y-0 opacity-100' : 'pointer-events-none -translate-y-full opacity-0',
         )}
       >
-        <div className="flex items-center gap-1 bg-gradient-to-b from-black/85 to-black/60 px-2 py-1.5 backdrop-blur-md pt-[max(0.375rem,env(safe-area-inset-top))]">
+        {compactAnnot && <div className="h-[env(safe-area-inset-top)] bg-neutral-950/85" />}
+        <div className={cx('flex items-center gap-1 bg-gradient-to-b from-black/85 to-black/60 px-2 py-1.5 backdrop-blur-md pt-[max(0.375rem,env(safe-area-inset-top))]', compactAnnot && 'hidden')}>
           <ChromeButton label="Back to library" onClick={() => v.close()}>
             <ChevronLeft className="size-5" />
           </ChromeButton>
           <div className="min-w-0 flex-1 px-1">
             <div className="truncate text-[15px] font-semibold leading-tight">{song.title}</div>
             <div className="truncate text-xs text-white/55">
-              {[song.artists.join(', '), song.keys[0] && `Key ${song.keys[0]}`, setlist && `${setlist.name} · ${v.index + 1}/${v.queue.length}`].filter(Boolean).join(' · ') ||
+              {[...(narrow ? [keyText, song.artists.join(', ')] : [song.artists.join(', '), keyText]), setlist && `${setlist.name} · ${v.index + 1}/${v.queue.length}`].filter(Boolean).join(' · ') ||
                 (v.queue.length > 1 ? `${v.index + 1} of ${v.queue.length}` : '')}
             </div>
           </div>
@@ -175,24 +201,27 @@ export function ViewerChrome(props: Props) {
                   <ListMusic className="size-[18px]" />
                 </ChromeButton>
               )}
-              <ChromeButton label="Display" active={v.panel === 'display'} onClick={() => togglePanel('display')}>
-                <MonitorCog className="size-[18px]" />
-              </ChromeButton>
+              {!narrow && (
+                <ChromeButton label="Display" active={v.panel === 'display'} onClick={() => togglePanel('display')}>
+                  <MonitorCog className="size-[18px]" />
+                </ChromeButton>
+              )}
               <button
                 ref={more.ref}
                 onClick={more.toggle}
                 aria-label="More"
-                className="inline-flex size-10 items-center justify-center rounded-xl text-white/85 hover:bg-white/10"
+                className="inline-flex size-10 shrink-0 items-center justify-center rounded-xl text-white/85 hover:bg-white/10 pointer-coarse:size-11"
               >
                 <MoreHorizontal className="size-5" />
               </button>
-              <Menu
+              <DarkMenu
                 anchor={more.anchor}
                 open={more.open}
                 onClose={more.close}
                 items={[
                   ...(narrow
                     ? [
+                        { label: 'Display', icon: <MonitorCog className="size-4" />, onSelect: () => togglePanel('display') },
                         { label: v.metronomeOn ? 'Metronome (on)' : 'Metronome', icon: <Timer className="size-4" />, onSelect: () => togglePanel('metronome') },
                         { label: v.autoScrollOn ? 'Stop auto-scroll' : 'Start auto-scroll', icon: <ScrollText className="size-4" />, onSelect: () => runAction('toggleAutoScroll') },
                         { label: 'Bookmarks', icon: <Bookmark className="size-4" />, onSelect: () => togglePanel('bookmarks') },
@@ -241,11 +270,12 @@ export function ViewerChrome(props: Props) {
               }}
               onPointerUp={() => setScrub(null)}
               onBlur={() => setScrub(null)}
-              className="h-1 flex-1 accent-[var(--os-accent)]"
+              className="h-10 min-w-0 flex-1 cursor-pointer accent-[var(--os-accent)] disabled:cursor-default disabled:opacity-40"
               disabled={pages.length < 2}
             />
             <button
-              className="min-w-16 rounded-md px-1 py-1 text-center text-xs tabular-nums text-white/70 hover:bg-white/10"
+              type="button"
+              className="h-10 min-w-16 shrink-0 rounded-lg px-2 text-center text-xs tabular-nums text-white/75 hover:bg-white/10"
               title="Go to page…"
               onClick={() => askGoToPage(pages.length, currentPage, goToPage)}
             >
@@ -260,16 +290,29 @@ export function ViewerChrome(props: Props) {
 
       {scrub && pages[scrub.index] && <PagePreview dp={pages[scrub.index]} index={scrub.index} total={pages.length} left={scrub.left} />}
 
-      {/* Side panel */}
+      {/* Side panel (a bottom sheet on phones, so the score stays visible above it) */}
       {panel && (
-        <div className="absolute bottom-0 right-0 top-0 z-30 flex w-full max-w-sm flex-col border-l border-white/10 bg-[#141416] text-white shadow-2xl animate-fade-in sm:top-14 sm:bottom-14 sm:right-2 sm:rounded-2xl sm:border">
-          <div className="flex items-center gap-2 border-b border-white/10 px-4 py-3">
+        <div
+          role="dialog"
+          aria-label={panel.title}
+          style={DARK_VARS}
+          className={cx(
+            'absolute z-30 flex flex-col border-white/10 bg-[#141416] text-white shadow-2xl',
+            // Segmented controls in every panel: the selected option reads as a solid white chip.
+            '[&_[role=radiogroup]>button[aria-checked=true]]:bg-white [&_[role=radiogroup]>button[aria-checked=true]]:text-neutral-900 [&_[role=radiogroup]>button[aria-checked=false]]:text-white/65',
+            narrow
+              ? 'inset-x-0 bottom-0 max-h-[min(70dvh,36rem)] rounded-t-2xl border-t animate-slide-up pb-[env(safe-area-inset-bottom)]'
+              : 'bottom-14 right-2 top-14 w-full max-w-sm rounded-2xl border animate-fade-in [@media(max-height:500px)]:bottom-2 [@media(max-height:500px)]:top-2',
+          )}
+        >
+          {narrow && <div className="mx-auto mt-2 h-1 w-10 shrink-0 rounded-full bg-white/20" aria-hidden />}
+          <div className={cx('flex items-center gap-2 border-b border-white/10 pl-4 pr-1.5', narrow ? 'py-1' : 'py-1.5')}>
             <h2 className="flex-1 text-sm font-semibold">{panel.title}</h2>
-            <button className="rounded-lg px-2 py-1 text-xs text-white/60 hover:bg-white/10" onClick={() => v.set({ panel: null })}>
-              Close
+            <button type="button" aria-label="Close panel" title="Close" className="inline-flex size-10 items-center justify-center rounded-xl text-white/60 hover:bg-white/10 hover:text-white pointer-coarse:size-11" onClick={() => v.set({ panel: null })}>
+              <X className="size-[18px]" />
             </button>
           </div>
-          <div className="min-h-0 flex-1 overflow-y-auto">
+          <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
             <panel.Component {...panelProps} />
           </div>
         </div>

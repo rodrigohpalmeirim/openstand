@@ -1,7 +1,7 @@
 /** Pure transformations of a draft Song used by the editor tabs (no DB access). */
 import type { PageRef, PageSettings, Song, SongFile } from '../../db/schema'
 import { rotateCrop } from '../../files/autoCrop'
-import { resolvePageRefs } from '../../viewer/pageSource'
+import { resolvePageRefs } from '../../files/pageRefs'
 import { normalizePageOrder } from './pageOrder'
 
 export const pageKey = (r: PageRef) => `${r.fileId}:${r.page}`

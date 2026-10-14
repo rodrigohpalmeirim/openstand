@@ -228,7 +228,7 @@ export function SettingsScreen() {
   const searching = query.trim().length > 0
   const mainRef = useRef<HTMLDivElement>(null)
 
-  const toLibrary = () => go({ name: 'library', section: 'songs' })
+  const toLibrary = () => go(useNav.getState().lastLibrary)
   const open = (id?: string) => {
     setQuery('')
     go({ name: 'settings', page: id })

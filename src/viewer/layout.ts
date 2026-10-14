@@ -90,6 +90,18 @@ export function fitPage(aspect: number, box: Box, fit: FitMode): Box {
   return byWidth.height <= box.height ? byWidth : { width: box.height * aspect, height: box.height }
 }
 
+/** Widest a page gets in vertical scroll with fit "width" (unless zoomed): wider is unreadable. */
+export const SCROLL_MAX_WIDTH = 1100
+
+/**
+ * Page size in vertical scroll mode. "Width" fills the strip up to SCROLL_MAX_WIDTH; "page" and
+ * "height" keep each page within the viewport height so landscape screens don't blow pages up.
+ */
+export function scrollPageSize(aspect: number, box: Box, fit: FitMode, zoom = 1): Box {
+  const b = fit === 'width' ? fitPage(aspect, { width: Math.min(box.width, SCROLL_MAX_WIDTH), height: Infinity }, 'width') : fitPage(aspect, box, 'page')
+  return { width: b.width * zoom, height: b.height * zoom }
+}
+
 /**
  * Sizes for the pages of a side-by-side spread: both pages share one height so they line up like a
  * book, scaled to fit the available box.

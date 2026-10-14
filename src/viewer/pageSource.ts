@@ -1,5 +1,5 @@
 import { getBlob } from '../db/db'
-import type { Crop, PageRef, Song, SongFile } from '../db/schema'
+import type { Crop, SongFile } from '../db/schema'
 import { loadPdf, pdfPageSize, renderPdfPage } from '../files/pdf'
 
 /** A single displayable page (PDF page, image, or a paginated slice of a text file). */
@@ -12,20 +12,7 @@ export interface PageItem {
   rotation: number
 }
 
-/** Resolve the ordered list of file pages for a song (text files are expanded later by pagination). */
-export function resolvePageRefs(song: Song): PageRef[] {
-  if (song.pageOrder?.length) {
-    const ids = new Set(song.files.map((f) => f.id))
-    return song.pageOrder.filter((r) => ids.has(r.fileId))
-  }
-  const refs: PageRef[] = []
-  for (const f of song.files) for (let p = 0; p < f.pageCount; p++) refs.push({ fileId: f.id, page: p })
-  return refs
-}
-
-export function pageSettingsKey(fileId: string, page: number) {
-  return `${fileId}:${page}`
-}
+export { pageSettingsKey, resolvePageRefs } from '../files/pageRefs'
 
 /* ------------------------------------------------------------ size cache */
 

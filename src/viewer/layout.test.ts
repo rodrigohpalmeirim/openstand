@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { computeStops, fitPage, fitSpread, prefetchPages, stopForPage } from './layout'
+import { computeStops, fitPage, fitSpread, prefetchPages, SCROLL_MAX_WIDTH, scrollPageSize, stopForPage } from './layout'
 
 describe('layout', () => {
   it('single and double stops', () => {
@@ -54,5 +54,22 @@ describe('layout', () => {
       { stop: 1, slot: 1, page: 3 },
     ])
     expect(prefetchPages(computeStops(3, 'halfPage'), 0).map((p) => p.page)).toEqual([1])
+  })
+})
+
+describe('scrollPageSize', () => {
+  const portrait = 612 / 792
+  it('keeps pages within the viewport height for fit page on landscape screens', () => {
+    const s = scrollPageSize(portrait, { width: 1280, height: 800 }, 'page')
+    expect(s.height).toBeCloseTo(800)
+    expect(s.width).toBeLessThan(700)
+  })
+  it('fills phone width for fit page', () => {
+    expect(scrollPageSize(portrait, { width: 390, height: 844 }, 'page').width).toBeCloseTo(390)
+  })
+  it('caps fit width unless zoomed', () => {
+    expect(scrollPageSize(portrait, { width: 1600, height: 900 }, 'width').width).toBe(SCROLL_MAX_WIDTH)
+    expect(scrollPageSize(portrait, { width: 800, height: 900 }, 'width').width).toBe(800)
+    expect(scrollPageSize(portrait, { width: 1600, height: 900 }, 'width', 1.5).width).toBe(SCROLL_MAX_WIDTH * 1.5)
   })
 })

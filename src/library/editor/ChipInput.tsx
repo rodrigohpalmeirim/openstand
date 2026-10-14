@@ -103,6 +103,8 @@ export function ChipInput({
     return rank(all, text, value)
   }, [suggestions, lib, text, value])
   const showList = focused && options.length > 0 && (text.trim() !== '' || !!showAllOnFocus)
+  // A single match for typed text is pre-selected, so Enter takes its existing spelling ("beat" → "The Beatles").
+  const active = !showList ? -1 : hi >= 0 && hi < options.length ? hi : text.trim() && options.length === 1 ? 0 : -1
 
   const commit = (raw: string) => {
     const parts = raw
@@ -174,7 +176,7 @@ export function ChipInput({
         aria-expanded={showList}
         aria-controls={listId}
         aria-autocomplete="list"
-        aria-activedescendant={hi >= 0 ? `${listId}-${hi}` : undefined}
+        aria-activedescendant={active >= 0 ? `${listId}-${active}` : undefined}
         autoCapitalize={capitalize ? 'words' : 'off'}
         autoComplete="off"
         inputMode={inputMode}
@@ -203,22 +205,21 @@ export function ChipInput({
           }
         }}
         onKeyDown={(e) => {
-          if (e.key === 'ArrowDown' && options.length) {
+          if ((e.key === 'ArrowDown' || e.key === 'ArrowUp') && showList) {
             e.preventDefault()
-            setHi((h) => (h + 1) % options.length)
-          } else if (e.key === 'ArrowUp' && options.length) {
-            e.preventDefault()
-            setHi((h) => (h <= 0 ? options.length - 1 : h - 1))
+            const n = options.length
+            const from = active >= 0 ? active : e.key === 'ArrowDown' ? -1 : n
+            setHi(e.key === 'ArrowDown' ? (from + 1) % n : (from - 1 + n) % n)
           } else if (e.key === 'Enter') {
-            if (showList && hi >= 0) {
+            if (active >= 0) {
               e.preventDefault()
-              commit(options[hi])
+              commit(options[active])
             } else if (text.trim()) {
               e.preventDefault()
               commit(text)
             }
           } else if (e.key === 'Tab' && text.trim()) {
-            if (!commit(showList && hi >= 0 ? options[hi] : text)) e.preventDefault()
+            if (!commit(active >= 0 ? options[active] : text)) e.preventDefault()
           } else if (e.key === 'Backspace' && !text && value.length) {
             remove(value.length - 1)
           } else if (e.key === 'Escape' && showList) {
@@ -236,10 +237,10 @@ export function ChipInput({
                 key={o}
                 id={`${listId}-${i}`}
                 role="option"
-                aria-selected={i === hi}
+                aria-selected={i === active}
                 onPointerDown={(e) => e.preventDefault()}
                 onClick={() => commit(o)}
-                className={cx('cursor-pointer truncate px-3 py-2 text-sm', i === hi ? 'bg-accent-soft text-accent' : 'hover:bg-surface-2')}
+                className={cx('cursor-pointer truncate px-3 py-2 text-sm', i === active ? 'bg-accent-soft text-accent' : 'hover:bg-surface-2')}
               >
                 {o}
               </li>

@@ -1,15 +1,17 @@
-import { lazy, Suspense, useEffect } from 'react'
+import { lazy, Suspense, useEffect, useState } from 'react'
+import { useHistorySync } from './library/history'
 import { Library } from './library/Library'
 import { useNav } from './state/nav'
 import { useSettings } from './state/settings'
 import { useViewer } from './state/viewer'
 import { AskHost, ToastProvider } from './ui/primitives'
 import { startBackgroundServices } from './services'
-import { TextEditorHost } from './textedit/TextEditor'
 
 // Screens not needed to show the library are split out to keep startup light on tablets.
 const SettingsScreen = lazy(() => import('./settings/SettingsScreen').then((m) => ({ default: m.SettingsScreen })))
 const Viewer = lazy(() => import('./viewer/Viewer').then((m) => ({ default: m.Viewer })))
+// The text editor is only opened from the viewer, so its host mounts once the viewer has been used.
+const TextEditorHost = lazy(() => import('./textedit/TextEditor').then((m) => ({ default: m.TextEditorHost })))
 
 function Loading({ dark }: { dark?: boolean }) {
   return (
@@ -36,9 +38,13 @@ function useTheme() {
 
 export default function App() {
   useTheme()
+  // Back button / gesture closes the viewer, editors and dialogs, then walks back through sections.
+  useHistorySync()
   const route = useNav((n) => n.route)
   const performing = useViewer((v) => v.queue.length > 0)
   useEffect(() => startBackgroundServices(), [])
+  const [textHost, setTextHost] = useState(false)
+  if (performing && !textHost) setTextHost(true)
   return (
     <ToastProvider>
       <div className="h-full" aria-hidden={performing || undefined} inert={performing || undefined}>
@@ -55,7 +61,11 @@ export default function App() {
           <Viewer />
         </Suspense>
       )}
-      <TextEditorHost />
+      {textHost && (
+        <Suspense fallback={null}>
+          <TextEditorHost />
+        </Suspense>
+      )}
       <AskHost />
     </ToastProvider>
   )

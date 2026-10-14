@@ -1,4 +1,5 @@
-import { X } from 'lucide-react'
+import { Music2, Square, X } from 'lucide-react'
+import { stopAbc, useAbcPlayback } from '../abc/playback'
 import { useEffect, useState } from 'react'
 import type { Song } from '../db/schema'
 import { useSettings } from '../state/settings'
@@ -88,5 +89,24 @@ export function CornerOverlays({ song, isText }: { song: Song; isText: boolean }
         <div className={`pointer-events-none absolute z-10 rounded-lg bg-[var(--os-accent)] px-2.5 py-1 text-sm font-bold text-[var(--os-accent-fg)] shadow ${CORNER[capoCorner]}`}>Capo {capo}</div>
       )}
     </>
+  )
+}
+
+/** ABC playback keeps going with the Text panel closed; this pill shows it and stops it. */
+export function AbcNowPlaying({ song }: { song: Song }) {
+  const pb = useAbcPlayback()
+  const toolbar = useViewer((v) => v.toolbar || v.annotating)
+  const panel = useViewer((v) => v.panel)
+  if (pb.state === 'idle' || pb.songId !== song.id || panel === 'text') return null
+  return (
+    <div className="absolute left-3 z-20 animate-pop-in" style={{ bottom: `calc(${toolbar ? 64 : 12}px + env(safe-area-inset-bottom))` }}>
+      <div className="flex items-center gap-2 rounded-full border border-white/10 bg-neutral-900/92 py-1 pl-3 pr-1 text-sm text-white shadow-2xl backdrop-blur-xl">
+        <Music2 className={`size-4 text-[var(--os-accent)] ${pb.state === 'playing' ? 'animate-pulse' : ''}`} />
+        <span className="max-w-[40vw] truncate text-white/85">{pb.state === 'loading' ? 'Loading sounds…' : (pb.title ?? 'Playing')}</span>
+        <button type="button" onClick={stopAbc} aria-label="Stop playback" className="flex size-10 items-center justify-center rounded-full bg-white/10 hover:bg-white/20">
+          <Square className="size-3.5 fill-current" />
+        </button>
+      </div>
+    </div>
   )
 }

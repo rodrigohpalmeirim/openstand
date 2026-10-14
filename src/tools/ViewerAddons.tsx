@@ -2,7 +2,7 @@ import type { PanelProps } from '../viewer/panels'
 import { MiniPlayer } from './audio/MiniPlayer'
 import { AutoScroller } from './autoScroll/AutoScroller'
 import { MetronomeOverlay } from './metronome/MetronomeOverlay'
-import { CornerOverlays, NotesPopup, PickBanner } from './overlays'
+import { AbcNowPlaying, CornerOverlays, NotesPopup, PickBanner } from './overlays'
 import { useToolActions } from './useToolActions'
 
 /**
@@ -22,6 +22,7 @@ export function ViewerAddons(props: PanelProps) {
       <CornerOverlays song={song} isText={isText} />
       <NotesPopup song={song} />
       <MiniPlayer song={song} />
+      <AbcNowPlaying song={song} />
       <PickBanner />
     </>
   )

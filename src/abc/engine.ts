@@ -39,9 +39,23 @@ export function splitPageHint(source: string): { body: string; from?: number; to
   return { body: source.slice(m[0].length), from: Number(m[1]), to: Number(m[2]), layoutWidth: Number(m[3]) }
 }
 
-/** Layout width (abcjs px) for a display width: narrow screens render a wider staff scaled down. */
+/**
+ * Layout width (abcjs px) for a display width. Notation is laid out at roughly its natural size
+ * (scale ≈ 1, larger with text zoom); narrow layouts reflow to fewer bars per line (see `wrapFor`)
+ * instead of squeezing the file's line breaks into a tiny staff.
+ */
 export function layoutWidthFor(contentWidth: number, zoom = 1): number {
-  return Math.round(Math.max(contentWidth, 640) / Math.max(0.4, zoom))
+  // Phones: draw slightly smaller than natural size so two bars of quavers still fit a line.
+  const natural = contentWidth < WRAP_BELOW ? contentWidth / 0.85 : contentWidth
+  return Math.round(Math.max(natural, 260) / Math.max(0.4, zoom))
+}
+
+/** Below this layout width the file's own line breaks no longer fit legibly, so abcjs re-wraps. */
+export const WRAP_BELOW = 600
+
+export function wrapFor(layoutWidth: number) {
+  if (layoutWidth >= WRAP_BELOW) return undefined
+  return { preferredMeasuresPerLine: layoutWidth < 360 ? 1 : layoutWidth < 480 ? 2 : 3, minSpacing: 1.4, maxSpacing: 2.4, lastLineLimit: 0.5 }
 }
 
 /** Effective transposition: viewer transpose plus a MobileSheets-style %%mstranspose in the file. */
@@ -94,6 +108,7 @@ export function layoutAbc(source: string, opts: { layoutWidth: number; transpose
       paddingtop: 6,
       paddingbottom: 6,
       oneSvgPerLine: true,
+      wrap: wrapFor(opts.layoutWidth),
       visualTranspose: transpose || undefined,
       germanAlphabet: german || undefined,
       add_classes: true,

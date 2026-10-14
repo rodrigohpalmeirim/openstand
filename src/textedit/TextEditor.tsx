@@ -1,3 +1,4 @@
+import { closeTextEditor, openTextEditor, useTextEditor } from './store'
 /**
  * Full-screen editor for ChordPro, plain-text and ABC files with live preview, insert templates,
  * chord tap mode, whole-file transposition, text → ChordPro conversion and find/replace.
@@ -18,7 +19,6 @@ import {
   X,
 } from 'lucide-react'
 import { useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { create } from 'zustand'
 import { AbcView } from '../abc/AbcView'
 import { transposeAbcText } from '../abc/engine'
 import { looksLikeChordPro, parseChordPro, songChords, textToChordPro } from '../chordpro/parse'
@@ -34,23 +34,13 @@ import { fileText } from '../viewer/useDisplayPages'
 
 /* ------------------------------------------------------------------ store */
 
-interface EditorTarget {
-  songId: string
-  fileId: string
-}
-
-const useTextEditor = create<{ target: EditorTarget | null }>(() => ({ target: null }))
-
-/** Open the full-screen text editor for a file of a song. */
-export function openTextEditor(songId: string, fileId: string) {
-  useTextEditor.setState({ target: { songId, fileId } })
-}
+export { openTextEditor }
 
 /** Mount once (App.tsx); renders the editor while one is open. */
 export function TextEditorHost() {
   const target = useTextEditor((s) => s.target)
   if (!target) return null
-  return <TextEditor key={`${target.songId}:${target.fileId}`} {...target} onClose={() => useTextEditor.setState({ target: null })} />
+  return <TextEditor key={`${target.songId}:${target.fileId}`} {...target} onClose={closeTextEditor} />
 }
 
 /* -------------------------------------------------------------- templates */

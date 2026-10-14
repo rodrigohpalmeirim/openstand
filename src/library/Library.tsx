@@ -1,10 +1,10 @@
-import { useEffect, useRef, useState } from 'react'
+import { lazy, Suspense, useEffect, useRef, useState } from 'react'
 import type { GroupField } from '../db/schema'
 import { sourcesFromFileList, type ImportSource } from '../files/import'
 import { kindOf } from '../files/kinds'
-import { useNav, type Route } from '../state/nav'
+import { useNav, type LibraryRoute, type Route } from '../state/nav'
 import { toast } from '../ui/primitives'
-import { LibraryDataProvider } from './browse/data'
+import { LibraryDataProvider, useLibrary } from './browse/data'
 import { AddToDialog, BatchEditDialog, LibrariesDialog, LibraryPrefsDialog } from './browse/dialogs'
 import { GroupListView, GroupSongsView } from './browse/GroupsView'
 import './browse/libraries' // opens the active library before the first query
@@ -12,13 +12,46 @@ import { SetlistDetail } from './browse/SetlistDetail'
 import { SetlistsView } from './browse/SetlistsView'
 import { BottomNav, Drawer, Sidebar } from './browse/Sidebar'
 import { isGroupSection, useTerms } from './browse/terms'
+import { NONE } from './browse/GroupsView'
+import { songHasValue } from './browse/logic'
 import { useLibraryUI } from './browse/ui'
 import { BookmarksView, FavoritesView, RecentView, SongsView } from './browse/views'
 import { Welcome } from './browse/Welcome'
 import { ContextMenuHost } from './browse/widgets'
-import { SongEditor } from './editor/SongEditor'
-import { ImportDialog } from './import/ImportDialog'
 import { importPackagesIn } from './import/packages'
+
+// Editors and the import wizard are big and only needed on demand.
+const SongEditor = lazy(() => import('./editor/SongEditor').then((m) => ({ default: m.SongEditor })))
+const ImportDialog = lazy(() => import('./import/ImportDialog').then((m) => ({ default: m.ImportDialog })))
+
+function Loading() {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30">
+      <div className="size-8 animate-spin rounded-full border-2 border-white border-t-transparent opacity-70" />
+    </div>
+  )
+}
+
+/** Whether a (restored) library route still points at something that exists. */
+function routeExists(r: LibraryRoute, lib: ReturnType<typeof useLibrary>): boolean {
+  if (r.section === 'setlists') return !r.setlistId || lib.setlists.some((s) => s.id === r.setlistId)
+  if (!isGroupSection(r.section)) return ['songs', 'recent', 'favorites', 'bookmarks'].includes(r.section)
+  if (r.group === undefined || r.group === NONE) return true
+  const field = r.section
+  return lib.songs.some((s) => songHasValue(s, field, r.group!)) || (field === 'collections' && lib.extraCollections.includes(r.group))
+}
+
+/** The library section is restored from the last session; fall back to Songs if it's gone. */
+function useValidateRestoredRoute() {
+  const lib = useLibrary()
+  const checked = useRef(false)
+  useEffect(() => {
+    if (checked.current || !lib.loaded) return
+    checked.current = true
+    const { route, go } = useNav.getState()
+    if (route.name === 'library' && !routeExists(route, lib)) go({ name: 'library', section: 'songs' })
+  }, [lib])
+}
 
 /** Library browser: sidebar (tablet/desktop) or drawer + bottom nav (phone), section views and dialogs. */
 export function Library() {
@@ -57,6 +90,7 @@ function LibraryShell() {
   const setUI = useLibraryUI((u) => u.set)
   const [dragging, setDragging] = useState(false)
   const dragDepth = useRef(0)
+  useValidateRestoredRoute()
 
   useEffect(() => {
     document.title = route.name === 'library' ? `${t.section(route.section)} · OpenStand` : 'OpenStand'
@@ -110,8 +144,10 @@ function LibraryShell() {
       </div>
       <Drawer />
 
-      <ImportDialog open={!!importing} onClose={() => setUI({ importing: null })} initial={importing?.initial} />
-      {editor && <SongEditor songId={editor.songId} initialTab={editor.tab} queue={editor.queue} onClose={() => setUI({ editor: null })} />}
+      <Suspense fallback={<Loading />}>
+        {importing && <ImportDialog open onClose={() => setUI({ importing: null })} initial={importing.initial} />}
+        {editor && <SongEditor songId={editor.songId} initialTab={editor.tab} queue={editor.queue} onClose={() => setUI({ editor: null })} />}
+      </Suspense>
       <AddToDialog />
       <BatchEditDialog />
       <LibraryPrefsDialog />

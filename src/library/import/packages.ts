@@ -1,4 +1,3 @@
-import { importPackage } from '../../backup/exportSongs'
 import { settings } from '../../state/settings'
 import { toast } from '../../ui/primitives'
 import { terms } from '../browse/terms'
@@ -16,6 +15,7 @@ export async function importPackagesIn(files: File[]): Promise<File[]> {
       continue
     }
     try {
+      const { importPackage } = await import('../../backup/exportSongs')
       const r = await importPackage(f)
       if (r.songs || r.setlists) toast(`Imported ${terms(settings()).count(r.songs)}${r.setlists ? ` and ${r.setlists} setlist${r.setlists === 1 ? '' : 's'}` : ''}`, 'ok')
     } catch (e) {

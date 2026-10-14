@@ -22,10 +22,14 @@ const MODE_ICONS: Record<DisplayMode, React.ReactNode> = {
   horizontalScroll: <GalleryHorizontal className="size-4" />,
 }
 
+/** Segmented controls on the always-dark viewer: readable unselected labels, finger-sized on touch. */
+export const DARK_SEG =
+  '!bg-white/5 !border-white/10 [&>button[aria-checked=false]]:!text-white/65 [&>button[aria-checked=true]]:!bg-white [&>button[aria-checked=true]]:!text-neutral-900 pointer-coarse:[&>button]:!h-9'
+
 function Row({ label, children }: { label: React.ReactNode; children: React.ReactNode }) {
   return (
     <div className="flex items-center justify-between gap-4 py-2">
-      <span className="text-sm text-white/80">{label}</span>
+      <span className="shrink-0 text-sm text-white/80">{label}</span>
       {children}
     </div>
   )
@@ -86,7 +90,7 @@ export function DisplayPanel({ song, pages, currentPage, mode }: PanelProps) {
       <section>
         <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-white/50">Fit</h3>
         <Segmented
-          className="w-full !bg-white/5 !border-white/10"
+          className={`w-full ${DARK_SEG}`}
           value={fit}
           onChange={(f) => setSongDisplay({ fit: f })}
           options={[
@@ -104,7 +108,7 @@ export function DisplayPanel({ song, pages, currentPage, mode }: PanelProps) {
         <Row label="Paper">
           <Segmented
             size="sm"
-            className="!bg-white/5 !border-white/10"
+            className={DARK_SEG}
             value={s.display.paperTone}
             onChange={(v) => setIn('display', { paperTone: v })}
             options={[
@@ -122,7 +126,7 @@ export function DisplayPanel({ song, pages, currentPage, mode }: PanelProps) {
         <Row label="Page turn">
           <Segmented
             size="sm"
-            className="!bg-white/5 !border-white/10"
+            className={DARK_SEG}
             value={s.display.transition}
             onChange={(v) => setIn('display', { transition: v })}
             options={[
@@ -136,7 +140,7 @@ export function DisplayPanel({ song, pages, currentPage, mode }: PanelProps) {
           <Row label="Turns">
             <Segmented
               size="sm"
-              className="!bg-white/5 !border-white/10"
+              className={DARK_SEG}
               value={s.display.twoPageTurn}
               onChange={(v) => setIn('display', { twoPageTurn: v })}
               options={[
@@ -154,6 +158,33 @@ export function DisplayPanel({ song, pages, currentPage, mode }: PanelProps) {
         )}
         <Row label="Page numbers">
           <Toggle checked={s.display.showPageNumber} onChange={(v) => setIn('display', { showPageNumber: v })} />
+        </Row>
+      </section>
+
+      <section className="divide-y divide-white/10">
+        <h3 className="mb-1 text-xs font-semibold uppercase tracking-wider text-white/50">On-screen</h3>
+        <Row label="Clock">
+          <Segmented
+            size="sm"
+            className={DARK_SEG}
+            value={s.overlays.clock}
+            onChange={(v) => setIn('overlays', { clock: v })}
+            options={[
+              { value: 'off', label: 'Off' },
+              { value: 'tl', label: '↖', title: 'Top left' },
+              { value: 'tr', label: '↗', title: 'Top right' },
+              { value: 'bl', label: '↙', title: 'Bottom left' },
+              { value: 'br', label: '↘', title: 'Bottom right' },
+            ]}
+          />
+        </Row>
+        {s.overlays.clock !== 'off' && (
+          <Row label="24-hour clock">
+            <Toggle checked={s.overlays.clock24h} onChange={(v) => setIn('overlays', { clock24h: v })} />
+          </Row>
+        )}
+        <Row label={<span>Capo badge<span className="block text-xs text-white/45">Chord songs that use a capo</span></span>}>
+          <Toggle checked={s.overlays.capo} onChange={(v) => setIn('overlays', { capo: v })} />
         </Row>
       </section>
 

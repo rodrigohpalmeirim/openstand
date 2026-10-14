@@ -1,6 +1,7 @@
 import { Minus, PencilLine, Play, Plus, RotateCcw, Square } from 'lucide-react'
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { playAbc, splitPageHint, tuneTitles, type AbcPlayer } from '../abc/engine'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import { splitPageHint, tuneTitles } from '../abc/engine'
+import { startAbc, stopAbc, useAbcPlayback } from '../abc/playback'
 import { chordContext, songDiagrams } from '../chordpro/render'
 import { metaFirst } from '../chordpro/parse'
 import { updateSong } from '../db/db'
@@ -10,11 +11,12 @@ import { formatKey, makeTransposer, NAMINGS, type NoteNaming } from '../music/ch
 import { loadInstrument, type Instrument } from '../music/diagrams'
 import { useSettings } from '../state/settings'
 import { useViewer } from '../state/viewer'
-import { openTextEditor } from '../textedit/TextEditor'
+import { openTextEditor } from '../textedit/store'
 import { Segmented, Slider, toast, Toggle } from '../ui/primitives'
+import { DARK_SEG } from '../viewer/DisplayPanel'
 import type { PanelProps } from '../viewer/panels'
 
-const seg = '!bg-white/5 !border-white/10 [&>button[aria-checked=false]]:!text-white/65'
+const seg = DARK_SEG
 
 function Row({ label, hint, children }: { label: ReactNode; hint?: ReactNode; children: ReactNode }) {
   return (
@@ -148,7 +150,7 @@ export function TextPanel({ song, pages, currentPage }: PanelProps) {
         )}
       </section>
 
-      {abcSource && <AbcPlayback source={abcSource} transpose={total} />}
+      {abcSource && <AbcPlayback source={abcSource} transpose={total} songId={song.id} />}
 
       <section className="divide-y divide-white/10">
         <H>Text</H>
@@ -294,35 +296,17 @@ function DiagramList({ textPage, chords }: { textPage: Extract<PanelProps['pages
   )
 }
 
-function AbcPlayback({ source, transpose }: { source: string; transpose: number }) {
+function AbcPlayback({ source, transpose, songId }: { source: string; transpose: number; songId: string }) {
   const titles = useMemo(() => tuneTitles(source), [source])
-  const [tune, setTune] = useState(0)
-  const [state, setState] = useState<'idle' | 'loading' | 'playing'>('idle')
-  const player = useRef<AbcPlayer | null>(null)
-  useEffect(() => () => player.current?.stop(), [])
-  const toggle = async () => {
-    if (player.current) {
-      player.current.stop()
-      player.current = null
-      setState('idle')
-      return
-    }
-    setState('loading')
-    try {
-      player.current = await playAbc(source, {
-        tune,
-        transpose,
-        onEnd: () => {
-          player.current = null
-          setState('idle')
-        },
-      })
-      setState('playing')
-    } catch (e) {
-      player.current = null
-      setState('idle')
-      toast(`Playback failed: ${e instanceof Error ? e.message : String(e)}`, 'error')
-    }
+  const pb = useAbcPlayback()
+  const mine = pb.songId === songId
+  const state = mine ? pb.state : 'idle'
+  const [tune, setTune] = useState(() => (mine ? pb.tune : 0))
+  const toggle = () => {
+    if (state !== 'idle') return stopAbc()
+    startAbc(source, { songId, tune, transpose, title: titles[tune] }).catch((e) =>
+      toast(`Playback failed: ${e instanceof Error ? e.message : String(e)}`, 'error'),
+    )
   }
   return (
     <section>
@@ -344,13 +328,12 @@ function AbcPlayback({ source, transpose }: { source: string; transpose: number 
       <button
         type="button"
         onClick={toggle}
-        disabled={state === 'loading'}
         className="flex h-11 w-full items-center justify-center gap-2 rounded-lg bg-[var(--os-accent)] text-sm font-semibold text-[var(--os-accent-fg)] disabled:opacity-60"
       >
-        {state === 'playing' ? <Square className="size-4" /> : <Play className="size-4" />}
-        {state === 'playing' ? 'Stop' : state === 'loading' ? 'Loading sounds…' : 'Play'}
+        {state !== 'idle' ? <Square className="size-4" /> : <Play className="size-4" />}
+        {state === 'playing' ? 'Stop' : state === 'loading' ? 'Loading sounds… (tap to cancel)' : 'Play'}
       </button>
-      <p className="mt-1.5 text-xs text-white/40">Instrument sounds are downloaded on first use.</p>
+      <p className="mt-1.5 text-xs text-white/40">Keeps playing when you close this panel. Instrument sounds are downloaded on first use.</p>
     </section>
   )
 }

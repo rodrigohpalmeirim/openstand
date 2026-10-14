@@ -1,9 +1,8 @@
 import { looksLikeChordPro, metaFirst, parseChordPro, stripMarkup, textToChordPro } from '../chordpro/parse'
-import { db, putBlob, uid } from '../db/db'
+import { db, getBlob, putBlob, uid } from '../db/db'
 import { emptySong, GROUP_FIELDS, type FileKind, type GroupField, type Song, type SongFile } from '../db/schema'
 import { parseAbcHeader } from './abcMeta'
 import { kindOf, mimeOf, stripExt } from './kinds'
-import { pdfMetaTitle, withPdf } from './pdf'
 
 /**
  * Filename metadata pattern, e.g. "%artist% - %title%". Tokens (case-insensitive): %title% %artist%
@@ -249,6 +248,8 @@ export async function readImportFile(src: ImportSource): Promise<ReadFileResult>
   let pdfTitle: string | undefined
   if (kind === 'pdf') {
     try {
+      // pdf.js is loaded on demand so the library starts without it.
+      const { pdfMetaTitle, withPdf } = await import('./pdf')
       ;[pageCount, pdfTitle] = await withPdf(buf, async (doc) => [doc.numPages, await pdfMetaTitle(doc)] as const)
     } catch (e) {
       const msg = String((e as Error)?.name ?? e)
@@ -405,13 +406,58 @@ export async function createTextSong(title: string, body: string, kind: FileKind
   return song
 }
 
-/** Replace the contents of a text file inside a song (text/ChordPro/ABC editors). */
-export async function updateTextFile(song: Song, fileId: string, body: string): Promise<Song> {
+const META_FIELDS: GroupField[] = ['artists', 'composers', 'albums', 'keys', 'signatures', 'years', 'genres', 'sources']
+const sameValues = (a: readonly unknown[] = [], b: readonly unknown[] = []) =>
+  a.length === b.length && a.every((v) => b.some((w) => String(w).toLowerCase() === String(v).toLowerCase()))
+
+/**
+ * After a song's text file was edited, carry metadata changes from the file into the song — but only
+ * for values that still come from the file (equal to what the old content gave, or empty), so values
+ * the user edited in the song itself are never overwritten. Mutates and returns `song`.
+ */
+export function refreshMetaFromText(song: Song, kind: FileKind, oldText: string, newText: string, fileName = ''): Song {
+  const read = (text: string) => {
+    const s = emptySong({ id: '', title: '' })
+    try {
+      metadataFromText(kind, text, s)
+    } catch {
+      /* unparsable: treat as no metadata */
+    }
+    return s
+  }
+  const was = read(oldText)
+  const now = read(newText)
+  const title = song.title.trim()
+  if (now.title && now.title !== was.title && (!title || title === was.title || (!was.title && (title === stripExt(fileName) || title === 'Untitled'))))
+    song.title = now.title
+  for (const f of META_FIELDS) if (!sameValues(now[f], was[f]) && (!song[f].length || sameValues(song[f], was[f]))) song[f] = [...now[f]]
+  if (now.duration !== was.duration && (!song.duration || song.duration === was.duration)) song.duration = now.duration
+  if (!sameValues(now.tempos, was.tempos) && (!song.tempos?.length || sameValues(song.tempos, was.tempos))) song.tempos = now.tempos?.length ? [...now.tempos] : undefined
+  const bpm = (s: Song) => s.metronome?.bpm
+  if (bpm(now) !== bpm(was) && (bpm(song) === undefined || bpm(song) === bpm(was))) {
+    if (bpm(now) !== undefined) song.metronome = { ...song.metronome, bpm: bpm(now) }
+    else if (song.metronome) delete song.metronome.bpm
+  }
+  return song
+}
+
+/**
+ * Replace the contents of a text file inside a song (text/ChordPro/ABC editors), refreshing song
+ * metadata that was derived from the file (see `refreshMetaFromText`).
+ */
+export async function updateTextFile(song: Song, fileId: string, body: string, kind?: FileKind): Promise<Song> {
   const buf = new TextEncoder().encode(body).buffer as ArrayBuffer
   const { id: blobId, size } = await putBlob(buf, 'text/plain;charset=utf-8')
   const next = structuredClone(song)
   const f = next.files.find((x) => x.id === fileId)
   if (f) {
+    const k = kind ?? f.kind
+    if (k === 'chordpro' || k === 'text' || k === 'abc') {
+      const old = await getBlob(f.blobId)
+        .then((b) => b.text())
+        .catch(() => '')
+      refreshMetaFromText(next, k, old, body, f.name)
+    }
     f.blobId = blobId
     f.size = size
   }

@@ -8,8 +8,11 @@ import {
   matchPattern,
   parseDuration,
   previewSource,
+  previewWithContent,
+  refreshMetaFromText,
   stripCommonRoot,
 } from './import'
+import { emptySong } from '../db/schema'
 
 describe('import patterns', () => {
   it('matches filename patterns', () => {
@@ -45,6 +48,36 @@ describe('import patterns', () => {
     expect(p.song.artists).toEqual(['Miles Davis'])
     expect(p.song.genres).toEqual(['Jazz'])
     expect(previewSource({ file }, { filePattern: '%title% (%key%)' })).toMatchObject({ matched: false, song: { title: 'Miles Davis - So What' } })
+  })
+  it('previews titles read from file content like the import does', () => {
+    const file = new File(['x'], 'Band - track01.cho')
+    const opts = { filePattern: '%artist% - %title%' }
+    const p = previewWithContent({ file }, opts, { text: '{title: Real Title}\n{key: D}\n[D]la' })
+    expect(p).toMatchObject({ matched: true, titleFromContent: true, song: { title: 'Real Title', artists: ['Band'], keys: ['D'] } })
+    expect(previewWithContent({ file }, opts).song.title).toBe('track01')
+    const abc = previewWithContent({ file: new File(['x'], 'tune.abc') }, {}, { text: 'X:1\nT:Reel\nC:Trad\nK:G\n|GABc|' })
+    expect(abc.song).toMatchObject({ title: 'Reel', composers: ['Trad'], keys: ['G'] })
+    const pdf = new File(['x'], 'scan001.pdf', { type: 'application/pdf' })
+    expect(previewWithContent({ file: pdf }, { pdfTitle: true }, { pdfTitle: 'Sonata' }).song.title).toBe('Sonata')
+    expect(previewWithContent({ file: pdf }, { pdfTitle: false }, { pdfTitle: 'Sonata' }).song.title).toBe('scan001')
+  })
+  it('refreshes file-derived metadata after a text edit without clobbering user edits', () => {
+    const oldText = '{title: Old}\n{artist: Ann}\n{key: C}\n{tempo: 100}\n[C]x'
+    const newText = '{title: New}\n{artist: Bob}\n{key: D}\n{tempo: 120}\n{album: LP}\n[D]x'
+    const derived = emptySong({ id: 's', title: 'Old', artists: ['Ann'], keys: ['C'], tempos: [100], metronome: { bpm: 100 } })
+    refreshMetaFromText(derived, 'chordpro', oldText, newText)
+    expect(derived).toMatchObject({ title: 'New', artists: ['Bob'], keys: ['D'], albums: ['LP'], tempos: [120], metronome: { bpm: 120 } })
+    const edited = emptySong({ id: 's', title: 'My Title', artists: ['Someone Else'], keys: ['C'], tempos: [90] })
+    refreshMetaFromText(edited, 'chordpro', oldText, newText)
+    expect(edited).toMatchObject({ title: 'My Title', artists: ['Someone Else'], keys: ['D'], tempos: [90] })
+    // A file that gains a title replaces a title that was just the file name.
+    const named = emptySong({ id: 's', title: 'song1' })
+    refreshMetaFromText(named, 'chordpro', '[C]x', '{title: Found}\n[C]x', 'song1.cho')
+    expect(named.title).toBe('Found')
+    // Unchanged metadata leaves everything alone.
+    const same = emptySong({ id: 's', title: 'Mine', artists: [] })
+    refreshMetaFromText(same, 'chordpro', oldText, oldText + '\nmore')
+    expect(same).toMatchObject({ title: 'Mine', artists: [] })
   })
   it('capitalizes words without lowering the rest', () => {
     expect(capitalizeWords('the long and winding road')).toBe('The Long And Winding Road')

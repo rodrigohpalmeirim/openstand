@@ -1,6 +1,6 @@
 /**
- * Annotation tool bar, shown under the viewer's top bar while annotating. One scrollable row on
- * phones; popovers hold the less frequent options (palette, size, stamps, presets, layers).
+ * Annotation tool bar, shown under the viewer's top bar while annotating. One row on tablets and
+ * desktops, two rows (tools / options) on phones; popovers hold the less frequent options (palette, size, stamps, presets, layers).
  */
 import {
   ArrowDown,
@@ -38,7 +38,8 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type { Annotation, Song } from '../db/schema'
 import { uid } from '../db/db'
 import { settings, useSettings } from '../state/settings'
-import { confirmDialog, cx, Popover, promptDialog, Segmented, Slider, toast, Toggle, useMenu } from '../ui/primitives'
+import { confirmDialog, cx, promptDialog, Segmented, Slider, toast, Toggle, useMenu } from '../ui/primitives'
+import { DarkPop } from '../viewer/dark'
 import { registerActions, runAction } from '../viewer/actions'
 import { itemSize } from './geometry'
 import { addLayer, countLayerItems, deleteLayer, moveLayer, renameLayer, setCurrentLayer, setLayerVisible, useSongLayers } from './layers'
@@ -126,31 +127,7 @@ function TB({ label, active, disabled, onClick, children, className, btnRef }: {
   )
 }
 
-const Sep = () => <div className="mx-1 h-6 w-px shrink-0 bg-white/15" />
-
-/**
- * The viewer is always dark, but theme tokens resolve at :root, so a nested `.dark` class does
- * not re-theme primitives. Re-declare the colour tokens for popover content instead.
- */
-const DARK_VARS = {
-  '--color-bg': '#0f1011',
-  '--color-surface': '#17181a',
-  '--color-surface-2': '#1e1f22',
-  '--color-surface-3': '#2a2b2f',
-  '--color-line': '#2c2d31',
-  '--color-fg': '#ecebe8',
-  '--color-muted': '#a09d96',
-  '--color-faint': '#6f6c66',
-  colorScheme: 'dark',
-} as React.CSSProperties
-
-function DarkPop({ className, children, ...rest }: Omit<React.ComponentProps<typeof Popover>, 'className'> & { className?: string }) {
-  return (
-    <Popover {...rest} className={cx('border-[#2c2d31]! bg-[#17181a]! text-[#ecebe8]!', className)}>
-      <div style={DARK_VARS}>{children}</div>
-    </Popover>
-  )
-}
+const Sep = () => <div className="mx-1 h-6 w-px shrink-0 bg-white/15 max-lg:hidden" />
 
 function Swatch({ color, active, onClick, label, size = 'md' }: { color: string; active?: boolean; onClick: () => void; label?: string; size?: 'sm' | 'md' }) {
   return (
@@ -510,12 +487,24 @@ function LayersPopover({ anchor, open, onClose, songId, hasSelection }: { anchor
   )
 }
 
-function MorePopover({ anchor, open, onClose, songId }: { anchor: HTMLElement | null; open: boolean; onClose: () => void; songId: string }) {
+function MorePopover({ anchor, open, onClose, songId, onPresets }: { anchor: HTMLElement | null; open: boolean; onClose: () => void; songId: string; onPresets?: () => void }) {
   const a = useSettings((s) => s.s.annotations)
   const setA = (p: Partial<typeof a>) => useSettings.getState().setIn('annotations', p)
   const item = 'flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-sm hover:bg-white/10'
   return (
     <DarkPop anchor={anchor} open={open} onClose={onClose} align="end" className="w-[min(92vw,19rem)] p-2">
+      {onPresets && (
+        <button
+          type="button"
+          className={item}
+          onClick={() => {
+            onClose()
+            onPresets()
+          }}
+        >
+          <Star className="size-4 text-muted" /> Presets…
+        </button>
+      )}
       <button
         type="button"
         className={item}
@@ -617,6 +606,18 @@ function MorePopover({ anchor, open, onClose, songId }: { anchor: HTMLElement | 
 
 /* ---------------------------------------------------------------- Toolbar */
 
+function useMedia(query: string) {
+  const [narrow, setNarrow] = useState(() => window.matchMedia?.(query).matches ?? false)
+  useEffect(() => {
+    const mq = window.matchMedia?.(query)
+    if (!mq) return
+    const on = () => setNarrow(mq.matches)
+    mq.addEventListener('change', on)
+    return () => mq.removeEventListener('change', on)
+  }, [query])
+  return narrow
+}
+
 const isTyping = (t: EventTarget | null) => t instanceof HTMLElement && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))
 
 export function AnnotationToolbar({ song, onDone }: { song: Song; onDone: () => void }) {
@@ -624,6 +625,11 @@ export function AnnotationToolbar({ song, onDone }: { song: Song; onDone: () => 
   const tempEraser = useAnnotUI((s) => s.tempEraser)
   const selection = useAnnotUI((s) => s.selection)
   const { canUndo, canRedo } = useAnnotHistory()
+  // Phones and portrait tablets get two rows (tools / options) instead of one row that would hide
+  // tools off-screen; short landscape screens keep one compact row to save drawing height.
+  const twoRow = useMedia('(max-width: 899px) and (min-height: 501px)')
+  const phone = useMedia('(max-width: 480px)')
+  const roomy = useMedia('(min-width: 720px)')
   const layers = useSongLayers(song.id)
   const tool: ToolId = tempEraser ? 'eraser' : a.tool
   const cfg = toolConfig(tool, a.tools)
@@ -738,70 +744,175 @@ export function AnnotationToolbar({ song, onDone }: { song: Song; onDone: () => 
   const currentLayer = layers.layers.find((l) => l.id === layers.current)
   const sizeDot = Math.max(3, Math.min(18, tool === 'eraser' ? cfg.size / 5 : tool === 'text' || tool === 'stamp' ? cfg.size / 4 : cfg.size * (tool === 'highlighter' ? 0.4 : 1.4)))
 
+  const undoBtn = (
+    <TB label="Undo (Ctrl+Z)" disabled={!canUndo} onClick={doUndo}>
+      <Undo2 className="size-[18px]" />
+    </TB>
+  )
+  const redoBtn = (
+    <TB label="Redo (Ctrl+Shift+Z)" disabled={!canRedo} onClick={doRedo}>
+      <Redo2 className="size-[18px]" />
+    </TB>
+  )
+  const toolBtns = (
+    <>
+      {(['pen', 'highlighter', 'eraser', 'select', 'text'] as ToolId[]).map(toolBtn)}
+      <TB label="Stamp" active={tool === 'stamp'} btnRef={stampM.ref} onClick={() => (tool === 'stamp' ? stampM.toggle() : setTool('stamp'))}>
+        {tool === 'stamp' ? <StampGlyph id={cfg.stamp ?? 'fermata'} className="h-5 max-w-8 text-[15px]" /> : <ToolIcon tool="stamp" />}
+      </TB>
+      <TB label={`Shapes (${TOOL_LABEL[lastShape]})`} active={isShapeTool(tool)} btnRef={shapeM.ref} onClick={() => (isShapeTool(tool) ? shapeM.toggle() : setTool(lastShape))}>
+        <ToolIcon tool={isShapeTool(tool) ? tool : lastShape} />
+        <span className="absolute bottom-1 right-1 size-0 border-l-[4px] border-t-[4px] border-l-transparent border-t-current opacity-60" />
+      </TB>
+    </>
+  )
+  const colorBtn = (
+    <button
+      ref={colorM.ref}
+      type="button"
+      onClick={colorM.toggle}
+      aria-label="Colour and opacity"
+      title="Colour and opacity"
+      className="inline-flex size-10 shrink-0 items-center justify-center rounded-xl hover:bg-white/10 pointer-coarse:size-11 disabled:opacity-30"
+      disabled={tool === 'eraser' || (tool === 'select' && !selItems)}
+    >
+      <span className="size-6 rounded-full border-2 border-white/80 shadow" style={{ background: shownColor, opacity: Math.max(0.35, shownOpacity) }} />
+    </button>
+  )
+  const sizeBtn = (
+    <TB label="Size and options" btnRef={optsM.ref} onClick={optsM.toggle} disabled={tool === 'select' && !selItems}>
+      <span className="rounded-full bg-current" style={{ width: sizeDot, height: sizeDot }} />
+    </TB>
+  )
+  const selectionBtns = selItems && (
+    <>
+      {!phone && <span className="shrink-0 px-1 text-xs tabular-nums text-white/60">{selItems.length} selected</span>}
+      <TB label="Delete selection (Del)" onClick={deleteSelection}>
+        <Trash2 className="size-[18px]" />
+      </TB>
+      <TB label="Duplicate (Ctrl+D)" onClick={duplicateSelection}>
+        <CopyPlus className="size-[18px]" />
+      </TB>
+      <TB
+        label="Copy (Ctrl+C)"
+        onClick={() => {
+          const n = copySelection()
+          toast(n > 1 ? `${n} annotations copied` : '1 annotation copied')
+        }}
+      >
+        <Copy className="size-[18px]" />
+      </TB>
+      <TB label="Bring to front" onClick={() => reorderSelection(true)}>
+        <BringToFront className="size-[18px]" />
+      </TB>
+      <TB label="Deselect (Esc)" onClick={() => useAnnotUI.setState({ selection: null })}>
+        <X className="size-[18px]" />
+      </TB>
+    </>
+  )
+  const layersBtn = (
+    <TB label={`Layers (${currentLayer?.name ?? 'Default'})`} btnRef={layerM.ref} onClick={layerM.toggle}>
+      <LayersIcon className="size-[18px]" />
+      {layers.layers.length > 1 && (
+        <span className="absolute right-0.5 top-0.5 min-w-4 rounded-full bg-[var(--os-accent)] px-1 text-[10px] font-semibold leading-4 text-[var(--os-accent-fg)]">{layers.layers.length}</span>
+      )}
+    </TB>
+  )
+  const moreBtn = (
+    <TB label="More" btnRef={moreM.ref} onClick={moreM.toggle}>
+      <Ellipsis className="size-[18px]" />
+    </TB>
+  )
+  const pageBtns = (
+    <>
+      <TB label="Previous page" onClick={() => runAction('prevPage', 'touch')}>
+        <ChevronLeft className="size-5" />
+      </TB>
+      <TB label="Next page" onClick={() => runAction('nextPage', 'touch')}>
+        <ChevronRight className="size-5" />
+      </TB>
+    </>
+  )
+  const doneBtn = (
+    <button
+      type="button"
+      onClick={onDone}
+      aria-label="Done annotating"
+      title="Done (D)"
+      className={cx(
+        'inline-flex h-10 shrink-0 items-center justify-center gap-1.5 rounded-xl bg-[var(--os-accent)] text-sm font-semibold text-[var(--os-accent-fg)] hover:brightness-110 pointer-coarse:h-11',
+        phone ? 'mr-1.5 w-11' : twoRow ? 'mr-2 px-3.5' : 'mr-2 px-3.5 shadow-[-12px_0_12px_-6px_rgba(0,0,0,0.6)] max-lg:w-11 max-lg:px-0',
+      )}
+    >
+      <Check className="size-4" />
+      {!phone && <span className={twoRow ? '' : 'hidden lg:inline'}>Done</span>}
+    </button>
+  )
+  const rowCls = 'flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto py-1 pl-1.5 pr-1 [scrollbar-width:none]'
+  // On the smallest phones buttons may give up a few pixels rather than scroll out of sight.
+  const shrinkable = '[&>button]:!shrink [&>button]:min-w-9'
+
   return (
     <div className="border-t border-white/10 bg-neutral-950/85 text-white backdrop-blur-md" onPointerDown={(e) => e.stopPropagation()}>
+      {twoRow ? (
+        <>
+          <div className="flex items-center">
+            <div className={cx(rowCls, shrinkable)} role="toolbar" aria-label="Annotation tools">
+              {toolBtns}
+            </div>
+            {doneBtn}
+          </div>
+          <div className={cx(rowCls, shrinkable, 'border-t border-white/5 pr-1.5')} role="toolbar" aria-label="Annotation options">
+            {undoBtn}
+            {redoBtn}
+            {colorBtn}
+            {roomy && (
+              <div className="flex shrink-0 items-center gap-1 px-1">
+                {PALETTE.slice(0, 6).map((c) => (
+                  <Swatch key={c} color={c} active={c === shownColor} onClick={() => applyStyle({ color: c })} />
+                ))}
+              </div>
+            )}
+            {sizeBtn}
+            {selItems ? (
+              <>
+                <div className="min-w-1 flex-1" />
+                {selectionBtns}
+              </>
+            ) : (
+              <>
+                {!phone && (
+                  <TB label="Presets" btnRef={presetM.ref} onClick={presetM.toggle}>
+                    <Star className="size-[18px]" />
+                  </TB>
+                )}
+                {layersBtn}
+                {moreBtn}
+                <div className="min-w-1 flex-1" />
+                {pageBtns}
+              </>
+            )}
+          </div>
+        </>
+      ) : (
       <div className="flex items-center">
       <div className="flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto py-1.5 pl-2 pr-1 [scrollbar-width:none]" role="toolbar" aria-label="Annotation tools">
-        <TB label="Undo (Ctrl+Z)" disabled={!canUndo} onClick={doUndo}>
-          <Undo2 className="size-[18px]" />
-        </TB>
-        <TB label="Redo (Ctrl+Shift+Z)" disabled={!canRedo} onClick={doRedo}>
-          <Redo2 className="size-[18px]" />
-        </TB>
+        {undoBtn}
+        {redoBtn}
         <Sep />
-        {(['pen', 'highlighter', 'eraser', 'select', 'text'] as ToolId[]).map(toolBtn)}
-        <TB label="Stamp" active={tool === 'stamp'} btnRef={stampM.ref} onClick={() => (tool === 'stamp' ? stampM.toggle() : setTool('stamp'))}>
-          {tool === 'stamp' ? <StampGlyph id={cfg.stamp ?? 'fermata'} className="h-5 max-w-8 text-[15px]" /> : <ToolIcon tool="stamp" />}
-        </TB>
-        <TB label={`Shapes (${TOOL_LABEL[lastShape]})`} active={isShapeTool(tool)} btnRef={shapeM.ref} onClick={() => (isShapeTool(tool) ? shapeM.toggle() : setTool(lastShape))}>
-          <ToolIcon tool={isShapeTool(tool) ? tool : lastShape} />
-          <span className="absolute bottom-1 right-1 size-0 border-l-[4px] border-t-[4px] border-l-transparent border-t-current opacity-60" />
-        </TB>
+        {toolBtns}
         <Sep />
-        <button
-          ref={colorM.ref}
-          type="button"
-          onClick={colorM.toggle}
-          aria-label="Colour and opacity"
-          title="Colour and opacity"
-          className="inline-flex size-10 shrink-0 items-center justify-center rounded-xl hover:bg-white/10 pointer-coarse:size-11 disabled:opacity-30"
-          disabled={tool === 'eraser' || (tool === 'select' && !selItems)}
-        >
-          <span className="size-6 rounded-full border-2 border-white/80 shadow" style={{ background: shownColor, opacity: Math.max(0.35, shownOpacity) }} />
-        </button>
+        {colorBtn}
         <div className="hidden items-center gap-1 px-1 lg:flex">
           {PALETTE.slice(0, 7).map((c) => (
             <Swatch key={c} size="sm" color={c} active={c === shownColor} onClick={() => applyStyle({ color: c })} />
           ))}
         </div>
-        <TB label="Size and options" btnRef={optsM.ref} onClick={optsM.toggle} disabled={tool === 'select' && !selItems}>
-          <span className="rounded-full bg-current" style={{ width: sizeDot, height: sizeDot }} />
-        </TB>
+        {sizeBtn}
         {selItems && (
           <>
             <Sep />
-            <span className="shrink-0 px-1 text-xs tabular-nums text-white/60">{selItems.length} selected</span>
-            <TB label="Delete selection (Del)" onClick={deleteSelection}>
-              <Trash2 className="size-[18px]" />
-            </TB>
-            <TB label="Duplicate (Ctrl+D)" onClick={duplicateSelection}>
-              <CopyPlus className="size-[18px]" />
-            </TB>
-            <TB
-              label="Copy (Ctrl+C)"
-              onClick={() => {
-                const n = copySelection()
-                toast(n > 1 ? `${n} annotations copied` : '1 annotation copied')
-              }}
-            >
-              <Copy className="size-[18px]" />
-            </TB>
-            <TB label="Bring to front" onClick={() => reorderSelection(true)}>
-              <BringToFront className="size-[18px]" />
-            </TB>
-            <TB label="Deselect (Esc)" onClick={() => useAnnotUI.setState({ selection: null })}>
-              <X className="size-[18px]" />
-            </TB>
+            {selectionBtns}
           </>
         )}
         {!selItems && hasClipboard() && tool === 'select' && (
@@ -818,34 +929,14 @@ export function AnnotationToolbar({ song, onDone }: { song: Song; onDone: () => 
         <TB label="Presets" btnRef={presetM.ref} onClick={presetM.toggle}>
           <Star className="size-[18px]" />
         </TB>
-        <TB label={`Layers (${currentLayer?.name ?? 'Default'})`} btnRef={layerM.ref} onClick={layerM.toggle}>
-          <LayersIcon className="size-[18px]" />
-          {layers.layers.length > 1 && (
-            <span className="absolute right-0.5 top-0.5 min-w-4 rounded-full bg-[var(--os-accent)] px-1 text-[10px] font-semibold leading-4 text-[var(--os-accent-fg)]">{layers.layers.length}</span>
-          )}
-        </TB>
-        <TB label="More" btnRef={moreM.ref} onClick={moreM.toggle}>
-          <Ellipsis className="size-[18px]" />
-        </TB>
+        {layersBtn}
+        {moreBtn}
         <div className="min-w-2 flex-1" />
-        <TB label="Previous page" onClick={() => runAction('prevPage', 'touch')}>
-          <ChevronLeft className="size-5" />
-        </TB>
-        <TB label="Next page" onClick={() => runAction('nextPage', 'touch')}>
-          <ChevronRight className="size-5" />
-        </TB>
+        {pageBtns}
       </div>
-        <button
-          type="button"
-          onClick={onDone}
-          aria-label="Done annotating"
-          title="Done (D)"
-          className="mr-2 inline-flex h-10 shrink-0 items-center gap-1.5 rounded-xl bg-[var(--os-accent)] px-3 text-sm font-semibold text-[var(--os-accent-fg)] shadow-[-12px_0_12px_-6px_rgba(0,0,0,0.6)] hover:brightness-110 pointer-coarse:h-11 sm:px-3.5"
-        >
-          <Check className="size-4" />
-          <span className="hidden sm:inline">Done</span>
-        </button>
+        {doneBtn}
       </div>
+      )}
       {a.stylusOnly && <div className="pointer-events-none px-3 pb-1 text-[11px] text-white/50">Stylus mode · fingers scroll and turn pages</div>}
 
       <ColorPopover
@@ -877,9 +968,9 @@ export function AnnotationToolbar({ song, onDone }: { song: Song; onDone: () => 
           ))}
         </div>
       </DarkPop>
-      <PresetsPopover anchor={presetM.anchor} open={presetM.open} onClose={presetM.close} />
+      <PresetsPopover anchor={phone ? moreM.anchor : presetM.anchor} open={presetM.open} onClose={presetM.close} />
       <LayersPopover anchor={layerM.anchor} open={layerM.open} onClose={layerM.close} songId={song.id} hasSelection={!!selItems} />
-      <MorePopover anchor={moreM.anchor} open={moreM.open} onClose={moreM.close} songId={song.id} />
+      <MorePopover anchor={moreM.anchor} open={moreM.open} onClose={moreM.close} songId={song.id} onPresets={phone ? presetM.show : undefined} />
     </div>
   )
 }

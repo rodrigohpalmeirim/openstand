@@ -1,5 +1,5 @@
 import { CheckCircle2, FileUp, FolderOpen, Info, Loader2, Upload, X } from 'lucide-react'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react'
 import { db } from '../../db/db'
 import type { Song } from '../../db/schema'
 import {
@@ -27,7 +27,8 @@ import { Section, Sheet, ToggleRow } from '../editor/Sheet'
 import { SongEditor } from '../editor/SongEditor'
 import { formatBytes } from '../editor/songEdit'
 import { useTerms } from '../browse/terms'
-import { IndexImport } from './IndexImport'
+
+const IndexImport = lazy(() => import('./IndexImport').then((m) => ({ default: m.IndexImport })))
 
 const srcKey = (s: ImportSource) => `${s.path ?? s.file.name}|${s.file.size}|${s.file.lastModified}`
 
@@ -83,10 +84,14 @@ export function ImportDialog({ open, onClose, initial }: { open: boolean; onClos
         ) : mode === 'files' ? (
           <FilesImport sources={sources} setSources={setSources} onDone={setResult} onCancel={onClose} />
         ) : (
-          <IndexImport onDone={setResult} onCancel={onClose} />
+          <Suspense fallback={<Loader2 className="m-auto size-7 animate-spin text-muted" />}>
+            <IndexImport onDone={setResult} onCancel={onClose} />
+          </Suspense>
         )}
       </Sheet>
-      {editId && <SongEditor songId={editId} queue={result ? [...result.songs, ...result.updated].map((s) => s.id) : undefined} onClose={() => setEditId(null)} />}
+      {editId && (
+        <SongEditor backLayer="import" songId={editId} queue={result ? [...result.songs, ...result.updated].map((s) => s.id) : undefined} onClose={() => setEditId(null)} />
+      )}
     </>
   )
 }
