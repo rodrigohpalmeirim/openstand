@@ -38,6 +38,16 @@ npm run build     # production build in dist/ (static files; host anywhere)
 Generate demo content with `node scripts/make-samples.mjs` (writes to `samples/`), then drag the files onto
 the app window.
 
+## Installing as an app
+
+Host the `dist/` folder on any static web server **over HTTPS** (GitHub Pages, Netlify, Cloudflare Pages, or
+your own server; `localhost` also works for testing), open it and choose *Install app* (Chrome/Edge on
+desktop and Android) or *Share → Add to Home Screen* (Safari on iPad/iPhone). The service worker precaches
+the whole app, including pdf.js's fonts and image decoders, so it then works fully offline. On Chromium
+browsers the installed app also appears in the OS "Open with" menu for PDF, ChordPro, ABC, image and
+`.ospkg`/`.osbackup` files. Browsers don't allow installing (or offline use) from plain `http://` LAN
+addresses, so tablets need the HTTPS URL.
+
 See [docs/FEATURES.md](docs/FEATURES.md) for a feature-by-feature comparison with MobileSheets.
 
 ## Syncing devices

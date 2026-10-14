@@ -6,5 +6,6 @@ import './backup/backup'
 import './sync/sync'
 import './annotations/service'
 import './tools/service'
+import './library/import/launchQueue'
 
 export {}
