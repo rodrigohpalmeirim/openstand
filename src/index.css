@@ -1,0 +1,196 @@
+@import 'tailwindcss';
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  --font-sans: 'Inter Variable', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --font-serif: 'Source Serif 4', Georgia, 'Times New Roman', serif;
+  --font-mono: ui-monospace, 'JetBrains Mono', Consolas, monospace;
+
+  /* Surface palette (driven by CSS vars so light/dark/stage can swap) */
+  --color-bg: var(--os-bg);
+  --color-surface: var(--os-surface);
+  --color-surface-2: var(--os-surface-2);
+  --color-surface-3: var(--os-surface-3);
+  --color-line: var(--os-line);
+  --color-fg: var(--os-fg);
+  --color-muted: var(--os-muted);
+  --color-faint: var(--os-faint);
+  --color-accent: var(--os-accent);
+  --color-accent-fg: var(--os-accent-fg);
+  --color-accent-soft: var(--os-accent-soft);
+  --color-danger: #e5484d;
+  --color-ok: #30a46c;
+  --color-warn: #f5a524;
+}
+
+:root {
+  --os-bg: #f6f5f2;
+  --os-surface: #ffffff;
+  --os-surface-2: #f0efeb;
+  --os-surface-3: #e6e4de;
+  --os-line: #dddad3;
+  --os-fg: #1b1a18;
+  --os-muted: #6a6760;
+  --os-faint: #9a968d;
+  --os-accent: #c2410c;
+  --os-accent-fg: #ffffff;
+  --os-accent-soft: #c2410c1a;
+  color-scheme: light;
+}
+
+.dark {
+  --os-bg: #0f1011;
+  --os-surface: #17181a;
+  --os-surface-2: #1e1f22;
+  --os-surface-3: #2a2b2f;
+  --os-line: #2c2d31;
+  --os-fg: #ecebe8;
+  --os-muted: #a09d96;
+  --os-faint: #6f6c66;
+  --os-accent: #fb923c;
+  --os-accent-fg: #1a0d03;
+  --os-accent-soft: #fb923c22;
+  color-scheme: dark;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--os-bg);
+  color: var(--os-fg);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -webkit-tap-highlight-color: transparent;
+  overscroll-behavior: none;
+}
+
+button {
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: default;
+}
+
+/* Thin, unobtrusive scrollbars */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--os-surface-3) transparent;
+}
+
+:focus-visible {
+  outline: 2px solid var(--os-accent);
+  outline-offset: 2px;
+}
+
+.no-select {
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+
+@keyframes os-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes os-pop-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes os-slide-up {
+  from {
+    transform: translateY(100%);
+  }
+  to {
+    transform: none;
+  }
+}
+
+.animate-fade-in {
+  animation: os-fade-in 140ms ease-out;
+}
+.animate-pop-in {
+  animation: os-pop-in 160ms cubic-bezier(0.2, 0.9, 0.3, 1.2);
+}
+.animate-slide-up {
+  animation: os-slide-up 220ms cubic-bezier(0.2, 0.9, 0.3, 1);
+}
+
+/* Page turn transitions */
+@keyframes os-turn-next {
+  from {
+    transform: translateX(6%);
+    opacity: 0.2;
+  }
+  to {
+    transform: none;
+    opacity: 1;
+  }
+}
+@keyframes os-turn-prev {
+  from {
+    transform: translateX(-6%);
+    opacity: 0.2;
+  }
+  to {
+    transform: none;
+    opacity: 1;
+  }
+}
+@keyframes os-turn-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes os-turn-curl {
+  from {
+    transform: perspective(1600px) rotateY(-14deg) translateX(4%);
+    transform-origin: left center;
+    opacity: 0.3;
+  }
+  to {
+    transform: none;
+    opacity: 1;
+  }
+}
+.os-turn-next {
+  animation: os-turn-next 170ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.os-turn-prev {
+  animation: os-turn-prev 170ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.os-turn-fade {
+  animation: os-turn-fade 160ms ease-out;
+}
+.os-turn-curl {
+  animation: os-turn-curl 260ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+@media (prefers-reduced-motion: reduce) {
+  .os-turn-next,
+  .os-turn-prev,
+  .os-turn-fade,
+  .os-turn-curl {
+    animation: none;
+  }
+}

@@ -1,0 +1,9 @@
+node_modules
+dist
+dev-dist
+public/pdfjs
+coverage
+*.local
+.DS_Store
+test-results
+playwright-report

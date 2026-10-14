@@ -1,0 +1,15 @@
+Title: Plain Chord Sheet
+Artist: Text Import Demo
+Key: D
+
+Verse:
+D            A           Bm        G
+Plain text sheets work just like the ones you print
+D            A              G     A
+Chords above the lyrics are detected automatically
+
+Chorus:
+G        A         D     Bm
+Transpose me, I'm ready to go
+G        A          D
+Any key you like for the show

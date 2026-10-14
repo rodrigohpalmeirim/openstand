@@ -1,0 +1,40 @@
+{title: Morning Light}
+{subtitle: An OpenStand demo song}
+{artist: The Placeholders}
+{key: G}
+{tempo: 96}
+{time: 4/4}
+{capo: 0}
+
+{start_of_verse: Verse 1}
+[G]Morning light comes [D/F#]through the window
+[Em]Coffee's warm and the [C]day is new
+[G]Every road I [D]ever wandered
+[C]Somehow [D]led me back to [G]you
+{end_of_verse}
+
+{start_of_chorus}
+[C]Sing it [D]loud, [G]sing it [Em]clear
+[C]All the [D]songs we [G]keep right here
+[Am]Turn the [D]page, the [G]band plays [Em]on
+[C]Morning [D]light, a [G]brand new song
+{end_of_chorus}
+
+{start_of_verse: Verse 2}
+[G]Paper maps and [D/F#]borrowed guitars
+[Em]Setlists scribbled on a [C]napkin's back
+[G]Every chord we [D]ever stumbled
+[C]Found its [D]way back on [G]track
+{end_of_verse}
+
+{chorus}
+
+{start_of_bridge}
+[Em]Hold the [D]note a little [C]longer
+[Em]Let the [D]room fall [C]still
+[Am]One more [D]time
+{end_of_bridge}
+
+{chorus}
+
+{c: Outro — repeat last line and ritard.}
