@@ -38,6 +38,20 @@ npm run build     # production build in dist/ (static files; host anywhere)
 Generate demo content with `node scripts/make-samples.mjs` (writes to `samples/`), then drag the files onto
 the app window.
 
+See [docs/FEATURES.md](docs/FEATURES.md) for a feature-by-feature comparison with MobileSheets.
+
+## Syncing devices
+
+Windows of the same browser sync out of the box (BroadcastChannel). To sync tablets on a network, run the
+dependency-free relay on any machine and enter its address in *Settings → Devices & sync*:
+
+```bash
+node server/relay.mjs            # listens on 0.0.0.0:8787 (PORT, HOST, ALLOWED_ORIGINS env vars)
+node --test server/relay-test.mjs
+```
+
+If OpenStand is served over HTTPS, browsers require the relay behind TLS (`wss://`).
+
 ## Architecture
 
 | Area | Location |

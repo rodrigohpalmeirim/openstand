@@ -70,7 +70,7 @@ export function Sheet({
   if (!open) return null
   return createPortal(
     <div
-      className="fixed inset-0 z-50 flex items-stretch justify-center bg-black/50 backdrop-blur-[2px] animate-fade-in sm:items-center sm:p-4"
+      className="fixed inset-0 z-50 flex items-stretch justify-center bg-black/55 animate-fade-in sm:items-center sm:p-4"
       onPointerDown={(e) => {
         if (e.target === e.currentTarget) onClose()
       }}

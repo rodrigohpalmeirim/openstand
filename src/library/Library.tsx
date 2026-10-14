@@ -156,7 +156,7 @@ function LibraryShell() {
       <ContextMenuHost />
 
       {dragging && (
-        <div className="pointer-events-none fixed inset-0 z-50 flex items-center justify-center bg-accent/10 backdrop-blur-sm">
+        <div className="pointer-events-none fixed inset-0 z-50 flex items-center justify-center bg-accent/10">
           <div className="rounded-2xl border-2 border-dashed border-accent bg-surface px-8 py-6 text-center shadow-xl">
             <div className="text-lg font-semibold">Drop to import</div>
             <div className="text-sm text-muted">Files or whole folders</div>

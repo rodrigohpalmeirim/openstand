@@ -30,6 +30,9 @@ export interface ViewerState {
   set: (patch: Partial<ViewerState>) => void
 }
 
+/** The toolbar is shown on the first song of a session so it's discoverable; later songs open uncluttered. */
+let openedThisSession = false
+
 export const useViewer = create<ViewerState>((set) => ({
   queue: [],
   index: 0,
@@ -44,18 +47,21 @@ export const useViewer = create<ViewerState>((set) => ({
   metronomeOn: false,
   autoScrollOn: false,
 
-  open: (queue, index = 0, opts = {}) =>
+  open: (queue, index = 0, opts = {}) => {
+    const toolbar = !openedThisSession
+    openedThisSession = true
     set({
       queue,
       index,
       setlistId: opts.setlistId,
       position: opts.position ?? 0,
       linkReturn: [],
-      toolbar: true,
+      toolbar,
       annotating: false,
       panel: null,
       autoScrollOn: false,
-    }),
+    })
+  },
   close: () => set({ queue: [], index: 0, setlistId: undefined, annotating: false, panel: null, metronomeOn: false, autoScrollOn: false }),
   goSong: (index, position = 0) => set({ index, position, linkReturn: [], autoScrollOn: false }),
   setPosition: (position) => set({ position }),
