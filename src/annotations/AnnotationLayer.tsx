@@ -34,10 +34,14 @@ import {
   unionRect,
   type Rect,
 } from './geometry'
+import { gridPath, itemAnchor, snapDelta, snapPoint, snapScale } from './grid'
 import { isVisible, setCurrentLayer, useSongLayers } from './layers'
+import { hasClipboard, paste, setClipboard, setTool, snapCell } from './ops'
 import { isHighlight, itemNodes, nodeToMarkup, type SvgNode } from './render'
+import { snipRegion, writeSystemClipboard } from './snip'
+import { clampMeasures, DEFAULT_STAFF_SPACE, STAFF_SPACES } from './staff'
 import { commit, getItems, pageKey, registerEditable, setItems, setSelection, undo, useAnnotUI, usePageItems } from './store'
-import { isShapeTool, toolConfig, type ShapeTool, type ToolConfig, type ToolId } from './tools'
+import { isShapeTool, TOOL_LABEL, toolConfig, type ShapeTool, type ToolConfig, type ToolId } from './tools'
 
 /* ---------------------------------------------------------------- Helpers */
 
@@ -152,8 +156,9 @@ type Gesture =
   | { kind: 'stamp'; cfg: ToolConfig; at: Point; touch: boolean }
   | { kind: 'text'; at: Point; sx: number; sy: number; touch: boolean }
   | { kind: 'move'; before: Annotation[]; ids: Set<string>; start: Point; moved: boolean; hitId?: string; touch: boolean; preview?: Annotation[] }
-  | { kind: 'resize'; before: Annotation[]; ids: Set<string>; anchor: Point; start: Point; touch: boolean; preview?: Annotation[] }
-  | { kind: 'lasso'; pts: Point[]; additive: boolean; touch: boolean }
+  | { kind: 'resize'; before: Annotation[]; ids: Set<string>; anchor: Point; corner: Point; start: Point; touch: boolean; preview?: Annotation[] }
+  | { kind: 'lasso'; pts: Point[]; additive: boolean; touch: boolean; holdTimer: number; sx: number; sy: number }
+  | { kind: 'snip'; a: Point; b: Point; touch: boolean }
 
 let lastPenAt = 0
 let lastTap = { t: 0, id: '' }
@@ -269,11 +274,27 @@ function Editor({
       type: gs.tool,
       width: gs.cfg.size / 1000,
       a: gs.a,
-      b: gs.b,
+      b: gs.tool === 'staff' ? staffCorner(gs.a, gs.b) : gs.b,
       fill: (gs.tool === 'rect' || gs.tool === 'ellipse') && gs.cfg.fill ? true : undefined,
-      dashed: gs.cfg.dashed || undefined,
+      dashed: (gs.tool !== 'staff' && gs.cfg.dashed) || undefined,
       height: gs.tool === 'crescendo' || gs.tool === 'decrescendo' ? (gs.cfg.height ?? 18) / 1000 : undefined,
+      measures: gs.tool === 'staff' ? clampMeasures(gs.cfg.measures) : undefined,
     })
+
+    /** A staff dragged nearly flat (or tapped) gets a standard system height; a tap also a default length. */
+    const staffCorner = (a: Point, b: Point): Point => {
+      const as = aspect()
+      const h = (DEFAULT_STAFF_SPACE * STAFF_SPACES) / as
+      const tap = Math.hypot((b.x - a.x) * rect.width, (b.y - a.y) * rect.height) < 6
+      const x = tap ? Math.min(0.98, a.x + 0.6) : b.x
+      const y = Math.abs(b.y - a.y) * rect.height < 14 ? a.y + (b.y < a.y && !tap ? -h : h) : b.y
+      return { x: round(x), y: round(Math.max(0, Math.min(1, y))) }
+    }
+
+    const snap = <T extends Point>(p: T): T => {
+      const cell = snapCell()
+      return cell ? snapPoint(p, cell, aspect()) : p
+    }
 
     const stampItem = (gs: Extract<Gesture, { kind: 'stamp' }>): Annotation => ({
       ...baseItem(gs.cfg),
@@ -311,6 +332,9 @@ function Editor({
             setItems(key, g.preview, false)
             g.preview = undefined
           }
+          break
+        case 'snip':
+          setLive(dashedRect(normRect(g.a, g.b)))
           break
         case 'boxerase':
           setLive(dashedRect(normRect(g.a, g.b)).replace(/#2563eb/g, '#dc2626').replace('rgba(37,99,235,0.06)', 'rgba(220,38,38,0.08)'))
@@ -393,7 +417,7 @@ function Editor({
       return unionRect(getItems(key).filter((i) => ids.has(i.id)).map((i) => bboxNorm(i, aspect())))
     }
 
-    const handleAt = (p: Point, touch: boolean): { anchor: Point } | null => {
+    const handleAt = (p: Point, touch: boolean): { anchor: Point; corner: Point } | null => {
       const r = selectionRect()
       if (!r) return null
       const tol = (touch ? 26 : 14) / rect.width
@@ -404,7 +428,7 @@ function Editor({
         [{ x: r.x0, y: r.y1 }, { x: r.x1, y: r.y0 }],
       ]
       const a = aspect()
-      for (const [c, anchor] of corners) if (dist(toLocal(c, a), toLocal(p, a)) <= tol) return { anchor }
+      for (const [c, anchor] of corners) if (dist(toLocal(c, a), toLocal(p, a)) <= tol) return { anchor, corner: c }
       return null
     }
 
@@ -419,7 +443,8 @@ function Editor({
         useAnnotUI.setState({ editing: { key, id: hit.id, at: hit.at }, selection: null, activeKey: key })
       } else {
         ensureLayerVisible()
-        useAnnotUI.setState({ editing: { key, at: { x: round(p.x), y: round(p.y) } }, selection: null, activeKey: key })
+        const at = snap(p)
+        useAnnotUI.setState({ editing: { key, at: { x: round(at.x), y: round(at.y) } }, selection: null, activeKey: key })
       }
     }
 
@@ -490,7 +515,7 @@ function Editor({
 
     const cancelGesture = () => {
       if (!g) return
-      if (g.kind === 'ink') clearTimeout(g.holdTimer)
+      if (g.kind === 'ink' || g.kind === 'lasso') clearTimeout(g.holdTimer)
       if (g.kind === 'erase' || g.kind === 'move' || g.kind === 'resize') setItems(key, g.kind === 'erase' ? g.before : g.before, false)
       g = null
       gPointer = -1
@@ -554,7 +579,8 @@ function Editor({
         if (t === 'highlighter') armHold(g)
       } else if (isShapeTool(t)) {
         ensureLayerVisible()
-        g = { kind: 'shape', tool: t, cfg, a: p, b: p, touch }
+        const sp = snap(p)
+        g = { kind: 'shape', tool: t, cfg, a: sp, b: sp, touch }
       } else if (t === 'eraser') {
         if (cfg.eraser === 'box' && !penEraser) g = { kind: 'boxerase', a: p, b: p, touch }
         else {
@@ -565,9 +591,11 @@ function Editor({
         }
       } else if (t === 'stamp') {
         ensureLayerVisible()
-        g = { kind: 'stamp', cfg, at: p, touch }
+        g = { kind: 'stamp', cfg, at: snap(p), touch }
       } else if (t === 'text') {
         g = { kind: 'text', at: p, sx: e.clientX, sy: e.clientY, touch }
+      } else if (t === 'snip') {
+        g = { kind: 'snip', a: p, b: p, touch }
       } else if (t === 'select') {
         const h = handleAt(p, touch)
         const sel = useAnnotUI.getState().selection
@@ -575,7 +603,7 @@ function Editor({
         const before = getItems(key)
         const sr = selectionRect()
         const pad = 8 / rect.width
-        if (h && selIds.size) g = { kind: 'resize', before, ids: selIds, anchor: h.anchor, start: p, touch }
+        if (h && selIds.size) g = { kind: 'resize', before, ids: selIds, anchor: h.anchor, corner: h.corner, start: p, touch }
         else if (sr && !e.shiftKey && p.x >= sr.x0 - pad && p.x <= sr.x1 + pad && p.y >= sr.y0 - pad && p.y <= sr.y1 + pad) {
           const hit = hitTopmost(live.current.visible, p, px(touch ? 10 : 6), aspect())
           g = { kind: 'move', before, ids: selIds, start: p, moved: false, hitId: hit?.id, touch }
@@ -589,7 +617,16 @@ function Editor({
             g = { kind: 'move', before, ids: new Set(ids), start: p, moved: false, hitId: hit.id, touch }
           } else {
             if (!e.shiftKey) useAnnotUI.setState({ selection: null })
-            g = { kind: 'lasso', pts: [p], additive: e.shiftKey, touch }
+            const gl: Gesture = { kind: 'lasso', pts: [p], additive: e.shiftKey, touch, holdTimer: 0, sx: e.clientX, sy: e.clientY }
+            // Long press on empty space pastes the clipboard there.
+            if (hasClipboard())
+              gl.holdTimer = window.setTimeout(() => {
+                if (g !== gl) return
+                cancelGesture()
+                navigator.vibrate?.(12)
+                void paste({ key, p: snap(p) })
+              }, 550)
+            g = gl
           }
         }
       }
@@ -625,6 +662,7 @@ function Editor({
       const lb = toLocal(b, as)
       const dx = lb.x - la.x
       const dy = lb.y - la.y
+      if (t === 'staff') return b
       if (t === 'rect' || t === 'ellipse') {
         if (!shift) return b
         const m = Math.max(Math.abs(dx), Math.abs(dy))
@@ -683,7 +721,10 @@ function Editor({
           break
         }
         case 'shape':
-          g.b = constrain(g.a, norm(e), g.tool, e.shiftKey)
+          g.b = e.shiftKey && g.tool !== 'staff' ? constrain(g.a, norm(e), g.tool, true) : constrain(g.a, snap(norm(e)), g.tool, false)
+          break
+        case 'snip':
+          g.b = norm(e)
           break
         case 'erase':
           for (const ev of list) eraseAt(g, norm(ev))
@@ -693,12 +734,16 @@ function Editor({
           g.b = norm(e)
           break
         case 'stamp':
-          g.at = norm(e)
+          g.at = snap(norm(e))
           break
         case 'text':
           break
         case 'lasso':
           for (const ev of list) g.pts.push(norm(ev))
+          if (g.holdTimer && Math.hypot(e.clientX - g.sx, e.clientY - g.sy) > (g.touch ? 10 : 6)) {
+            clearTimeout(g.holdTimer)
+            g.holdTimer = 0
+          }
           break
         case 'move': {
           const p = norm(e)
@@ -707,7 +752,12 @@ function Editor({
           if (!g.moved && Math.hypot(dx * rect.width, dy * rect.height) < (g.touch ? 6 : 3)) break
           g.moved = true
           const ids = g.ids
-          g.preview = g.before.map((i) => (ids.has(i.id) ? translateItem(i, dx, dy) : i))
+          let d = { dx, dy }
+          const cell = snapCell()
+          const hitId = g.hitId
+          const lead = cell ? (g.before.find((i) => i.id === hitId && ids.has(i.id)) ?? g.before.find((i) => ids.has(i.id))) : undefined
+          if (lead) d = snapDelta(itemAnchor(lead, aspect()), dx, dy, cell, aspect())
+          g.preview = g.before.map((i) => (ids.has(i.id) ? translateItem(i, d.dx, d.dy) : i))
           break
         }
         case 'resize': {
@@ -715,7 +765,7 @@ function Editor({
           const p = norm(e)
           const d0 = dist(toLocal(g.start, a), toLocal(g.anchor, a))
           const d1 = dist(toLocal(p, a), toLocal(g.anchor, a))
-          const sc = Math.max(0.05, d1 / Math.max(1e-6, d0))
+          const sc = Math.max(0.05, snapScale(g.anchor, g.corner, d1 / Math.max(1e-6, d0), snapCell(), a))
           const ids = g.ids
           const anchor = g.anchor
           g.preview = g.before.map((i) => (ids.has(i.id) ? scaleItem(i, anchor, sc) : i))
@@ -763,12 +813,12 @@ function Editor({
         }
         case 'shape': {
           const a = aspect()
-          if (dist(toLocal(cur.a, a), toLocal(cur.b, a)) < px(6)) {
+          if (cur.tool !== 'staff' && dist(toLocal(cur.a, a), toLocal(cur.b, a)) < px(6)) {
             clearLive()
             break
           }
           const item = shapeItem({ ...cur, a: roundPoint(cur.a), b: roundPoint(cur.b) })
-          commit(cur.tool[0].toUpperCase() + cur.tool.slice(1), [{ key, before: getItems(key), after: [...getItems(key), item] }])
+          commit(TOOL_LABEL[cur.tool], [{ key, before: getItems(key), after: [...getItems(key), item] }])
           clearLiveAfterCommit()
           break
         }
@@ -795,7 +845,32 @@ function Editor({
         case 'text':
           if (Math.hypot(e.clientX - cur.sx, e.clientY - cur.sy) < 10) startTextEdit(cur.at)
           break
+        case 'snip': {
+          const r = normRect(cur.a, cur.b)
+          if ((r.x1 - r.x0) * rect.width < 8 || (r.y1 - r.y0) * rect.height < 8) {
+            clearLive()
+            toast('Drag a rectangle over the part of the page to copy')
+            break
+          }
+          const job = snipRegion(key, { x0: Math.max(0, r.x0), y0: Math.max(0, r.y0), x1: Math.min(1, r.x1), y1: Math.min(1, r.y1) }, root)
+          writeSystemClipboard(job.then((s) => s.blob))
+          job.then(
+            (s) => {
+              clearLive()
+              setClipboard([s.item], aspect(), key)
+              setTool('select')
+              toast('Snippet copied — long-press (or use Paste) to place it')
+            },
+            (err) => {
+              clearLive()
+              console.warn('snip failed', err)
+              toast('Could not copy this region', 'error')
+            },
+          )
+          break
+        }
         case 'lasso': {
+          clearTimeout(cur.holdTimer)
           clearLive()
           const a = aspect()
           let len = 0
@@ -842,11 +917,12 @@ function Editor({
       root.removeEventListener('pointerleave', onLeave)
       root.removeEventListener('contextmenu', noMenu)
       cancelAnimationFrame(raf)
-      if (g?.kind === 'ink') clearTimeout(g.holdTimer)
+      if (g?.kind === 'ink' || g?.kind === 'lasso') clearTimeout(g.holdTimer)
       if (g && (g.kind === 'erase' || g.kind === 'move' || g.kind === 'resize')) setItems(key, g.before, false)
     }
   }, [key, songId, rootRef])
 
+  const grid = useSettings((s) => s.s.annotations.grid)
   const activeTool = tempEraser ? 'eraser' : tool
   const cursor =
     activeTool === 'select' ? 'default' : activeTool === 'text' ? 'text' : activeTool === 'eraser' ? 'none' : activeTool === 'stamp' ? 'copy' : 'crosshair'
@@ -860,6 +936,7 @@ function Editor({
 
   return (
     <div className="absolute inset-0" style={{ cursor }}>
+      {grid.show && <GridOverlay cell={grid.size / 1000} H={H} />}
       <svg ref={liveSvgRef} className="pointer-events-none absolute inset-0 h-full w-full overflow-visible" viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" aria-hidden>
         <g ref={liveRef} />
       </svg>
@@ -872,6 +949,15 @@ function Editor({
     </div>
   )
 }
+
+const GridOverlay = memo(function GridOverlay({ cell, H }: { cell: number; H: number }) {
+  const d = useMemo(() => gridPath(cell, W, H), [cell, H])
+  return (
+    <svg className="pointer-events-none absolute inset-0 h-full w-full" viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" aria-hidden>
+      <path d={d} fill="none" stroke="rgba(37,99,235,0.2)" strokeWidth={1} vectorEffect="non-scaling-stroke" shapeRendering="crispEdges" />
+    </svg>
+  )
+})
 
 function SelectionBox({ r }: { r: Rect }) {
   const style = { left: `${r.x0 * 100}%`, top: `${r.y0 * 100}%`, width: `${(r.x1 - r.x0) * 100}%`, height: `${(r.y1 - r.y0) * 100}%` }

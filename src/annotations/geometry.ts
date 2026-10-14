@@ -237,7 +237,8 @@ export function bboxLocal(it: Annotation, aspect: number): Rect {
     case 'rect':
     case 'ellipse':
     case 'crescendo':
-    case 'decrescendo': {
+    case 'decrescendo':
+    case 'staff': {
       const extra = it.type === 'arrow' ? arrowHeadLen(it.width) : it.type === 'crescendo' || it.type === 'decrescendo' ? (it.height ?? 0.018) / 2 : 0
       const pad = it.width / 2 + extra
       grow(r, it.a.x, it.a.y * aspect, pad)
@@ -323,6 +324,7 @@ export function shapeLines(it: Extract<Annotation, { a: Point; b: Point }>, aspe
       return [[a, b], [h1, b, h2]]
     }
     case 'rect':
+    case 'staff':
       return [[a, { x: b.x, y: a.y }, b, { x: a.x, y: b.y }, a]]
     case 'ellipse':
       return []
@@ -388,6 +390,7 @@ export function hitTest(it: Annotation, pn: Vec, tol: number, aspect: number): b
     case 'text':
     case 'stamp':
     case 'image':
+    case 'staff':
       return true // inside the (tolerance-padded) box
   }
 }
@@ -592,5 +595,25 @@ export function itemSize(it: Annotation): number | undefined {
       return undefined
     default:
       return it.width * 1000
+  }
+}
+
+/**
+ * Stretch an item vertically around `y0` by `k` (normalised coords). Used when pasting onto a page with
+ * a different aspect ratio so pictures and shapes keep their proportions; text and stamp sizes are
+ * fractions of page height, so they scale too.
+ */
+export function stretchY<T extends Annotation>(it: T, y0: number, k: number): T {
+  if (k === 1) return it
+  const st = (p: Point): Point => ({ ...p, y: round(y0 + (p.y - y0) * k) })
+  switch (it.type) {
+    case 'pen':
+    case 'highlighter':
+      return { ...it, points: it.points.map(st) }
+    case 'text':
+    case 'stamp':
+      return { ...it, at: st(it.at), size: it.size * k }
+    default:
+      return { ...it, a: st((it as { a: Point }).a), b: st((it as { b: Point }).b) }
   }
 }

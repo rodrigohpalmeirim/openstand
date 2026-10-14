@@ -28,6 +28,7 @@ import {
 import { getLayers } from '../annotations/layers'
 import { isHighlight, itemNodes, visibleItems, type SvgNode } from '../annotations/render'
 import { db, getBlob } from '../db/db'
+import { addImagePage, embedImageBlob, type EmbeddedImage } from '../files/imagePage'
 import type { Annotation, Crop, PageRef, Song, SongFile } from '../db/schema'
 
 /* ------------------------------------------------------------------ colours */
@@ -278,7 +279,7 @@ function pageRefs(song: Song, useOrder: boolean): PageRef[] {
 export async function appendSongPages(out: PDFDocument, song: Song, opts: SongPdfOptions = {}, fonts = new FontCache(out)): Promise<SongPdfResult> {
   const result: SongPdfResult = { pages: 0, skipped: song.files.filter((f) => f.kind !== 'pdf' && f.kind !== 'image') }
   const sources = new Map<string, PDFDocument | null>()
-  const images = new Map<string, PDFImage | null>()
+  const images = new Map<string, EmbeddedImage | null>()
   const layers = opts.annotations ? await getLayers(song.id) : null
   const byId = new Map(song.files.map((f) => [f.id, f]))
 
@@ -302,23 +303,10 @@ export async function appendSongPages(out: PDFDocument, song: Song, opts: SongPd
       ;[page] = await out.copyPages(src, [ref.page])
       out.addPage(page)
     } else {
-      if (!images.has(file.blobId)) {
-        const blob = await getBlob(file.blobId)
-        const bytes = new Uint8Array(await blob.arrayBuffer())
-        let img: PDFImage | null = null
-        try {
-          img = bytes[0] === 0x89 ? await out.embedPng(bytes) : bytes[0] === 0xff ? await out.embedJpg(bytes) : await embedViaCanvas(out, blob)
-        } catch {
-          img = await embedViaCanvas(out, blob).catch(() => null)
-        }
-        images.set(file.blobId, img)
-      }
+      if (!images.has(file.blobId)) images.set(file.blobId, await embedImageBlob(out, await getBlob(file.blobId)).catch(() => null))
       const img = images.get(file.blobId)
       if (!img) continue
-      // Fit the image on a page whose long side is 842 pt (A4 height) so it prints sensibly.
-      const k = 842 / Math.max(img.width, img.height)
-      page = out.addPage([img.width * k, img.height * k])
-      page.drawImage(img, { x: 0, y: 0, width: img.width * k, height: img.height * k })
+      page = addImagePage(out, img)
     }
 
     const cb = page.getCropBox()
@@ -339,19 +327,6 @@ export async function appendSongPages(out: PDFDocument, song: Song, opts: SongPd
     result.pages++
   }
   return result
-}
-
-/** WebP/GIF/etc: re-encode to PNG through a canvas (browser only). */
-async function embedViaCanvas(doc: PDFDocument, blob: Blob): Promise<PDFImage | null> {
-  if (typeof createImageBitmap === 'undefined') return null
-  const bmp = await createImageBitmap(blob)
-  const canvas = document.createElement('canvas')
-  canvas.width = bmp.width
-  canvas.height = bmp.height
-  canvas.getContext('2d')!.drawImage(bmp, 0, 0)
-  bmp.close()
-  const png = await new Promise<Blob | null>((r) => canvas.toBlob(r, 'image/png'))
-  return png ? doc.embedPng(new Uint8Array(await png.arrayBuffer())) : null
 }
 
 export async function songPdf(song: Song, opts: SongPdfOptions = {}): Promise<{ bytes: Uint8Array; result: SongPdfResult } | null> {

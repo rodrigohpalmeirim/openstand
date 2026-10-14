@@ -24,6 +24,9 @@ zustand, pdf.js (`src/files/pdf.ts`), pdf-lib, abcjs, fflate, lucide-react icons
 - `src/state/` zustand stores: `settings.ts` (persisted Settings; `useSettings`, `settings()`), `viewer.ts`
   (`useViewer`: queue/index/position/panel/…; `open(queue, index, {setlistId})` starts performing), `nav.ts`.
 - `src/chordpro/` parser + renderer, `src/music/chords.ts` chord parsing/transposition.
+- `src/scan/` camera scanner (lazy; `openScanner()`/`scanToNewSong()` in `launch.tsx`; image work in a worker).
+  `src/faces/` face gestures (pure detector in `gestures.ts`; MediaPipe loads only when used).
+  `src/library/editor/combine.ts` merges a song's files into one PDF and remaps per-page data.
 - `src/ui/primitives.tsx` UI kit: Button, IconButton, Input, Textarea, Select, Field, Toggle, Segmented,
   Slider, Dialog, Popover, Menu/useMenu, toast(), confirmDialog(), promptDialog(), Empty, Kbd. Reuse them.
 - `src/services.ts` `registerService(fn)` for background services; add a side-effect import to `src/modules.ts`.

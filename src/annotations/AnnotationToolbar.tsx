@@ -16,6 +16,7 @@ import {
   Eraser,
   Eye,
   EyeOff,
+  Grid3x3,
   Highlighter,
   Image as ImageIcon,
   LassoSelect,
@@ -26,6 +27,7 @@ import {
   PenLine,
   Plus,
   Redo2,
+  Scissors,
   Square,
   Circle,
   Star,
@@ -42,6 +44,7 @@ import { confirmDialog, cx, promptDialog, Segmented, Slider, toast, Toggle, useM
 import { DarkPop } from '../viewer/dark'
 import { registerActions, runAction } from '../viewer/actions'
 import { itemSize } from './geometry'
+import { GRID_RANGE } from './grid'
 import { addLayer, countLayerItems, deleteLayer, moveLayer, renameLayer, setCurrentLayer, setLayerVisible, useSongLayers } from './layers'
 import {
   addImage,
@@ -62,10 +65,21 @@ import {
 } from './ops'
 import { StampGlyph } from './StampGlyph'
 import { STAMP_GROUPS, STAMPS } from './stamps'
+import { clampMeasures } from './staff'
 import { flush, getItems, historySize, NO_PAGE, redo, resetHistory, undo, useAnnotHistory, useAnnotUI, usePageItems, visibleKeys } from './store'
-import { isShapeTool, PALETTE, SIZE_RANGE, SHAPE_TOOLS, TOOL_KEYS, TOOL_LABEL, toolConfig, type AnnotationPreset, type ShapeTool, type ToolConfig, type ToolId } from './tools'
+import { isShapeTool, MEASURES_RANGE, PALETTE, SIZE_RANGE, SHAPE_TOOLS, TOOL_KEYS, TOOL_LABEL, toolConfig, type AnnotationPreset, type ShapeTool, type ToolConfig, type ToolId } from './tools'
 
 /* ------------------------------------------------------------------ Icons */
+
+function StaffIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" aria-hidden>
+      <path d="M6 4.5H21M6 7.5H21M6 10.5H21M6 13.5H21M6 16.5H21M6 19.5H21" strokeOpacity={0.9} strokeWidth={1.3} />
+      <path d="M6 4V20M21 4V20" strokeWidth={1.8} />
+      <path d="M4.2 4C2.6 6 4.4 10.5 2.6 12C4.4 13.5 2.6 18 4.2 20" strokeWidth={1.5} />
+    </svg>
+  )
+}
 
 function HairpinIcon({ open, className }: { open: 'right' | 'left'; className?: string }) {
   return (
@@ -101,6 +115,10 @@ export function ToolIcon({ tool, className = 'size-[18px]' }: { tool: ToolId; cl
       return <HairpinIcon open="right" className={className} />
     case 'decrescendo':
       return <HairpinIcon open="left" className={className} />
+    case 'staff':
+      return <StaffIcon className={className} />
+    case 'snip':
+      return <Scissors className={className} />
   }
 }
 
@@ -243,6 +261,17 @@ function OptionsPopover({ anchor, open, onClose, tool, cfg, selection }: { ancho
           <Slider label="Opening" value={cfg.height ?? 18} min={6} max={60} onChange={(v) => patchToolConfig({ height: v })} />
         </div>
       )}
+      {(selection ? selection.some((i) => i.type === 'staff') : tool === 'staff') && (
+        <Row label="Measures">
+          <Stepper
+            label="Measures"
+            value={clampMeasures(selection ? (selection.find((i) => i.type === 'staff') as { measures?: number } | undefined)?.measures : cfg.measures)}
+            min={MEASURES_RANGE[0]}
+            max={MEASURES_RANGE[1]}
+            onChange={(v) => applyStyle({ measures: v })}
+          />
+        </Row>
+      )}
       {isText && (
         <>
           <Row label="Font">
@@ -269,8 +298,53 @@ function OptionsPopover({ anchor, open, onClose, tool, cfg, selection }: { ancho
         </>
       )}
       {!selection && tool === 'highlighter' && <p className="pt-1 text-xs text-muted">Hold still (or press Shift) to snap to a straight line.</p>}
-      {!selection && (tool === 'pen' || tool === 'line' || isShapeTool(tool)) && tool !== 'pen' && <p className="pt-1 text-xs text-muted">Shift snaps angles / draws squares and circles.</p>}
+      {!selection && tool === 'staff' && <p className="pt-1 text-xs text-muted">Drag a box: its width is the length, its height the system height. Tap for a standard staff.</p>}
+      {!selection && isShapeTool(tool) && tool !== 'staff' && <p className="pt-1 text-xs text-muted">Shift snaps angles / draws squares and circles.</p>}
       {selection && <p className="pt-1 text-xs text-muted">Changes apply to the {selection.length} selected annotation{selection.length > 1 ? 's' : ''}.</p>}
+    </DarkPop>
+  )
+}
+
+function Stepper({ label, value, min, max, onChange }: { label: string; value: number; min: number; max: number; onChange: (v: number) => void }) {
+  const btn = 'inline-flex size-9 items-center justify-center rounded-lg text-fg hover:bg-white/10 disabled:opacity-30 pointer-coarse:size-11'
+  return (
+    <div className="flex items-center gap-1" role="group" aria-label={label}>
+      <button type="button" className={btn} aria-label={`Fewer ${label.toLowerCase()}`} disabled={value <= min} onClick={() => onChange(value - 1)}>
+        <Minus className="size-4" />
+      </button>
+      <span className="w-7 text-center text-sm font-medium tabular-nums" aria-live="polite">
+        {value}
+      </span>
+      <button type="button" className={btn} aria-label={`More ${label.toLowerCase()}`} disabled={value >= max} onClick={() => onChange(value + 1)}>
+        <Plus className="size-4" />
+      </button>
+    </div>
+  )
+}
+
+function GridPopover({ anchor, open, onClose }: { anchor: HTMLElement | null; open: boolean; onClose: () => void }) {
+  const g = useSettings((s) => s.s.annotations.grid)
+  const set = (p: Partial<typeof g>) => useSettings.getState().setIn('annotations', { grid: { ...settings().annotations.grid, ...p } })
+  const [min, max, step] = GRID_RANGE
+  return (
+    <DarkPop anchor={anchor} open={open} onClose={onClose} align="end" className={pop}>
+      <div className="px-1 pb-1 text-xs font-medium uppercase tracking-wide text-muted">Grid</div>
+      <div className="px-1">
+        <Row label="Snap to grid">
+          <Toggle checked={g.snap} onChange={(v) => set({ snap: v })} label="Snap to grid" />
+        </Row>
+        <Row label="Show grid">
+          <Toggle checked={g.show} onChange={(v) => set({ show: v })} label="Show grid" />
+        </Row>
+        <div className="py-1.5">
+          <div className="mb-1 flex justify-between text-xs text-muted">
+            <span>Cell size</span>
+            <span className="tabular-nums">{Math.round(1000 / g.size)} per page width</span>
+          </div>
+          <Slider label="Grid cell size" value={g.size} min={min} max={max} step={step} onChange={(v) => set({ size: v })} />
+        </div>
+        <p className="pt-1 text-xs text-muted">Text, stamps, shapes and pictures snap when placed, moved or resized. Ink stays freehand. Press G to toggle snapping.</p>
+      </div>
     </DarkPop>
   )
 }
@@ -487,7 +561,7 @@ function LayersPopover({ anchor, open, onClose, songId, hasSelection }: { anchor
   )
 }
 
-function MorePopover({ anchor, open, onClose, songId, onPresets }: { anchor: HTMLElement | null; open: boolean; onClose: () => void; songId: string; onPresets?: () => void }) {
+function MorePopover({ anchor, open, onClose, songId, onPresets, onGrid }: { anchor: HTMLElement | null; open: boolean; onClose: () => void; songId: string; onPresets?: () => void; onGrid?: () => void }) {
   const a = useSettings((s) => s.s.annotations)
   const setA = (p: Partial<typeof a>) => useSettings.getState().setIn('annotations', p)
   const item = 'flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-sm hover:bg-white/10'
@@ -505,6 +579,28 @@ function MorePopover({ anchor, open, onClose, songId, onPresets }: { anchor: HTM
           <Star className="size-4 text-muted" /> Presets…
         </button>
       )}
+      {onGrid && (
+        <button
+          type="button"
+          className={item}
+          onClick={() => {
+            onClose()
+            onGrid()
+          }}
+        >
+          <Grid3x3 className="size-4 text-muted" /> Grid and snapping…
+        </button>
+      )}
+      <button
+        type="button"
+        className={item}
+        onClick={() => {
+          onClose()
+          setTool('snip')
+        }}
+      >
+        <Scissors className="size-4 text-muted" /> Snip a region of the page
+      </button>
       <button
         type="button"
         className={item}
@@ -598,7 +694,7 @@ function MorePopover({ anchor, open, onClose, songId, onPresets }: { anchor: HTM
         </div>
       </div>
       <p className="px-3 pb-1 pt-1 text-[11px] leading-relaxed text-faint">
-        Keys: P pen · H highlighter · E eraser · S select · T text · K stamp · L/A/R/O/C shapes · ⌘Z undo · Del delete · 1–9 presets · D done
+        Keys: P pen · H highlighter · E eraser · S select · T text · K stamp · L/A/R/O/C shapes · G snap to grid · ⌘Z undo · Del delete · 1–9 presets · D done
       </p>
     </DarkPop>
   )
@@ -657,6 +753,7 @@ export function AnnotationToolbar({ song, onDone }: { song: Song; onDone: () => 
   const presetM = useMenu()
   const layerM = useMenu()
   const moreM = useMenu()
+  const gridM = useMenu()
 
   const doUndo = () => {
     const l = undo()
@@ -711,6 +808,7 @@ export function AnnotationToolbar({ song, onDone }: { song: Song; onDone: () => 
       else if ((e.code === 'Delete' || e.code === 'Backspace') && sel) deleteSelection()
       else if (e.code === 'Escape') {
         if (sel) useAnnotUI.setState({ selection: null })
+        else if (settings().annotations.tool === 'snip') setTool('select')
         else done.current()
       } else if (e.code === 'KeyD') done.current()
       else if (e.code.startsWith('Arrow') && sel) {
@@ -727,6 +825,10 @@ export function AnnotationToolbar({ song, onDone }: { song: Song; onDone: () => 
         const [min, max, step] = SIZE_RANGE[t]
         const c = toolConfig(t, settings().annotations.tools)
         patchToolConfig({ size: Math.min(max, Math.max(min, c.size + (e.code === 'BracketRight' ? step * 2 : -step * 2))) })
+      } else if (e.code === 'KeyG' && !e.altKey) {
+        const g = settings().annotations.grid
+        useSettings.getState().setIn('annotations', { grid: { ...g, snap: !g.snap } })
+        toast(g.snap ? 'Snap to grid off' : 'Snap to grid on')
       } else if (TOOL_KEYS[e.code] && !e.altKey) setTool(TOOL_KEYS[e.code]!)
       else handled = false
       if (handled) e.preventDefault()
@@ -764,6 +866,7 @@ export function AnnotationToolbar({ song, onDone }: { song: Song; onDone: () => 
         <ToolIcon tool={isShapeTool(tool) ? tool : lastShape} />
         <span className="absolute bottom-1 right-1 size-0 border-l-[4px] border-t-[4px] border-l-transparent border-t-current opacity-60" />
       </TB>
+      {(!phone || tool === 'snip') && toolBtn('snip')}
     </>
   )
   const colorBtn = (
@@ -774,13 +877,13 @@ export function AnnotationToolbar({ song, onDone }: { song: Song; onDone: () => 
       aria-label="Colour and opacity"
       title="Colour and opacity"
       className="inline-flex size-10 shrink-0 items-center justify-center rounded-xl hover:bg-white/10 pointer-coarse:size-11 disabled:opacity-30"
-      disabled={tool === 'eraser' || (tool === 'select' && !selItems)}
+      disabled={tool === 'eraser' || tool === 'snip' || (tool === 'select' && !selItems)}
     >
       <span className="size-6 rounded-full border-2 border-white/80 shadow" style={{ background: shownColor, opacity: Math.max(0.35, shownOpacity) }} />
     </button>
   )
   const sizeBtn = (
-    <TB label="Size and options" btnRef={optsM.ref} onClick={optsM.toggle} disabled={tool === 'select' && !selItems}>
+    <TB label="Size and options" btnRef={optsM.ref} onClick={optsM.toggle} disabled={tool === 'snip' || (tool === 'select' && !selItems)}>
       <span className="rounded-full bg-current" style={{ width: sizeDot, height: sizeDot }} />
     </TB>
   )
@@ -818,6 +921,13 @@ export function AnnotationToolbar({ song, onDone }: { song: Song; onDone: () => 
       )}
     </TB>
   )
+  const gridOn = a.grid.snap || a.grid.show
+  const gridBtn = (
+    <TB label={`Grid${a.grid.snap ? ' (snapping)' : ''}`} btnRef={gridM.ref} onClick={gridM.toggle}>
+      <Grid3x3 className="size-[18px]" />
+      {gridOn && <span className="absolute right-1.5 top-1.5 size-2 rounded-full bg-[var(--os-accent)]" />}
+    </TB>
+  )
   const moreBtn = (
     <TB label="More" btnRef={moreM.ref} onClick={moreM.toggle}>
       <Ellipsis className="size-[18px]" />
@@ -853,7 +963,7 @@ export function AnnotationToolbar({ song, onDone }: { song: Song; onDone: () => 
   const shrinkable = '[&>button]:!shrink [&>button]:min-w-9'
 
   return (
-    <div className="border-t border-white/10 bg-neutral-950/85 text-white backdrop-blur-md" onPointerDown={(e) => e.stopPropagation()}>
+    <div className="relative border-t border-white/10 bg-neutral-950/85 text-white backdrop-blur-md" onPointerDown={(e) => e.stopPropagation()}>
       {twoRow ? (
         <>
           <div className="flex items-center">
@@ -886,6 +996,7 @@ export function AnnotationToolbar({ song, onDone }: { song: Song; onDone: () => 
                     <Star className="size-[18px]" />
                   </TB>
                 )}
+                {!phone && gridBtn}
                 {layersBtn}
                 {moreBtn}
                 <div className="min-w-1 flex-1" />
@@ -929,6 +1040,7 @@ export function AnnotationToolbar({ song, onDone }: { song: Song; onDone: () => 
         <TB label="Presets" btnRef={presetM.ref} onClick={presetM.toggle}>
           <Star className="size-[18px]" />
         </TB>
+        {gridBtn}
         {layersBtn}
         {moreBtn}
         <div className="min-w-2 flex-1" />
@@ -938,6 +1050,16 @@ export function AnnotationToolbar({ song, onDone }: { song: Song; onDone: () => 
       </div>
       )}
       {a.stylusOnly && <div className="pointer-events-none px-3 pb-1 text-[11px] text-white/50">Stylus mode · fingers scroll and turn pages</div>}
+      {tool === 'snip' && (
+        // Floats over the page so choosing the tool doesn't shift the page under the pointer.
+        <div className="absolute inset-x-0 top-full z-10 mx-auto mt-2 flex w-fit max-w-[calc(100vw-1rem)] items-center gap-2 rounded-full border border-white/10 bg-neutral-950/90 py-1 pl-3.5 pr-1 text-xs text-white/80 shadow-lg backdrop-blur-md" role="status">
+          <Scissors className="size-3.5 shrink-0" />
+          <span className="min-w-0">Drag over the part of the page to copy</span>
+          <button type="button" className="min-h-9 rounded-full px-3 font-medium text-white hover:bg-white/10 pointer-coarse:min-h-11" onClick={() => setTool('select')}>
+            Cancel
+          </button>
+        </div>
+      )}
 
       <ColorPopover
         anchor={colorM.anchor}
@@ -970,7 +1092,8 @@ export function AnnotationToolbar({ song, onDone }: { song: Song; onDone: () => 
       </DarkPop>
       <PresetsPopover anchor={phone ? moreM.anchor : presetM.anchor} open={presetM.open} onClose={presetM.close} />
       <LayersPopover anchor={layerM.anchor} open={layerM.open} onClose={layerM.close} songId={song.id} hasSelection={!!selItems} />
-      <MorePopover anchor={moreM.anchor} open={moreM.open} onClose={moreM.close} songId={song.id} onPresets={phone ? presetM.show : undefined} />
+      <MorePopover anchor={moreM.anchor} open={moreM.open} onClose={moreM.close} songId={song.id} onPresets={phone ? presetM.show : undefined} onGrid={phone ? gridM.show : undefined} />
+      <GridPopover anchor={phone ? moreM.anchor : gridM.anchor} open={gridM.open} onClose={gridM.close} />
     </div>
   )
 }

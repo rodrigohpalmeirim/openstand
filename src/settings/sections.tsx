@@ -20,7 +20,7 @@ import {
 } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { BackupSettings } from '../backup/BackupSettings'
-import { FaceGestureTest, FacePrivacyNote } from '../faces/FaceSettings'
+import { FaceGestureList, FaceGestureTest, FacePrivacyNote } from '../faces/FaceSettings'
 import { MidiSettings } from '../midi/MidiSettings'
 import { DEFAULT_SETTINGS, useSettings, type Settings } from '../state/settings'
 import { SyncSettings } from '../sync/SyncSettings'
@@ -513,29 +513,25 @@ const faces: SectionDef = {
   id: 'faces',
   title: 'Face gestures',
   icon: ScanFace,
-  summary: 'Turn pages with a head turn',
+  summary: 'Hands-free control with head and face gestures',
   reset: resetKeys('faceGestures'),
   groups: [
     {
-      description: 'Turn pages hands-free with the front camera: turn your head to one side and back.',
+      description: 'Turn pages and more hands-free with the front camera: wink, smile, turn or tilt your head…',
       items: [toggleItem('faceGestures.enabled', 'Use face gestures', 'Turns the camera on while a song is open.', 'camera head mouth hands-free')],
     },
     {
       title: 'Gestures',
+      description: 'Make the gesture, then return to a resting face.',
       items: [
-        toggleItem('faceGestures.headTurn', 'Head turns', 'Turn your head to one side, then back to the centre.', 'head turn'),
-        actionItem('faceGestures.turnRightAction', 'Turn head right', undefined, 'head', 'faceGestures.headTurn'),
-        actionItem('faceGestures.turnLeftAction', 'Turn head left', undefined, 'head', 'faceGestures.headTurn'),
-        toggleItem('faceGestures.mouth', 'Open mouth', 'Open your mouth, then close it. Not recommended for singers.', 'mouth'),
-        actionItem('faceGestures.mouthAction', 'Open mouth does', undefined, 'mouth', 'faceGestures.mouth'),
+        customItem('faceGestures.test', 'Test and tune', FaceGestureTest, 'camera preview test sensitivity meter'),
+        customItem('faceGestures.gestures', 'Gestures', FaceGestureList, 'wink eye smile head turn tilt nod eyebrows mouth lips action sensitivity hold'),
       ],
     },
     {
       title: 'Tuning',
       items: [
-        sliderItem('faceGestures.sensitivity', 'Sensitivity', { min: 0, max: 1, step: 0.05, format: pct }, 'Higher reacts to smaller movements.'),
         sliderItem('faceGestures.cooldownMs', 'Pause after a gesture', { min: 300, max: 3000, step: 100, format: (n) => `${(n / 1000).toFixed(1)} s` }, 'Gestures in this time are ignored.', 'cooldown'),
-        customItem('faceGestures.test', 'Test gestures', FaceGestureTest, 'camera preview test'),
         customItem('faceGestures.privacy', 'Privacy', FacePrivacyNote, 'privacy camera download model'),
       ],
     },

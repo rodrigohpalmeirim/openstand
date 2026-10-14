@@ -4,6 +4,7 @@ import { DEFAULT_TEXT_STYLE, type TextStyle } from '../chordpro/style'
 import type { AutoScrollSettings, DisplayMode, FitMode, MetronomeSettings } from '../db/schema'
 import { ACTIONS, type ActionId } from '../viewer/actions'
 import type { AnnotationPreset, ToolConfig, ToolId } from '../annotations/tools'
+import { FACE_GESTURES, GESTURE_INFO, type Gesture as FaceGestureId } from '../faces/gestures'
 
 /** Where on screen a tap lands. The screen is split into a 3x3 grid. */
 export type TouchZone = 'tl' | 'tc' | 'tr' | 'ml' | 'mc' | 'mr' | 'bl' | 'bc' | 'br'
@@ -47,6 +48,19 @@ export interface AutoScrollPrefs {
   pauseOnTouch: boolean
   showProgress: boolean
 }
+
+export interface FaceGestureBinding {
+  action: ActionId
+  /** 0 (needs big movements) .. 1 (reacts to small ones). */
+  sensitivity: number
+  /** Minimum time the gesture must be held, 0–900 ms. */
+  holdMs: number
+}
+
+const faceGestureDefaults = (actions: Partial<Record<FaceGestureId, ActionId>>, sensitivity = 0.5) =>
+  Object.fromEntries(
+    FACE_GESTURES.map((g) => [g, { action: actions[g] ?? 'none', sensitivity, holdMs: GESTURE_INFO[g].holdMs }]),
+  ) as Record<FaceGestureId, FaceGestureBinding>
 
 export interface Settings {
   theme: 'system' | 'light' | 'dark'
@@ -212,16 +226,10 @@ export interface Settings {
 
   faceGestures: {
     enabled: boolean
-    /** Head turn right → next page, left → previous */
-    headTurn: boolean
-    /** Open mouth → next page */
-    mouth: boolean
-    sensitivity: number
     /** Minimum time between two recognised gestures. */
     cooldownMs: number
-    turnLeftAction: ActionId
-    turnRightAction: ActionId
-    mouthAction: ActionId
+    /** Every gesture; one is off while its action is 'none'. */
+    gestures: Record<FaceGestureId, FaceGestureBinding>
   }
 
   annotations: {
@@ -241,6 +249,8 @@ export interface Settings {
     presets: AnnotationPreset[]
     /** Recently used custom colours, newest first. */
     recentColors: string[]
+    /** Annotation grid: snap placed/moved objects, show the grid while annotating, cell size in thousandths of page width. */
+    grid: { snap: boolean; show: boolean; size: number }
   }
 
   /** Names of user-defined annotation layers */
@@ -401,13 +411,8 @@ export const DEFAULT_SETTINGS: Settings = {
 
   faceGestures: {
     enabled: false,
-    headTurn: true,
-    mouth: false,
-    sensitivity: 0.5,
     cooldownMs: 1200,
-    turnLeftAction: 'prevPage',
-    turnRightAction: 'nextPage',
-    mouthAction: 'nextPage',
+    gestures: faceGestureDefaults({ turnLeft: 'prevPage', turnRight: 'nextPage' }),
   },
 
   annotations: {
@@ -420,6 +425,7 @@ export const DEFAULT_SETTINGS: Settings = {
     tools: {},
     presets: [],
     recentColors: [],
+    grid: { snap: false, show: false, size: 20 },
   },
 
   recentSearches: [],
@@ -480,14 +486,46 @@ function sanitize(s: Settings): Settings {
       twoFingerTap: fixAction(pt.twoFingerTap),
       threeFingerTap: fixAction(pt.threeFingerTap),
     },
-    faceGestures: {
-      ...fg,
-      sensitivity: Math.min(1, Math.max(0, fg.sensitivity)),
-      turnLeftAction: fixAction(fg.turnLeftAction),
-      turnRightAction: fixAction(fg.turnRightAction),
-      mouthAction: fixAction(fg.mouthAction),
-    },
+    faceGestures: sanitizeFaceGestures(fg, fixAction),
   }
+}
+
+/** Face gesture settings before per-gesture bindings (head turns + open mouth, one sensitivity). */
+interface LegacyFaceGestures {
+  headTurn?: unknown
+  mouth?: unknown
+  sensitivity?: unknown
+  turnLeftAction?: unknown
+  turnRightAction?: unknown
+  mouthAction?: unknown
+}
+
+function sanitizeFaceGestures(fg: Settings['faceGestures'], fixAction: (a: unknown) => ActionId): Settings['faceGestures'] {
+  const unit = (n: unknown, d: number) => (typeof n === 'number' && Number.isFinite(n) ? Math.min(1, Math.max(0, n)) : d)
+  let gestures = fg.gestures
+  const old = fg as LegacyFaceGestures
+  if (['headTurn', 'mouth', 'sensitivity', 'turnLeftAction', 'turnRightAction', 'mouthAction'].some((k) => k in old)) {
+    // Old shape (the new one never has these keys): keep the user's behaviour, using the old defaults
+    // for anything missing.
+    const turns = old.headTurn !== false
+    gestures = faceGestureDefaults(
+      {
+        turnLeft: turns ? fixAction(old.turnLeftAction ?? 'prevPage') : 'none',
+        turnRight: turns ? fixAction(old.turnRightAction ?? 'nextPage') : 'none',
+        mouthOpen: old.mouth === true ? fixAction(old.mouthAction ?? 'nextPage') : 'none',
+      },
+      unit(old.sensitivity, 0.5),
+    )
+  }
+  const D = DEFAULT_SETTINGS.faceGestures.gestures
+  const fixed = Object.fromEntries(
+    FACE_GESTURES.map((g) => {
+      const b = (gestures?.[g] ?? D[g]) as Partial<FaceGestureBinding>
+      const hold = typeof b.holdMs === 'number' && Number.isFinite(b.holdMs) ? Math.round(Math.min(900, Math.max(0, b.holdMs))) : D[g].holdMs
+      return [g, { action: fixAction(b.action), sensitivity: unit(b.sensitivity, D[g].sensitivity), holdMs: hold }]
+    }),
+  ) as Record<FaceGestureId, FaceGestureBinding>
+  return { enabled: fg.enabled, cooldownMs: Math.min(5000, Math.max(0, fg.cooldownMs)), gestures: fixed }
 }
 
 /** Merge persisted/imported settings over the current defaults. */

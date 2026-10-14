@@ -17,6 +17,7 @@ import {
   TEXT_LINE_HEIGHT,
   textBoxLocal,
 } from './geometry'
+import { staffPaths } from './staff'
 import { getStamp, STAMP_FONTS } from './stamps'
 
 export interface SvgNode {
@@ -114,6 +115,16 @@ export function itemNodes(it: Annotation, W: number, H: number): SvgNode[] {
       if (it.fill && (it.type === 'rect' || it.type === 'ellipse')) nodes.push({ tag: 'path', attrs: { d, fill: it.color, 'fill-opacity': 0.22, stroke: 'none' } })
       nodes.push({ tag: 'path', attrs: { d, ...strokeAttrs } })
       return [{ tag: 'g', attrs: { opacity: op }, children: nodes }]
+    }
+    case 'staff': {
+      const p = staffPaths({ x0: it.a.x * W, y0: it.a.y * H, x1: it.b.x * W, y1: it.b.y * H }, it.measures, it.width * W)
+      const stroke = (d: string, w: number, cap: string): SvgNode => ({
+        tag: 'path',
+        attrs: { d, fill: 'none', stroke: it.color, 'stroke-width': n2(w), 'stroke-linecap': cap, 'stroke-linejoin': 'round' },
+      })
+      const children: SvgNode[] = [stroke(p.lines, it.width * W, 'butt'), stroke(p.bars, p.barW, 'butt'), { tag: 'path', attrs: { d: p.fill, fill: it.color } }]
+      if (p.clef) children.push(stroke(p.clef, p.clefW, 'round'))
+      return [{ tag: 'g', attrs: { opacity: op }, children }]
     }
     case 'text': {
       const box = textBoxLocal(it, aspect)

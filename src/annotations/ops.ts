@@ -2,9 +2,11 @@
 import { uid } from '../db/db'
 import type { Annotation, ImageAnnotation } from '../db/schema'
 import { settings, useSettings } from '../state/settings'
-import { resizeItem, round, translateItem } from './geometry'
+import { bboxNorm, resizeItem, round, stretchY, translateItem, unionRect, type Vec } from './geometry'
+import { itemAnchor, snapDelta } from './grid'
 import { getLayers } from './layers'
-import { commit, getItems, loadSong, parseKey, selectedItems, setSelection, update, useAnnotUI, visibleKeys, type PageChange } from './store'
+import { clampMeasures } from './staff'
+import { commit, getItems, loadSong, mountedElement, parseKey, selectedItems, setSelection, update, useAnnotUI, visibleKeys, type PageChange } from './store'
 import { pushRecent, toolConfig, type ToolConfig, type ToolId } from './tools'
 
 /* ----------------------------------------------------------- Tool config */
@@ -48,6 +50,7 @@ export function applyStyle(patch: Partial<ToolConfig>, opts: { sizeFrom?: number
       if (patch.dashed !== undefined && (next.type === 'pen' || next.type === 'line' || next.type === 'rect' || next.type === 'ellipse' || next.type === 'arrow'))
         next = { ...next, dashed: patch.dashed }
       if (patch.fill !== undefined && (next.type === 'rect' || next.type === 'ellipse')) next = { ...next, fill: patch.fill }
+      if (patch.measures !== undefined && next.type === 'staff') next = { ...next, measures: clampMeasures(patch.measures) }
       if (next.type === 'text') {
         if (patch.bold !== undefined) next = { ...next, bold: patch.bold }
         if (patch.italic !== undefined) next = { ...next, italic: patch.italic }
@@ -79,31 +82,70 @@ export function duplicateSelection() {
   setSelection(sel.key, copies.map((c) => c.id))
 }
 
-let clipboard: Annotation[] = []
+/**
+ * In-app annotation clipboard (copied annotations or a snipped page region). `aspect` is the
+ * height/width of the source page, so pasting onto a differently shaped page keeps proportions.
+ */
+let clipboard: { items: Annotation[]; aspect: number; key?: string } = { items: [], aspect: 1.3 }
+
+/** Height / width of a page that is on screen (falls back to a portrait page). */
+export function pageAspect(key: string): number {
+  const el = mountedElement(key) ?? document.querySelector<HTMLElement>(`[data-annot-key="${CSS.escape(key)}"]`)
+  return el && el.clientWidth > 0 ? el.clientHeight / el.clientWidth : 1.3
+}
+
+export function setClipboard(items: Annotation[], aspect: number, key?: string) {
+  clipboard = { items, aspect, key }
+}
 
 export function copySelection(cut = false): number {
   const sel = selectedItems()
   if (!sel) return 0
-  clipboard = sel.items
+  setClipboard(sel.items, pageAspect(sel.key), sel.key)
   if (cut) deleteSelection()
-  return clipboard.length
+  return clipboard.items.length
 }
 
-export const hasClipboard = () => clipboard.length > 0
+export const hasClipboard = () => clipboard.items.length > 0
 
-export async function paste(): Promise<number> {
-  const key = pasteTarget()
-  if (!key || !clipboard.length) return 0
+/** Snap cell (fraction of page width) when snap-to-grid is on, else 0. */
+export function snapCell(): number {
+  const g = settings().annotations.grid
+  return g?.snap ? g.size / 1000 : 0
+}
+
+/**
+ * Paste the clipboard. With `at`, the pasted group's top-left goes to that point of page `key`
+ * (long-press paste); otherwise it keeps its position, offset a little on its source page.
+ */
+export async function paste(at?: { key: string; p: Vec }): Promise<number> {
+  const key = at?.key ?? pasteTarget()
+  if (!key || !clipboard.items.length) return 0
   const { songId } = parseKey(key)
   const { current } = await getLayers(songId)
-  const samePage = getItems(key).some((i) => clipboard.some((c) => c.id === i.id))
-  const copies = clipboard.map((i) => {
-    const c = { ...cloneWithId(i), layer: current }
-    return samePage ? translateItem(c, 0.02, 0.02) : c
-  })
+  const aspect = pageAspect(key)
+  const k = clipboard.aspect / aspect
+  const src = clipboard.items
+  const top = Math.min(...src.map((i) => bboxNorm(i, clipboard.aspect).y0))
+  let copies = src.map((i) => stretchY({ ...cloneWithId(i), layer: current }, top, k))
+  const box = unionRect(copies.map((c) => bboxNorm(c, aspect)))!
+  let dx = 0
+  let dy = 0
+  if (at) {
+    dx = at.p.x - box.x0
+    dy = at.p.y - box.y0
+  } else if (clipboard.key === key || getItems(key).some((i) => src.some((c) => c.id === i.id))) {
+    dx = dy = 0.02
+  }
+  // Keep the group on the page.
+  dx = Math.min(Math.max(dx, -box.x0), Math.max(-box.x0, 1 - box.x1))
+  dy = Math.min(Math.max(dy, -box.y0), Math.max(-box.y0, 1 - box.y1))
+  const cell = snapCell()
+  if (cell) ({ dx, dy } = snapDelta(itemAnchor(copies[0], aspect), dx, dy, cell, aspect))
+  if (dx || dy) copies = copies.map((c) => translateItem(c, dx, dy))
   update(key, 'Paste', (items) => [...items, ...copies])
+  if (settings().annotations.tool !== 'select') setTool('select')
   setSelection(key, copies.map((c) => c.id))
-  clipboard = copies
   return copies.length
 }
 

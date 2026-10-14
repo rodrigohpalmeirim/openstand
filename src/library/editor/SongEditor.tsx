@@ -1,7 +1,7 @@
 import { useLiveQuery } from 'dexie-react-hooks'
 import { AudioLines, FileStack, ListChecks, MoreHorizontal, NotebookPen, SlidersVertical } from 'lucide-react'
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { db, uid } from '../../db/db'
+import { db, pruneAnnotations, uid } from '../../db/db'
 import { emptySong, type Song } from '../../db/schema'
 import { MidiCommandsEditor } from '../../midi/MidiCommandsEditor'
 import { Button, cx, Dialog, Menu, Textarea, toast, useMenu } from '../../ui/primitives'
@@ -83,6 +83,15 @@ export function SongEditor({
     })()
     return () => {
       alive = false
+    }
+  }, [currentId])
+
+  // Leaving a song (closed, discarded or saved) drops annotations of files it no longer has, such as
+  // the copies a cancelled "Combine" made or the originals of files that were combined.
+  useEffect(() => {
+    const id = currentId
+    return () => {
+      if (id) void pruneAnnotations(id)
     }
   }, [currentId])
 

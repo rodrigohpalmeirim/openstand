@@ -3,6 +3,7 @@ import {
   BookOpen,
   Bookmark,
   CalendarDays,
+  Camera,
   ChevronsUpDown,
   Clock,
   Disc3,
@@ -25,6 +26,7 @@ import {
   type LucideIcon,
 } from 'lucide-react'
 import { useEffect, useMemo } from 'react'
+import { scanToNewSong } from '../../scan/launch'
 import { useNav, type Section } from '../../state/nav'
 import { useSettings } from '../../state/settings'
 import { Button, cx, IconButton } from '../../ui/primitives'
@@ -165,6 +167,17 @@ export function Sidebar({ onClose }: { onClose?: () => void }) {
           >
             Import
           </Button>
+          <IconButton
+            label="Scan sheet music"
+            className="border border-line"
+            onClick={async () => {
+              useLibraryUI.getState().set({ drawer: false })
+              const id = await scanToNewSong()
+              if (id) ui.edit(id, 'fields')
+            }}
+          >
+            <Camera className="size-5" />
+          </IconButton>
           <IconButton
             label={`New ${t.song}`}
             className="border border-line"

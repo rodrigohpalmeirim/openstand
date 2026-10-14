@@ -9,15 +9,17 @@ modernised interface.
 
 - 📚 **Library** — PDFs, images, ChordPro, plain-text chord sheets and ABC notation. Organise by artist,
   composer, album, genre, key, collection, source book, year, tags and custom fields. Fast search, filters,
-  saved filters, sorting, multiple libraries.
+  saved filters, sorting, multiple libraries. Scan paper scores with the camera (perspective correction and
+  black-and-white clean-up) and combine a song's files into one PDF.
 - 🎼 **Performance mode** — single page, two-page spreads, half-page turns, vertical/horizontal
   scrolling; fit to page/width/height; pinch zoom; crop & rotate; night mode and paper tones; page-turn
   animations; keep-screen-on; setlist navigation with "next up" hints.
 - 🦶 **Hands-free page turning** — configurable 3×3 touch zones, swipes, keyboard and Bluetooth pedals
-  (AirTurn, PageFlip, …) with tap and long-press bindings, MIDI messages, and face gestures (head turn /
-  mouth open, on-device).
-- ✍️ **Annotations** — pressure-sensitive pen, highlighter, shapes, text, musical stamps, eraser,
-  selection, layers, undo/redo; stylus-only mode.
+  (AirTurn, PageFlip, …) with tap and long-press bindings, MIDI messages, and face gestures (wink, smile,
+  head turn/tilt and more, on-device).
+- ✍️ **Annotations** — pressure-sensitive pen, highlighter, shapes, piano staves, text, musical stamps,
+  eraser, selection, snap to grid, layers, undo/redo; a snipping tool to copy bars between pages;
+  stylus-only mode.
 - 🎸 **Chord sheets** — ChordPro rendering with transposition (key-aware spelling), capo, chord naming
   systems (English, German, Czech, Scandinavian, Latin, Nashville), chord diagrams, column layout and an
   editor with live preview. ABC notation rendering and playback.
@@ -91,8 +93,10 @@ If OpenStand is served over HTTPS, browsers require the relay behind TLS (`wss:/
 | Import pipeline, pdf.js wrapper | `src/files/` |
 | Performance viewer (layout, input, actions, panels) | `src/viewer/` |
 | Library browser, song editor, importers | `src/library/` |
+| Camera scanning | `src/scan/` |
 | ChordPro / text / ABC | `src/chordpro/`, `src/music/`, `src/abc/`, `src/textedit/` |
 | Annotations | `src/annotations/` |
+| Face gestures | `src/faces/` |
 | Metronome, auto-scroll, audio, bookmarks, links | `src/tools/` |
 | MIDI | `src/midi/` |
 | Backup, packages, export | `src/backup/` |

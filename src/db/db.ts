@@ -67,7 +67,25 @@ export async function collectGarbage(): Promise<number> {
   })
   const unused = (await db.blobs.toCollection().primaryKeys()).filter((k) => !used.has(k))
   await db.blobs.bulkDelete(unused)
+  await pruneAnnotations()
   return unused.length
+}
+
+/**
+ * Delete annotation pages whose song is gone or whose file the song no longer has (e.g. after
+ * removing or combining files). Pass a song id to only tidy that song.
+ */
+export async function pruneAnnotations(songId?: string): Promise<number> {
+  const files = new Map<string, Set<string>>()
+  const songs = songId ? [await db.songs.get(songId)] : await db.songs.toArray()
+  for (const s of songs) if (s) files.set(s.id, new Set(s.files.map((f) => f.id)))
+  const pages = songId ? db.annotations.where('songId').equals(songId) : db.annotations.toCollection()
+  const dead: string[] = []
+  await pages.each((a) => {
+    if (!files.get(a.songId)?.has(a.fileId)) dead.push(a.id)
+  })
+  await db.annotations.bulkDelete(dead)
+  return dead.length
 }
 
 export async function getKV<T>(key: string, fallback: T): Promise<T> {

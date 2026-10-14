@@ -13,9 +13,11 @@ export type ToolId =
   | 'ellipse'
   | 'crescendo'
   | 'decrescendo'
+  | 'staff'
+  | 'snip'
 
-export type ShapeTool = 'line' | 'arrow' | 'rect' | 'ellipse' | 'crescendo' | 'decrescendo'
-export const SHAPE_TOOLS: ShapeTool[] = ['line', 'arrow', 'rect', 'ellipse', 'crescendo', 'decrescendo']
+export type ShapeTool = 'line' | 'arrow' | 'rect' | 'ellipse' | 'crescendo' | 'decrescendo' | 'staff'
+export const SHAPE_TOOLS: ShapeTool[] = ['line', 'arrow', 'rect', 'ellipse', 'crescendo', 'decrescendo', 'staff']
 export const isShapeTool = (t: string): t is ShapeTool => (SHAPE_TOOLS as string[]).includes(t)
 
 export type EraserMode = 'stroke' | 'object' | 'box'
@@ -41,6 +43,8 @@ export interface ToolConfig {
   stamp?: string
   /** Hairpin opening, thousandths of page width. */
   height?: number
+  /** Piano staff: number of measures. */
+  measures?: number
 }
 
 export interface AnnotationPreset {
@@ -62,6 +66,8 @@ export const DEFAULT_TOOLS: Record<ToolId, ToolConfig> = {
   ellipse: { color: '#c81e1e', size: 2.5, opacity: 1 },
   crescendo: { color: '#1f2937', size: 2, opacity: 1, height: 18 },
   decrescendo: { color: '#1f2937', size: 2, opacity: 1, height: 18 },
+  staff: { color: '#1f2937', size: 1.2, opacity: 1, measures: 4 },
+  snip: { color: '#000000', size: 1, opacity: 1 },
 }
 
 export const SIZE_RANGE: Record<ToolId, [min: number, max: number, step: number]> = {
@@ -77,6 +83,8 @@ export const SIZE_RANGE: Record<ToolId, [min: number, max: number, step: number]
   ellipse: [0.5, 20, 0.5],
   crescendo: [0.5, 12, 0.5],
   decrescendo: [0.5, 12, 0.5],
+  staff: [0.5, 5, 0.1],
+  snip: [1, 1, 1],
 }
 
 export const TOOL_LABEL: Record<ToolId, string> = {
@@ -92,6 +100,8 @@ export const TOOL_LABEL: Record<ToolId, string> = {
   ellipse: 'Ellipse',
   crescendo: 'Crescendo',
   decrescendo: 'Decrescendo',
+  staff: 'Piano staff',
+  snip: 'Snip region',
 }
 
 /** Keyboard shortcuts while annotating (KeyboardEvent.code). */
@@ -125,6 +135,8 @@ export const PALETTE = [
   '#9ca3af', // grey
   '#ffffff', // white (correction)
 ]
+
+export const MEASURES_RANGE: [min: number, max: number] = [1, 12]
 
 export function toolConfig(tool: ToolId, stored?: Partial<Record<string, Partial<ToolConfig>>>): ToolConfig {
   return { ...DEFAULT_TOOLS[tool], ...(stored?.[tool] ?? {}) }

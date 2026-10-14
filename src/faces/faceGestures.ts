@@ -1,5 +1,5 @@
 /**
- * Hands-free page turning with the front camera (MediaPipe Face Landmarker, on-device).
+ * Hands-free control with the front camera (MediaPipe Face Landmarker, on-device).
  *
  * Nothing here is loaded until the feature is used: `@mediapipe/tasks-vision` is a dynamic import
  * (its own chunk), and the WebAssembly runtime (~13 MB) and the face model (~3.7 MB) are fetched
@@ -12,7 +12,7 @@ import { settings, useSettings } from '../state/settings'
 import { useViewer } from '../state/viewer'
 import { toast } from '../ui/primitives'
 import { registerActions, runAction, type ActionId } from '../viewer/actions'
-import { GestureDetector, sampleFromLandmarks, type FaceSample, type Gesture, type GestureConfig } from './gestures'
+import { FACE_GESTURES, FaceReader, GestureDetector, type DetectorConfig, type FaceSample, type Gesture, type GestureLevel } from './gestures'
 
 /** Must match the installed @mediapipe/tasks-vision version (JS glue and wasm are versioned together). */
 const MEDIAPIPE_VERSION = '1.1.0'
@@ -20,6 +20,8 @@ const WASM_BASE = `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${MEDIAP
 const MODEL_URL = 'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task'
 
 let landmarker: Promise<FaceLandmarker> | null = null
+/** Learned left/right conventions survive camera restarts (see `Polarity`). */
+const reader = new FaceReader()
 
 function loadLandmarker(): Promise<FaceLandmarker> {
   landmarker ??= (async () => {
@@ -30,6 +32,8 @@ function loadLandmarker(): Promise<FaceLandmarker> {
         baseOptions: { modelAssetPath: MODEL_URL, delegate },
         runningMode: 'VIDEO',
         numFaces: 1,
+        outputFaceBlendshapes: true,
+        outputFacialTransformationMatrixes: true,
       })
     try {
       return await create('GPU')
@@ -41,14 +45,24 @@ function loadLandmarker(): Promise<FaceLandmarker> {
   return landmarker
 }
 
-export function gestureConfig(): GestureConfig {
+export function gestureConfig(): DetectorConfig {
   const f = settings().faceGestures
-  return { sensitivity: f.sensitivity, cooldownMs: f.cooldownMs, headTurn: f.headTurn, mouth: f.mouth }
+  const gestures: DetectorConfig['gestures'] = {}
+  for (const g of FACE_GESTURES) {
+    const b = f.gestures[g]
+    gestures[g] = { enabled: b.action !== 'none', sensitivity: b.sensitivity, holdMs: b.holdMs }
+  }
+  return { cooldownMs: f.cooldownMs, gestures }
 }
 
 export function gestureAction(g: Gesture): ActionId {
+  return settings().faceGestures.gestures[g].action
+}
+
+/** True when at least one gesture has an action (otherwise there is no reason to use the camera). */
+export function anyGestureAssigned(): boolean {
   const f = settings().faceGestures
-  return g === 'turnLeft' ? f.turnLeftAction : g === 'turnRight' ? f.turnRightAction : f.mouthAction
+  return FACE_GESTURES.some((g) => f.gestures[g].action !== 'none')
 }
 
 /** Human-readable reason why the camera/model could not start. */
@@ -64,7 +78,8 @@ export function faceErrorMessage(e: unknown): string {
 export interface FaceFrame {
   sample: FaceSample | null
   gesture: Gesture | null
-  neutralYaw: number
+  /** Signal vs threshold for every gesture (empty when no face is found). */
+  levels: Partial<Record<Gesture, GestureLevel>>
 }
 
 export interface FaceTracker {
@@ -78,13 +93,18 @@ export interface FaceTracker {
  */
 export async function startFaceTracker(onFrame: (f: FaceFrame) => void, fps = 12): Promise<FaceTracker> {
   if (!navigator.mediaDevices?.getUserMedia) throw new Error('This browser has no camera access')
-  const [lm, stream] = await Promise.all([
-    loadLandmarker(),
-    navigator.mediaDevices.getUserMedia({
-      audio: false,
-      video: { facingMode: 'user', width: { ideal: 320 }, height: { ideal: 240 }, frameRate: { ideal: 15 } },
-    }),
-  ])
+  // Camera first: without one there is no point downloading the model (~17 MB).
+  const stream = await navigator.mediaDevices.getUserMedia({
+    audio: false,
+    video: { facingMode: 'user', width: { ideal: 320 }, height: { ideal: 240 }, frameRate: { ideal: 15 } },
+  })
+  let lm: FaceLandmarker
+  try {
+    lm = await loadLandmarker()
+  } catch (e) {
+    stream.getTracks().forEach((t) => t.stop())
+    throw e
+  }
   const video = document.createElement('video')
   video.muted = true
   video.playsInline = true
@@ -104,10 +124,10 @@ export async function startFaceTracker(onFrame: (f: FaceFrame) => void, fps = 12
     lastVideoTime = video.currentTime
     try {
       const res = lm.detectForVideo(video, now)
-      const sample = sampleFromLandmarks(res.faceLandmarks[0])
+      const sample = reader.read(res)
       detector.config = gestureConfig()
       const gesture = detector.update(sample, now)
-      onFrame({ sample, gesture, neutralYaw: detector.neutralYaw })
+      onFrame({ sample, gesture, levels: detector.levels })
     } catch (e) {
       console.warn('face landmarker failed', e)
     }
@@ -194,7 +214,7 @@ registerService(() => {
 
   const sync = () => {
     const v = useViewer.getState()
-    const want = settings().faceGestures.enabled && v.queue.length > 0 && !testing
+    const want = settings().faceGestures.enabled && anyGestureAssigned() && v.queue.length > 0 && !testing
     const key = `${v.queue.join()}|${settings().faceGestures.enabled}`
     if (!want) {
       if (running) stop()
@@ -228,7 +248,7 @@ registerService(() => {
       toggleFaceGestures: () => {
         const on = !settings().faceGestures.enabled
         useSettings.getState().setIn('faceGestures', { enabled: on })
-        toast(on ? 'Face gestures on' : 'Face gestures off')
+        toast(on ? (anyGestureAssigned() ? 'Face gestures on' : 'Face gestures on, but no gesture has an action yet') : 'Face gestures off')
       },
     }),
   ]

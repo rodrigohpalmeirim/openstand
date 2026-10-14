@@ -320,6 +320,7 @@ export type AnnotationTool =
   | 'stamp'
   | 'crescendo'
   | 'decrescendo'
+  | 'staff'
   | 'image'
 
 export interface Point {
@@ -348,7 +349,7 @@ export interface StrokeAnnotation extends AnnotationBase {
 }
 
 export interface ShapeAnnotation extends AnnotationBase {
-  type: 'line' | 'arrow' | 'rect' | 'ellipse' | 'crescendo' | 'decrescendo'
+  type: 'line' | 'arrow' | 'rect' | 'ellipse' | 'crescendo' | 'decrescendo' | 'staff'
   width: number
   a: Point
   b: Point
@@ -356,6 +357,8 @@ export interface ShapeAnnotation extends AnnotationBase {
   dashed?: boolean
   /** Hairpin opening (crescendo/decrescendo) as a fraction of page width. */
   height?: number
+  /** Piano staff (grand staff): number of measures; `a`/`b` are opposite corners of the system. */
+  measures?: number
 }
 
 export interface TextAnnotation extends AnnotationBase {

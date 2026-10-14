@@ -1,6 +1,8 @@
 import {
   ArrowDown,
   ArrowUp,
+  Camera,
+  Combine,
   Crop as CropIcon,
   FileMusic,
   FilePlus2,
@@ -18,11 +20,12 @@ import {
   ScanLine,
   Trash2,
 } from 'lucide-react'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react'
 import type { FileKind, Song, SongFile } from '../../db/schema'
 import { cropable, autoCropSong } from '../../files/cropPages'
 import { capitalizeWords, makeTextFile, metadataFromText, readImportFile, textTemplate } from '../../files/import'
 import { ACCEPT, stripExt } from '../../files/kinds'
+import { openScanner } from '../../scan/launch'
 import { useSettings } from '../../state/settings'
 import { Button, cx, Empty, IconButton, Input, Menu, promptDialog, toast, useMenu } from '../../ui/primitives'
 import { resolvePageRefs } from '../../viewer/pageSource'
@@ -32,6 +35,9 @@ import { PageThumb } from './PageThumb'
 import { Section } from './Sheet'
 import { addFiles, formatBytes, pageKey, removeFile, reorderFiles, replaceFile, rotatePages, tidySettings } from './songEdit'
 import { moveItem, useDragSort } from './useDragSort'
+
+// pdf-lib loads only when combining.
+const CombineDialog = lazy(() => import('./CombineDialog').then((m) => ({ default: m.CombineDialog })))
 
 const KIND_LABEL: Record<FileKind, string> = { pdf: 'PDF', image: 'Image', chordpro: 'ChordPro', text: 'Text', abc: 'ABC' }
 export function KindIcon({ kind, className = 'size-5' }: { kind: FileKind; className?: string }) {
@@ -55,6 +61,7 @@ export function FilesTab({
   const replaceId = useRef<string | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
   const newMenu = useMenu()
+  const [combining, setCombining] = useState(false)
   const capitalize = useSettings((s) => s.s.editor.capitalizeWords)
 
   // Takes a copy: clearing the input's value empties its live FileList (Chromium) mid-loop.
@@ -128,8 +135,25 @@ export function FilesTab({
         title={`Files (${song.files.length})`}
         actions={
           <div className="flex gap-2">
+            {song.files.filter(cropable).length > 1 && (
+              <Button size="sm" variant="ghost" onClick={() => setCombining(true)} icon={<Combine className="size-4" />} title="Merge several files into one PDF">
+                Combine
+              </Button>
+            )}
             <Button size="sm" variant="ghost" ref={newMenu.ref} onClick={newMenu.toggle} icon={<FilePlus2 className="size-4" />}>
               New
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={async () => {
+                const f = await openScanner()
+                if (f) add([f])
+              }}
+              icon={<Camera className="size-4" />}
+              title="Photograph paper sheet music into a PDF"
+            >
+              Scan
             </Button>
             <Button size="sm" onClick={() => addInput.current?.click()} icon={<Plus className="size-4" />}>
               Add files
@@ -147,6 +171,19 @@ export function FilesTab({
             { label: 'New ABC notation file', icon: <Music className="size-4" />, onSelect: () => newText('abc') },
           ]}
         />
+        {combining && (
+          <Suspense fallback={null}>
+            <CombineDialog
+              song={song}
+              open
+              onClose={() => setCombining(false)}
+              onCombined={(apply, file, n) => {
+                update(apply)
+                toast(`Combined ${n} files into ${file.name}`, 'ok')
+              }}
+            />
+          </Suspense>
+        )}
         <input ref={addInput} type="file" multiple accept={ACCEPT} hidden onChange={(e) => (add([...(e.target.files ?? [])]), (e.target.value = ''))} />
         <input ref={replaceInput} type="file" accept={ACCEPT} hidden onChange={(e) => (replace(e.target.files), (e.target.value = ''))} />
         {busy && <div className="text-sm text-muted">{busy}</div>}

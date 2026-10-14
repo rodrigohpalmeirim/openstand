@@ -26,9 +26,11 @@ workspace). This table tracks where OpenStand stands. ✅ = implemented, ◐ = p
 | PDF-bookmark / CSV index import (one book → many songs) | ✅ | |
 | Duplicate song, create snippet | ✅ | |
 | Multiple libraries | ✅ | One IndexedDB database each |
-| Title/caption format templates | — | |
+| Title/caption format templates | — | Captions show configurable fields; numbers or keys can go in the title itself |
 | Find missing files / fix broken paths | ◐ | Files live inside the app, so paths can't break |
-| Camera scanning, image correction, convert PDF to images, combine files into one PDF | — | |
+| Camera scanning: multi-page, corner adjustment, perspective correction, colour / grey / clean B&W | ✅ | Existing photos work too |
+| Combine a song's files into one PDF | ✅ | Keeps crop, rotation and annotations |
+| Convert PDF to images | — | Not needed: PDFs render directly |
 | Cloud providers (Dropbox, Drive, OneDrive, Nextcloud) | — | Use the OS file picker / File System Access instead |
 
 ## Performance view
@@ -43,7 +45,7 @@ workspace). This table tracks where OpenStand stands. ✅ = implemented, ◐ = p
 | Touch zones, swipes, double tap, long press, two/three-finger taps → configurable actions | ✅ | 3×3 zone grid |
 | Bluetooth pedals / keyboard with tap + long-press bindings, presets, debounce | ✅ | Pedals that emulate a keyboard |
 | AirTurn Direct Mode (BLE) | — | Not possible from a browser |
-| Face gestures (head turn, mouth open) | ◐ | 3 gestures (MobileSheets has 11) |
+| Face gestures (wink, smile, head turn/tilt, eyebrows, mouth, lips) | ✅ | All 11, each mapped to any action, with a live tuning view |
 | Setlist navigation, next-up hint, setlist panel | ✅ | |
 | Bookmarks, link points (D.S./coda jumps), smart buttons | ✅ | |
 | Auto-scroll (duration or speed based, delays, timed page turns) | ✅ | |
@@ -54,7 +56,7 @@ workspace). This table tracks where OpenStand stands. ✅ = implemented, ◐ = p
 | Go to page, page slider with preview | ✅ | |
 | Performance lock | ✅ | |
 | Keep screen on | ✅ | Wake Lock API |
-| Orientation lock | — | Browser support is limited |
+| Orientation lock | — | Browsers only allow it in full-screen mode on Android; use the system rotation lock |
 
 ## Annotations
 
@@ -66,7 +68,7 @@ workspace). This table tracks where OpenStand stands. ✅ = implemented, ◐ = p
 | Layers, presets/favorites, undo/redo | ✅ | |
 | Stylus-only mode, palm rejection, pen eraser button | ✅ | |
 | Export/print with annotations burned in | ✅ | |
-| Snipping tool, piano staff, snap to grid | — | |
+| Snipping tool, piano staff, snap to grid | ✅ | Snips work on every page type, not only PDFs |
 
 ## Text, ChordPro, ABC
 
@@ -85,9 +87,11 @@ workspace). This table tracks where OpenStand stands. ✅ = implemented, ◐ = p
 | --- | --- | --- |
 | Song MIDI commands on load (PC, bank/patch select, CC, notes, SysEx, song select, clock, pauses, batches) | ✅ | Web MIDI (not on iOS Safari) |
 | MIDI learn, MIDI → actions, song recall from MIDI | ✅ | |
+| Library sync between devices | — | Planned. For now, move songs with backups or `.ospkg` packages |
 | Leader/follower page sync between devices | ✅ | BroadcastChannel, or a WebSocket relay (`server/relay.mjs`, or built into the Cloudflare deployment) |
 | Full backup / restore (replace or merge) | ✅ | `.osbackup` |
 | Share songs/setlists as packages | ✅ | `.ospkg` |
 | Export files (with annotations, crop, merged PDF), title lists (.txt/.pdf), print | ✅ | |
 | Settings export/import | ✅ | |
-| PC companion, Gig Performer integration, Genos/PSR link | — | |
+| PC companion | — | OpenStand runs in any desktop browser; library sync (above) will cover the rest |
+| Genos/PSR-SX registration link | ◐ | No dedicated button; record the keyboard's registration message with MIDI learn |

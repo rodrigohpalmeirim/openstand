@@ -55,8 +55,8 @@ describe('mergeSettings', () => {
     expect(s.pageTurn.zones.tr).toBe('nextPage')
     expect(s.pageTurn.swipeLeft).toBe('none')
     expect(s.pageTurn.keys).toEqual([{ key: 'KeyX', action: 'nextPage' }])
-    expect(s.faceGestures.sensitivity).toBe(1)
-    expect(s.faceGestures.mouthAction).toBe('none')
+    expect(s.faceGestures.gestures.turnRight.sensitivity).toBe(1)
+    expect(s.faceGestures.gestures.mouthOpen.action).toBe('none')
   })
 })
 
