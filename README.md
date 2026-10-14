@@ -40,8 +40,8 @@ the app window.
 
 ## Installing as an app
 
-Host the `dist/` folder on any static web server **over HTTPS** (GitHub Pages, Netlify, Cloudflare Pages, or
-your own server; `localhost` also works for testing), open it and choose *Install app* (Chrome/Edge on
+Host the `dist/` folder on any static web server **over HTTPS** (Cloudflare Workers — see below — GitHub
+Pages, Netlify, or your own server; `localhost` also works for testing), open it and choose *Install app* (Chrome/Edge on
 desktop and Android) or *Share → Add to Home Screen* (Safari on iPad/iPhone). The service worker precaches
 the whole app, including pdf.js's fonts and image decoders, so it then works fully offline. On Chromium
 browsers the installed app also appears in the OS "Open with" menu for PDF, ChordPro, ABC, image and
@@ -50,10 +50,29 @@ addresses, so tablets need the HTTPS URL.
 
 See [docs/FEATURES.md](docs/FEATURES.md) for a feature-by-feature comparison with MobileSheets.
 
+## Deploying to Cloudflare Workers
+
+`wrangler.jsonc` deploys the built app as static assets plus a sync relay at `/relay` (one Durable Object per
+room, `worker/index.ts`), all on the free plan.
+
+```bash
+npx wrangler login
+npm run deploy        # build + wrangler deploy → https://openstand.<your-subdomain>.workers.dev
+npm run cf:dev        # build + run the Worker locally on http://localhost:8787
+```
+
+Or deploy from GitHub: either connect the repository in the Cloudflare dashboard (*Workers & Pages → Create →
+Import a repository*; build command `npm run build`, deploy command `npx wrangler deploy`), or add
+`CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` repository secrets and run the *Deploy* workflow. Add a
+custom domain under the Worker's *Settings → Domains & Routes*. To keep other sites from using your relay,
+set `ALLOWED_ORIGINS` in `wrangler.jsonc`.
+
 ## Syncing devices
 
-Windows of the same browser sync out of the box (BroadcastChannel). To sync tablets on a network, run the
-dependency-free relay on any machine and enter its address in *Settings → Devices & sync*:
+Windows of the same browser sync out of the box (BroadcastChannel). On the Cloudflare deployment, devices
+sync over the internet: in *Settings → Devices & sync* choose *Use this site* (relay address `/relay`) and
+give every device the same room name. Rooms aren't password-protected, so pick an unguessable name.
+Otherwise, run the dependency-free relay on any machine on your network and enter its address there:
 
 ```bash
 node server/relay.mjs            # listens on 0.0.0.0:8787 (PORT, HOST, ALLOWED_ORIGINS env vars)
@@ -75,11 +94,11 @@ If OpenStand is served over HTTPS, browsers require the relay behind TLS (`wss:/
 | Metronome, auto-scroll, audio, bookmarks, links | `src/tools/` |
 | MIDI | `src/midi/` |
 | Backup, packages, export | `src/backup/` |
-| Device sync (+ relay server) | `src/sync/`, `server/` |
+| Device sync (+ relay servers) | `src/sync/`, `server/` (Node), `worker/` (Cloudflare) |
 | Settings | `src/settings/`, `src/state/settings.ts` |
 
 Everything is stored locally in the browser (IndexedDB). Nothing is uploaded anywhere unless you
-configure a sync relay. Ask the browser to make storage persistent from *Settings → Storage* so the OS
+connect to a sync relay, which only forwards page turns and song changes and stores nothing. Ask the browser to make storage persistent from *Settings → Storage* so the OS
 doesn't evict your library.
 
 ## Credits
@@ -92,4 +111,4 @@ OpenStand is not affiliated with Zubersoft or MobileSheets.
 
 ## License
 
-MIT
+[MIT](LICENSE)

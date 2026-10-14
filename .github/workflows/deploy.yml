@@ -1,0 +1,26 @@
+# Deploys to Cloudflare Workers. Runs on demand (Actions › Deploy › Run workflow).
+# Needs repository secrets CLOUDFLARE_API_TOKEN ("Edit Cloudflare Workers" template) and
+# CLOUDFLARE_ACCOUNT_ID. To deploy on every push to main, add `push: { branches: [main] }` under `on:`.
+name: Deploy
+
+on:
+  workflow_dispatch:
+
+concurrency: deploy
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+      - run: npx wrangler deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

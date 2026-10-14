@@ -27,6 +27,10 @@ zustand, pdf.js (`src/files/pdf.ts`), pdf-lib, abcjs, fflate, lucide-react icons
 - `src/ui/primitives.tsx` UI kit: Button, IconButton, Input, Textarea, Select, Field, Toggle, Segmented,
   Slider, Dialog, Popover, Menu/useMenu, toast(), confirmDialog(), promptDialog(), Empty, Kbd. Reuse them.
 - `src/services.ts` `registerService(fn)` for background services; add a side-effect import to `src/modules.ts`.
+- `src/sync/` device sync; `server/relay.mjs` (Node) and `worker/index.ts` (Cloudflare Durable Object) are two
+  implementations of the same dumb relay contract: `?room=NAME`, rebroadcast text frames to the room's other
+  clients. Keep them in step. `wrangler.jsonc` deploys `dist/` + the relay; run `npm run cf:typegen` after
+  changing it (needs glibc ≥ 2.35 for workerd; use a `node:24-bookworm` container on older systems).
 
 ## Rules for parallel work
 - Several agents work in this tree at once. Only edit files you OWN (listed in your task). Shared files

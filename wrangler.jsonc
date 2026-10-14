@@ -1,0 +1,31 @@
+/**
+ * Cloudflare Workers deployment: the built PWA (dist/) is served as static assets, and /relay is a
+ * WebSocket sync relay backed by one Durable Object per room (worker/index.ts), so devices can sync
+ * through the same origin with no separate server.
+ *
+ *   npm run deploy        build + wrangler deploy
+ *   npm run cf:dev        build + run the Worker locally (http://localhost:8787)
+ */
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "openstand",
+  "main": "worker/index.ts",
+  "compatibility_date": "2026-10-12",
+  "assets": {
+    "directory": "./dist",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    // Everything else is served straight from the asset store without invoking the Worker.
+    "run_worker_first": ["/relay", "/relay/*"]
+  },
+  "durable_objects": {
+    "bindings": [{ "name": "RELAY", "class_name": "RelayRoom" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["RelayRoom"] }],
+  "vars": {
+    // Comma-separated origins allowed to use the relay. Empty = any origin (the protocol carries no
+    // secrets, but you may want to stop other sites from using your relay).
+    "ALLOWED_ORIGINS": ""
+  },
+  "observability": { "enabled": true }
+}

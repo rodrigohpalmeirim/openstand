@@ -85,7 +85,7 @@ workspace). This table tracks where OpenStand stands. ✅ = implemented, ◐ = p
 | --- | --- | --- |
 | Song MIDI commands on load (PC, bank/patch select, CC, notes, SysEx, song select, clock, pauses, batches) | ✅ | Web MIDI (not on iOS Safari) |
 | MIDI learn, MIDI → actions, song recall from MIDI | ✅ | |
-| Leader/follower page sync between devices | ✅ | BroadcastChannel or WebSocket relay (`server/relay.mjs`) |
+| Leader/follower page sync between devices | ✅ | BroadcastChannel, or a WebSocket relay (`server/relay.mjs`, or built into the Cloudflare deployment) |
 | Full backup / restore (replace or merge) | ✅ | `.osbackup` |
 | Share songs/setlists as packages | ✅ | `.ospkg` |
 | Export files (with annotations, crop, merged PDF), title lists (.txt/.pdf), print | ✅ | |

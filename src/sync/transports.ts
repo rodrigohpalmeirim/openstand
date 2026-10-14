@@ -47,10 +47,13 @@ export class LocalTransport implements Transport {
   }
 }
 
-/** Normalise what people type: "192.168.1.5:8787", "ws://…", "https://relay.example" → ws(s) URL with room. */
+/** Normalise what people type: "192.168.1.5:8787", "ws://…", "https://relay.example", or "/relay" (the
+ *  relay built into the Cloudflare Worker deployment, on this site) → ws(s) URL with room. */
 export function relayUrl(input: string, room: string): string {
   let u = input.trim()
-  if (!/^[a-z]+:\/\//i.test(u)) u = `${typeof location !== 'undefined' && location.protocol === 'https:' ? 'wss' : 'ws'}://${u}`
+  const scheme = typeof location !== 'undefined' && location.protocol === 'https:' ? 'wss' : 'ws'
+  if (u.startsWith('/') && typeof location !== 'undefined') u = `${scheme}://${location.host}${u}`
+  else if (!/^[a-z]+:\/\//i.test(u)) u = `${scheme}://${u}`
   u = u.replace(/^http(s?):\/\//i, 'ws$1://')
   const url = new URL(u)
   url.searchParams.set('room', room)
@@ -63,6 +66,20 @@ export function mixedContentProblem(input: string): boolean {
   try {
     const u = new URL(relayUrl(input, 'x'))
     return u.protocol === 'ws:' && !['localhost', '127.0.0.1', '[::1]'].includes(u.hostname)
+  } catch {
+    return false
+  }
+}
+
+/** Path of the relay that the Cloudflare Worker deployment serves next to the app (worker/index.ts). */
+export const SAME_SITE_RELAY = '/relay'
+
+/** Whether the site OpenStand is served from also hosts a relay (true on the Cloudflare Worker deployment). */
+export async function sameSiteRelayAvailable(): Promise<boolean> {
+  try {
+    const res = await fetch(SAME_SITE_RELAY, { cache: 'no-store' })
+    if (!res.ok || !res.headers.get('content-type')?.includes('json')) return false
+    return (await res.json())?.service === 'openstand-relay'
   } catch {
     return false
   }

@@ -1,13 +1,13 @@
 import { useLiveQuery } from 'dexie-react-hooks'
 import { AlertTriangle, AppWindow, ListMusic, RadioTower, RefreshCw } from 'lucide-react'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { db } from '../db/db'
 import { useSettings } from '../state/settings'
 import { Button, Field, Input, Segmented, Select, Toggle, cx } from '../ui/primitives'
 import { sends, type Role } from './protocol'
 import { PeerList, ROLE_LABEL, syncLabel } from './SyncStatus'
 import { connect, defaultDeviceName, disconnect, shareSetlist, syncNow, useSync } from './sync'
-import { mixedContentProblem } from './transports'
+import { SAME_SITE_RELAY, mixedContentProblem, sameSiteRelayAvailable } from './transports'
 
 const ROLE_HINT: Record<Role, string> = {
   leader: 'This device controls the others: page turns and songs go out, nothing comes in.',
@@ -41,6 +41,14 @@ export function SyncSettings() {
   const [relayDraft, setRelayDraft] = useState(s.relayUrl)
   const [roomDraft, setRoomDraft] = useState(s.room)
   const mixed = mixedContentProblem(relayDraft)
+  const [siteRelay, setSiteRelay] = useState(false)
+  useEffect(() => {
+    let live = true
+    void sameSiteRelayAvailable().then((ok) => live && setSiteRelay(ok))
+    return () => {
+      live = false
+    }
+  }, [])
 
   const dot = status === 'online' ? 'bg-ok' : status === 'connecting' ? 'bg-warn animate-pulse' : status === 'error' ? 'bg-danger' : 'bg-faint'
   const statusText =
@@ -115,14 +123,34 @@ export function SyncSettings() {
             </span>
           ) : (
             <>
-              Leave empty to sync only windows of this browser. To connect phones and tablets, run{' '}
-              <code className="rounded bg-surface-2 px-1 font-mono">node server/relay.mjs</code> on a computer on the same network and enter its
-              address, e.g. <span className="font-mono">192.168.1.20:8787</span>.
+              Leave empty to sync only windows of this browser.{' '}
+              {siteRelay ? (
+                <>
+                  This site has a built-in relay: enter <span className="font-mono">{SAME_SITE_RELAY}</span> to connect phones and tablets over the internet.
+                </>
+              ) : (
+                <>
+                  To connect phones and tablets, run <code className="rounded bg-surface-2 px-1 font-mono">node server/relay.mjs</code> on a computer on
+                  the same network and enter its address, e.g. <span className="font-mono">192.168.1.20:8787</span>.
+                </>
+              )}
             </>
           )
         }
       >
-        <Input value={relayDraft} onChange={(e) => setRelayDraft(e.target.value)} onBlur={commit} onKeyDown={(e) => e.key === 'Enter' && commit()} placeholder="ws://192.168.1.20:8787" inputMode="url" autoCapitalize="off" autoCorrect="off" spellCheck={false} />
+        <div className="flex gap-2">
+          <Input className="min-w-0 flex-1" value={relayDraft} onChange={(e) => setRelayDraft(e.target.value)} onBlur={commit} onKeyDown={(e) => e.key === 'Enter' && commit()} placeholder={siteRelay ? SAME_SITE_RELAY : 'ws://192.168.1.20:8787'} inputMode="url" autoCapitalize="off" autoCorrect="off" spellCheck={false} />
+          {siteRelay && relayDraft.trim() !== SAME_SITE_RELAY && (
+            <Button
+              onClick={() => {
+                setRelayDraft(SAME_SITE_RELAY)
+                setIn('sync', { relayUrl: SAME_SITE_RELAY })
+              }}
+            >
+              Use this site
+            </Button>
+          )}
+        </div>
       </Field>
 
       {s.role !== 'leader' && (

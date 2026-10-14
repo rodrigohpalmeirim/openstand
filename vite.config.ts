@@ -25,6 +25,8 @@ export default defineConfig({
         maximumFileSizeToCacheInBytes: 8 * 1024 * 1024,
         // Face gestures load MediaPipe on demand; don't precache it for everyone.
         globIgnores: ['**/vision_bundle-*.js'],
+        // The Cloudflare Worker serves the sync relay's health check here; don't answer it with index.html.
+        navigateFallbackDenylist: [/^\/relay/],
       },
       manifest: {
         name: 'OpenStand',
