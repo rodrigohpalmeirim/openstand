@@ -101,6 +101,39 @@ export async function renderPdfPage(
   return bmp
 }
 
+/**
+ * Render only a rectangle of a page (device px of a render `targetWidthPx` wide), for sharp detail
+ * when zoomed in further than a whole-page bitmap may grow.
+ */
+export async function renderPdfRegion(
+  doc: PDFDocumentProxy,
+  pageIndex: number,
+  targetWidthPx: number,
+  rotation: number,
+  region: { x: number; y: number; width: number; height: number },
+  signal?: AbortSignal,
+): Promise<HTMLCanvasElement> {
+  const page = await doc.getPage(pageIndex + 1)
+  const rot = (page.rotate + rotation) % 360
+  const scale = Math.max(0.1, targetWidthPx / page.getViewport({ scale: 1, rotation: rot }).width)
+  const viewport = page.getViewport({ scale, rotation: rot, offsetX: -region.x, offsetY: -region.y })
+  const canvas = document.createElement('canvas')
+  canvas.width = Math.max(1, Math.round(region.width))
+  canvas.height = Math.max(1, Math.round(region.height))
+  const task = page.render({ canvas, viewport, background: 'white' })
+  const onAbort = () => task.cancel()
+  signal?.addEventListener('abort', onAbort)
+  try {
+    await task.promise
+  } catch (e) {
+    canvas.width = canvas.height = 0
+    throw e
+  } finally {
+    signal?.removeEventListener('abort', onAbort)
+  }
+  return canvas
+}
+
 /** Open a throwaway document (not cached) for one-off inspection. */
 export async function withPdf<T>(data: ArrayBuffer | Blob, fn: (doc: PDFDocumentProxy) => Promise<T>): Promise<T> {
   const bytes = data instanceof Blob ? new Uint8Array(await data.arrayBuffer()) : new Uint8Array(data.slice(0))

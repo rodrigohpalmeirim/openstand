@@ -105,7 +105,6 @@ export function Viewer() {
   const mode: DisplayMode = textOnly && preferredMode === 'double' ? 'single' : preferredMode
   const fit = song?.display?.fit ?? s.display.fit
   const [zoom, setZoom] = useState(1)
-  const pinchBase = useRef(1)
   const gap = s.display.pageGap
   const transpose = (transposeMap[songId] ?? 0) + (song?.text?.transpose ?? 0)
   const textStyle = useMemo(() => {
@@ -286,6 +285,132 @@ export function Viewer() {
     if (!paged && position !== 0) goToPage(position < 0 ? pages.length - 1 : position)
   })
 
+  // Zoom keeps the point under the fingers (or mouse) in place. Continuous gestures (pinch, Ctrl+wheel)
+  // only preview with a CSS transform on the scroller; React state changes once, when the gesture ends,
+  // so pages, annotations and canvases are not re-laid out and re-rendered on every frame.
+  const zoomRef = useRef(zoom)
+  zoomRef.current = zoom
+  const preview = useRef<ZoomPreview | null>(null)
+  /** Set when a commit changes the zoom; consumed by the layout effect below once the new size is laid out. */
+  const zoomFocus = useRef<(ZoomFocus & { el: HTMLElement; from: number }) | null>(null)
+  /** A pinch whose preview was cancelled (page/song change) is ignored until the fingers lift. */
+  const pinchDead = useRef(false)
+
+  const paintPreview = useCallback(() => {
+    const p = preview.current
+    if (!p) return
+    p.raf = 0
+    p.el.style.transformOrigin = `${p.fx}px ${p.fy}px`
+    p.el.style.transform = `translate(${p.dx}px, ${p.dy}px) scale(${p.z / p.from})`
+  }, [])
+  const startPreview = useCallback((kind: ZoomPreview['kind'], clientX: number, clientY: number): ZoomPreview | null => {
+    const el = scrollRef.current
+    // The horizontal strip always fits whole pages; zoom has no effect there.
+    if (!el || mode === 'horizontalScroll') return null
+    const r = el.getBoundingClientRect()
+    const from = zoomRef.current
+    preview.current = { kind, el, from, z: from, fx: clientX - r.left, fy: clientY - r.top, dx: 0, dy: 0, raf: 0, timer: 0, anchor: zoomAnchor(el, clientX, clientY, paged) }
+    return preview.current
+  }, [mode, paged])
+  const updatePreview = useCallback((p: ZoomPreview) => {
+    if (!p.raf) p.raf = requestAnimationFrame(paintPreview)
+  }, [paintPreview])
+  const dropPreview = useCallback((p: ZoomPreview) => {
+    cancelAnimationFrame(p.raf)
+    clearTimeout(p.timer)
+    if (preview.current === p) preview.current = null
+  }, [])
+  /** Discard any preview (and a commit not yet laid out) without touching the zoom. */
+  const cancelPreview = useCallback(() => {
+    const p = preview.current
+    if (p) {
+      dropPreview(p)
+      clearZoomTransform(p.el)
+      if (p.kind === 'pinch') pinchDead.current = true
+    }
+    if (zoomFocus.current) {
+      clearZoomTransform(zoomFocus.current.el)
+      zoomFocus.current = null
+    }
+  }, [dropPreview])
+  const commitPreview = useCallback(() => {
+    const p = preview.current
+    if (!p) return
+    dropPreview(p)
+    const focus = { x: p.fx, y: p.fy, dx: p.dx, dy: p.dy, anchor: p.anchor }
+    if (p.z === zoomRef.current || p.el !== scrollRef.current) {
+      // Nothing to re-lay out: settle the pan now.
+      clearZoomTransform(p.el)
+      if (p.el === scrollRef.current) applyZoomScroll(p.el, focus, 1)
+      return
+    }
+    // The transform stays until the new size is laid out; the layout effect swaps it for a scroll.
+    zoomFocus.current = { ...focus, el: p.el, from: p.from }
+    setZoom(p.z)
+  }, [dropPreview])
+  useLayoutEffect(() => {
+    const f = zoomFocus.current
+    zoomFocus.current = null
+    if (!f) return
+    clearZoomTransform(f.el)
+    if (f.el === scrollRef.current && f.from !== zoom) applyZoomScroll(f.el, f, zoom / f.from)
+  }, [zoom])
+  // Discrete zoom, a page turn, a song change or unmounting all drop an in-flight preview.
+  const setZoomNow = useCallback((fn: (z: number) => number) => {
+    cancelPreview()
+    setZoom(fn)
+  }, [cancelPreview])
+  // (Scroll modes report the page in view as they scroll; that's not a reason to cancel.)
+  const pagedPos = paged ? pos : -1
+  useLayoutEffect(() => cancelPreview(), [songId, pagedPos, mode, cancelPreview])
+  useEffect(() => cancelPreview, [cancelPreview])
+
+  useStageGestures(stageRef, {
+    enabled: !annotating,
+    pinchOnly: annotating,
+    zoomed: zoom > 1.01,
+    onPinch: (scale, cx, cy, sx, sy) => {
+      if (pinchDead.current) return
+      let p = preview.current
+      if (p && p.kind !== 'pinch') {
+        commitPreview()
+        p = null
+      }
+      p ??= startPreview('pinch', sx, sy)
+      if (!p) return
+      p.z = clampZoom(p.from * scale)
+      p.dx = cx - sx
+      p.dy = cy - sy
+      updatePreview(p)
+    },
+    onPinchEnd: () => {
+      pinchDead.current = false
+      if (preview.current?.kind === 'pinch') commitPreview()
+    },
+  })
+
+  // Ctrl/Cmd + wheel (and trackpad pinch, which browsers report as Ctrl+wheel) on desktop.
+  useEffect(() => {
+    const el = stageRef.current
+    if (!el) return
+    const onWheel = (e: WheelEvent) => {
+      if (!e.ctrlKey && !e.metaKey) return
+      e.preventDefault()
+      let p = preview.current
+      if (p && p.kind !== 'wheel') return
+      p ??= startPreview('wheel', e.clientX, e.clientY)
+      if (!p) return
+      // A mouse notch is ~10% (as before); trackpads send many small deltas and zoom proportionally.
+      const dy = e.deltaMode === 0 ? e.deltaY : Math.sign(e.deltaY) * 10
+      p.z = clampZoom(p.z * Math.exp(-Math.max(-10, Math.min(10, dy)) * 0.01))
+      updatePreview(p)
+      clearTimeout(p.timer)
+      p.timer = window.setTimeout(commitPreview, 180)
+    }
+    el.addEventListener('wheel', onWheel, { passive: false })
+    return () => el.removeEventListener('wheel', onWheel)
+  }, [startPreview, updatePreview, commitPreview])
+
   useEffect(
     () =>
       registerActions({
@@ -323,9 +448,9 @@ export function Viewer() {
         scrollUp: (src) => scrollStep(-1) || prev(src),
         nextSong: () => goSong(1),
         prevSong: () => goSong(-1),
-        zoomIn: () => setZoom((z) => Math.min(4, z * 1.25)),
-        zoomOut: () => setZoom((z) => Math.max(1, z / 1.25)),
-        resetZoom: () => setZoom(1),
+        zoomIn: () => setZoomNow((z) => Math.min(4, z * 1.25)),
+        zoomOut: () => setZoomNow((z) => Math.max(1, z / 1.25)),
+        resetZoom: () => setZoomNow(() => 1),
         toggleToolbar: () => setV({ toolbar: !useViewer.getState().toolbar }),
         toggleAnnotations: () => setV({ hideAnnotations: !useViewer.getState().hideAnnotations }),
         toggleAnnotate: () => {
@@ -365,7 +490,7 @@ export function Viewer() {
           else v.close()
         },
       }),
-    [next, prev, goSong, paged, stops.length, pages.length, goToPage, scrollStep, setV, s.display.performanceLock, s.display.twoPageTurn, songId, mode, song, currentPage],
+    [next, prev, goSong, paged, stops.length, pages.length, goToPage, scrollStep, setV, s.display.performanceLock, s.display.twoPageTurn, songId, mode, song, currentPage, setZoomNow],
   )
 
   useEffect(() => {
@@ -385,58 +510,6 @@ export function Viewer() {
     })
   })
   useEffect(() => () => setViewerApi(null), [])
-
-  // Zoom keeps the point under the fingers (or mouse) in place; applied once the new size is laid out.
-  const zoomRef = useRef(zoom)
-  zoomRef.current = zoom
-  const zoomFocus = useRef<{ x: number; y: number; from: number } | null>(null)
-  const zoomAt = useCallback((next: number, clientX: number, clientY: number) => {
-    const r = scrollRef.current?.getBoundingClientRect()
-    const z = Math.max(1, Math.min(4, next))
-    if (r && z !== zoomRef.current) zoomFocus.current = { x: clientX - r.left, y: clientY - r.top, from: zoomRef.current }
-    setZoom(z)
-  }, [])
-  useLayoutEffect(() => {
-    const f = zoomFocus.current
-    const el = scrollRef.current
-    zoomFocus.current = null
-    if (!f || !el || f.from === zoom) return
-    const k = zoom / f.from
-    el.scrollLeft = (el.scrollLeft + f.x) * k - f.x
-    el.scrollTop = (el.scrollTop + f.y) * k - f.y
-  }, [zoom])
-
-  // The pinch scale is relative to the start of the gesture, so the base only moves between pinches.
-  const pinching = useRef(false)
-  useStageGestures(stageRef, {
-    enabled: !annotating,
-    pinchOnly: annotating,
-    zoomed: zoom > 1.01,
-    onPinch: (scale, cx, cy) => {
-      pinching.current = true
-      zoomAt(pinchBase.current * scale, cx, cy)
-    },
-    onPinchEnd: () => {
-      pinching.current = false
-      pinchBase.current = zoomRef.current
-    },
-  })
-  useEffect(() => {
-    if (!pinching.current) pinchBase.current = zoom
-  }, [zoom])
-
-  // Ctrl/Cmd + wheel zoom on desktop.
-  useEffect(() => {
-    const el = stageRef.current
-    if (!el) return
-    const onWheel = (e: WheelEvent) => {
-      if (!e.ctrlKey && !e.metaKey) return
-      e.preventDefault()
-      zoomAt(zoomRef.current * (e.deltaY < 0 ? 1.1 : 1 / 1.1), e.clientX, e.clientY)
-    }
-    el.addEventListener('wheel', onWheel, { passive: false })
-    return () => el.removeEventListener('wheel', onWheel)
-  }, [zoomAt])
 
   // Hide the mouse cursor while performing once the mouse is idle.
   const [cursorHidden, setCursorHidden] = useState(false)
@@ -556,6 +629,76 @@ export function Viewer() {
       )}
     </div>
   )
+}
+
+interface ZoomFocus {
+  /** Gesture start point, relative to the scroller's box. */
+  x: number
+  y: number
+  /** How far the gesture's midpoint has moved since then (two-finger pan). */
+  dx: number
+  dy: number
+  anchor: ZoomAnchor | null
+}
+
+/** The page under the focus and where in it (0..1) the focus was. */
+interface ZoomAnchor {
+  page: HTMLElement
+  u: number
+  v: number
+}
+
+interface ZoomPreview {
+  kind: 'pinch' | 'wheel'
+  el: HTMLElement
+  /** Zoom when the gesture started, and the (clamped) zoom it would commit now. */
+  from: number
+  z: number
+  fx: number
+  fy: number
+  dx: number
+  dy: number
+  raf: number
+  timer: number
+  anchor: ZoomAnchor | null
+}
+
+const clampZoom = (z: number) => Math.max(1, Math.min(4, z))
+
+function clearZoomTransform(el: HTMLElement) {
+  el.style.transform = ''
+  el.style.transformOrigin = ''
+}
+
+/** Page boxes scale exactly with zoom (the gaps and the centring around them don't), so they make good anchors. */
+function zoomAnchor(el: HTMLElement, x: number, y: number, paged: boolean): ZoomAnchor | null {
+  const pages = [...((paged ? el.firstElementChild?.children : el.children) ?? [])] as HTMLElement[]
+  let best: { page: HTMLElement; r: DOMRect; d: number } | null = null
+  for (const page of pages) {
+    const r = page.getBoundingClientRect()
+    if (r.width < 1 || r.height < 1) continue
+    const d = Math.hypot(Math.max(r.left - x, 0, x - r.right), Math.max(r.top - y, 0, y - r.bottom))
+    if (!best || d < best.d) best = { page, r, d }
+  }
+  return best && { page: best.page, u: (x - best.r.left) / best.r.width, v: (y - best.r.top) / best.r.height }
+}
+
+/**
+ * Scroll so the content point that was under the focus lands where the focus moved to. Measured on the
+ * anchor page when there is one, since centring makes content not scale from the origin; otherwise
+ * newScroll = (oldScroll + f) * k - (f + d).
+ */
+function applyZoomScroll(el: HTMLElement, f: ZoomFocus, k: number) {
+  const a = f.anchor
+  if (a?.page.isConnected && el.contains(a.page)) {
+    const r = el.getBoundingClientRect()
+    const p = a.page.getBoundingClientRect()
+    el.scrollLeft += p.left + a.u * p.width - (r.left + f.x + f.dx)
+    el.scrollTop += p.top + a.v * p.height - (r.top + f.y + f.dy)
+    return
+  }
+  el.scrollLeft = (el.scrollLeft + f.x) * k - (f.x + f.dx)
+  el.scrollTop = (el.scrollTop + f.y) * k - (f.y + f.dy)
 }
 
 export interface PageCtx {

@@ -105,7 +105,9 @@ interface GestureOpts {
   pinchOnly?: boolean
   /** Current zoom; swipes are disabled when zoomed in so panning works. */
   zoomed: boolean
-  onPinch?: (scale: number, cx: number, cy: number) => void
+  /** `scale` is relative to the finger distance at the start; (sx, sy) is the start midpoint. */
+  onPinch?: (scale: number, cx: number, cy: number, sx: number, sy: number) => void
+  /** Fires once when a pinch ends: a finger lifts (fewer than two remain), a third lands, or it is cancelled. */
   onPinchEnd?: () => void
 }
 
@@ -118,6 +120,7 @@ export function useStageGestures(ref: React.RefObject<HTMLElement | null>, opts:
     if (!el) return
     const pts = new Map<number, { x: number; y: number; t: number; sx: number; sy: number }>()
     let pinchStart = 0
+    let pinchMid = { x: 0, y: 0 }
     let longTimer = 0
     let longFired = false
     let lastTap = { t: 0, x: 0, y: 0 }
@@ -130,6 +133,11 @@ export function useStageGestures(ref: React.RefObject<HTMLElement | null>, opts:
 
     const fire = (a: ActionId) => {
       if (!debounced(a)) runAction(a, 'touch')
+    }
+    const endPinch = () => {
+      if (pinchStart <= 0) return
+      pinchStart = 0
+      o.current.onPinchEnd?.()
     }
 
     const down = (e: PointerEvent) => {
@@ -144,6 +152,9 @@ export function useStageGestures(ref: React.RefObject<HTMLElement | null>, opts:
         clearTimeout(longTimer)
         const [a, b] = [...pts.values()]
         pinchStart = Math.hypot(a.x - b.x, a.y - b.y)
+        pinchMid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }
+      } else if (pts.size > 2) {
+        endPinch()
       } else if (pts.size === 1) {
         multi = false
         maxPts = 1
@@ -171,7 +182,7 @@ export function useStageGestures(ref: React.RefObject<HTMLElement | null>, opts:
       if (pts.size === 2 && pinchStart > 0) {
         const [a, b] = [...pts.values()]
         const d = Math.hypot(a.x - b.x, a.y - b.y)
-        o.current.onPinch?.(d / pinchStart, (a.x + b.x) / 2, (a.y + b.y) / 2)
+        o.current.onPinch?.(d / pinchStart, (a.x + b.x) / 2, (a.y + b.y) / 2, pinchMid.x, pinchMid.y)
       }
     }
     const up = (e: PointerEvent) => {
@@ -179,12 +190,12 @@ export function useStageGestures(ref: React.RefObject<HTMLElement | null>, opts:
       pts.delete(e.pointerId)
       clearTimeout(longTimer)
       if (!p) return
+      // Lifting one finger ends the pinch even while the other stays down.
+      if (pts.size < 2) endPinch()
       if (!o.current.enabled && !multi) return
       if (multi) {
         if (pts.size === 0) {
           multi = false
-          pinchStart = 0
-          o.current.onPinchEnd?.()
           if (o.current.enabled && !multiMoved && performance.now() - multiStart < 350) {
             const cfg = settings().pageTurn
             fire(maxPts >= 3 ? cfg.threeFingerTap : cfg.twoFingerTap)
@@ -227,12 +238,10 @@ export function useStageGestures(ref: React.RefObject<HTMLElement | null>, opts:
       tapTimer = window.setTimeout(() => fire(zoneAction), 280)
     }
     const cancel = (e: PointerEvent) => {
-      pts.delete(e.pointerId)
+      if (!pts.delete(e.pointerId)) return
       clearTimeout(longTimer)
-      if (pts.size === 0 && multi) {
-        multi = false
-        o.current.onPinchEnd?.()
-      }
+      if (pts.size < 2) endPinch()
+      if (pts.size === 0) multi = false
     }
     el.addEventListener('pointerdown', down)
     window.addEventListener('pointermove', move)
