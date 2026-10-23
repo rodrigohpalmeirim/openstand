@@ -9,9 +9,10 @@ import { useSettings } from '../state/settings'
 import { useViewer } from '../state/viewer'
 import { toast } from '../ui/primitives'
 import { registerActions, runAction } from './actions'
-import { setViewerApi } from './api'
+import { setViewerApi, ZOOM_PREVIEW_ATTR } from './api'
 import { askGoToPage } from './askPage'
 import { emit } from './events'
+import { exitFullscreen, isFullscreen, requestFullscreen } from './fullscreen'
 import { useKeyBindings, useStageGestures } from './input'
 import { computeStops, firstPageOf, fitPage, fitSpread, prefetchPages, scrollPageSize, stopForPage, type Box, type Stop } from './layout'
 import { LinkMarkers } from './LinkMarkers'
@@ -286,13 +287,15 @@ export function Viewer() {
   })
 
   // Zoom keeps the point under the fingers (or mouse) in place. Continuous gestures (pinch, Ctrl+wheel)
-  // only preview with a CSS transform on the scroller; React state changes once, when the gesture ends,
-  // so pages, annotations and canvases are not re-laid out and re-rendered on every frame.
+  // only preview with a CSS transform on the scroller's content; React state changes once, when the
+  // gesture ends, so pages, annotations and canvases are not re-laid out and re-rendered on every frame.
+  // Transforming the content (not the scroller, which clips to its box) lets zooming out reveal what is
+  // around the old viewport.
   const zoomRef = useRef(zoom)
   zoomRef.current = zoom
   const preview = useRef<ZoomPreview | null>(null)
   /** Set when a commit changes the zoom; consumed by the layout effect below once the new size is laid out. */
-  const zoomFocus = useRef<(ZoomFocus & { el: HTMLElement; from: number }) | null>(null)
+  const zoomFocus = useRef<ZoomPreview | null>(null)
   /** A pinch whose preview was cancelled (page/song change) is ignored until the fingers lift. */
   const pinchDead = useRef(false)
 
@@ -300,18 +303,30 @@ export function Viewer() {
     const p = preview.current
     if (!p) return
     p.raf = 0
-    p.el.style.transformOrigin = `${p.fx}px ${p.fy}px`
-    p.el.style.transform = `translate(${p.dx}px, ${p.dy}px) scale(${p.z / p.from})`
+    paintZoomTransform(p)
   }, [])
   const startPreview = useCallback((kind: ZoomPreview['kind'], clientX: number, clientY: number): ZoomPreview | null => {
     const el = scrollRef.current
+    const content = el?.querySelector<HTMLElement>(':scope > [data-zoom-content]')
     // The horizontal strip always fits whole pages; zoom has no effect there.
-    if (!el || mode === 'horizontalScroll') return null
+    if (!el || !content || mode === 'horizontalScroll') return null
+    // A page-turn animation would override the inline transform until it ends.
+    for (const a of content.getAnimations()) a.finish()
     const r = el.getBoundingClientRect()
+    const c = content.getBoundingClientRect()
     const from = zoomRef.current
-    preview.current = { kind, el, from, z: from, fx: clientX - r.left, fy: clientY - r.top, dx: 0, dy: 0, raf: 0, timer: 0, anchor: zoomAnchor(el, clientX, clientY, paged) }
-    return preview.current
-  }, [mode, paged])
+    const at = { fx: clientX - r.left, fy: clientY - r.top, dx: 0, dy: 0, sx: el.scrollLeft, sy: el.scrollTop, ox: clientX - c.left, oy: clientY - c.top }
+    const p: ZoomPreview = { kind, el, content, from, z: from, ...at, raf: 0, timer: 0, anchor: zoomAnchor(content, clientX, clientY) }
+    // Scaling the content down shrinks the scroll range, and the browser would clamp the scroll offset
+    // mid-gesture. So scroll to 0,0 and fold the offset into the transform (in the same frame).
+    el.setAttribute(ZOOM_PREVIEW_ATTR, '')
+    content.style.willChange = 'transform'
+    paintZoomTransform(p)
+    el.scrollLeft = 0
+    el.scrollTop = 0
+    preview.current = p
+    return p
+  }, [mode])
   const updatePreview = useCallback((p: ZoomPreview) => {
     if (!p.raf) p.raf = requestAnimationFrame(paintPreview)
   }, [paintPreview])
@@ -320,16 +335,16 @@ export function Viewer() {
     clearTimeout(p.timer)
     if (preview.current === p) preview.current = null
   }, [])
-  /** Discard any preview (and a commit not yet laid out) without touching the zoom. */
+  /** Discard any preview (and a commit not yet laid out) without touching the zoom; keeps the pan. */
   const cancelPreview = useCallback(() => {
     const p = preview.current
     if (p) {
       dropPreview(p)
-      clearZoomTransform(p.el)
+      endZoomPreview(p)
       if (p.kind === 'pinch') pinchDead.current = true
     }
     if (zoomFocus.current) {
-      clearZoomTransform(zoomFocus.current.el)
+      endZoomPreview(zoomFocus.current)
       zoomFocus.current = null
     }
   }, [dropPreview])
@@ -337,24 +352,34 @@ export function Viewer() {
     const p = preview.current
     if (!p) return
     dropPreview(p)
-    const focus = { x: p.fx, y: p.fy, dx: p.dx, dy: p.dy, anchor: p.anchor }
     if (p.z === zoomRef.current || p.el !== scrollRef.current) {
       // Nothing to re-lay out: settle the pan now.
-      clearZoomTransform(p.el)
-      if (p.el === scrollRef.current) applyZoomScroll(p.el, focus, 1)
+      clearZoomTransform(p)
+      if (p.el === scrollRef.current) applyZoomScroll(p.el, p, 1)
       return
     }
     // The transform stays until the new size is laid out; the layout effect swaps it for a scroll.
-    zoomFocus.current = { ...focus, el: p.el, from: p.from }
+    zoomFocus.current = p
     setZoom(p.z)
   }, [dropPreview])
   useLayoutEffect(() => {
     const f = zoomFocus.current
     zoomFocus.current = null
     if (!f) return
-    clearZoomTransform(f.el)
-    if (f.el === scrollRef.current && f.from !== zoom) applyZoomScroll(f.el, f, zoom / f.from)
+    if (f.el === scrollRef.current && f.from !== zoom) {
+      clearZoomTransform(f)
+      applyZoomScroll(f.el, f, zoom / f.from)
+    } else endZoomPreview(f)
   }, [zoom])
+  // The scroll to 0,0 when a preview starts (and anything else moving the scroller mid-preview) is not a
+  // real scroll: keep it from the page-in-view report, detail renders and other scroll listeners.
+  useEffect(() => {
+    const swallow = (e: Event) => {
+      if (e.target instanceof Element && e.target.hasAttribute(ZOOM_PREVIEW_ATTR)) e.stopImmediatePropagation()
+    }
+    window.addEventListener('scroll', swallow, true)
+    return () => window.removeEventListener('scroll', swallow, true)
+  }, [])
   // Discrete zoom, a page turn, a song change or unmounting all drop an in-flight preview.
   const setZoomNow = useCallback((fn: (z: number) => number) => {
     cancelPreview()
@@ -480,8 +505,9 @@ export function Viewer() {
         toggleNotes: () => setV({ panel: useViewer.getState().panel === 'notes' ? null : 'notes', toolbar: true }),
         toggleNightMode: () => useSettings.getState().setIn('display', { nightMode: !useSettings.getState().s.display.nightMode }),
         toggleFullscreen: () => {
-          if (document.fullscreenElement) document.exitFullscreen().catch(() => {})
-          else document.documentElement.requestFullscreen?.().catch(() => {})
+          // The user's own choice: leavePerformanceFullscreen won't undo it (see fullscreen.ts).
+          if (isFullscreen()) exitFullscreen().catch(() => {})
+          else requestFullscreen().catch(() => {})
         },
         closeSong: () => {
           const v = useViewer.getState()
@@ -631,16 +657,6 @@ export function Viewer() {
   )
 }
 
-interface ZoomFocus {
-  /** Gesture start point, relative to the scroller's box. */
-  x: number
-  y: number
-  /** How far the gesture's midpoint has moved since then (two-finger pan). */
-  dx: number
-  dy: number
-  anchor: ZoomAnchor | null
-}
-
 /** The page under the focus and where in it (0..1) the focus was. */
 interface ZoomAnchor {
   page: HTMLElement
@@ -650,14 +666,24 @@ interface ZoomAnchor {
 
 interface ZoomPreview {
   kind: 'pinch' | 'wheel'
+  /** The scroller, and its content element that the preview transforms. */
   el: HTMLElement
+  content: HTMLElement
   /** Zoom when the gesture started, and the (clamped) zoom it would commit now. */
   from: number
   z: number
+  /** Gesture start point, relative to the scroller's box. */
   fx: number
   fy: number
+  /** How far the gesture's midpoint has moved since then (two-finger pan). */
   dx: number
   dy: number
+  /** The scroller's scroll offset when the gesture started (it is at 0,0 during the preview). */
+  sx: number
+  sy: number
+  /** Gesture start point relative to the content's box (the transform origin). */
+  ox: number
+  oy: number
   raf: number
   timer: number
   anchor: ZoomAnchor | null
@@ -665,14 +691,32 @@ interface ZoomPreview {
 
 const clampZoom = (z: number) => Math.max(1, Math.min(4, z))
 
-function clearZoomTransform(el: HTMLElement) {
-  el.style.transform = ''
-  el.style.transformOrigin = ''
+/**
+ * With the scroller at 0,0, the content point under the gesture start sits at the transform origin;
+ * translating by the old scroll offset puts it back under the start point, and the pan moves it along.
+ */
+function paintZoomTransform(p: ZoomPreview) {
+  p.content.style.transformOrigin = `${p.ox}px ${p.oy}px`
+  p.content.style.transform = `translate(${p.dx - p.sx}px, ${p.dy - p.sy}px) scale(${p.z / p.from})`
+}
+
+function clearZoomTransform(p: ZoomPreview) {
+  p.content.style.transform = ''
+  p.content.style.transformOrigin = ''
+  p.content.style.willChange = ''
+  p.el.removeAttribute(ZOOM_PREVIEW_ATTR)
+}
+
+/** Drop the transform and go back to the scroll offset the gesture started at, keeping its pan. */
+function endZoomPreview(p: ZoomPreview) {
+  clearZoomTransform(p)
+  p.el.scrollLeft = p.sx - p.dx
+  p.el.scrollTop = p.sy - p.dy
 }
 
 /** Page boxes scale exactly with zoom (the gaps and the centring around them don't), so they make good anchors. */
-function zoomAnchor(el: HTMLElement, x: number, y: number, paged: boolean): ZoomAnchor | null {
-  const pages = [...((paged ? el.firstElementChild?.children : el.children) ?? [])] as HTMLElement[]
+function zoomAnchor(content: HTMLElement, x: number, y: number): ZoomAnchor | null {
+  const pages = [...content.children] as HTMLElement[]
   let best: { page: HTMLElement; r: DOMRect; d: number } | null = null
   for (const page of pages) {
     const r = page.getBoundingClientRect()
@@ -684,21 +728,21 @@ function zoomAnchor(el: HTMLElement, x: number, y: number, paged: boolean): Zoom
 }
 
 /**
- * Scroll so the content point that was under the focus lands where the focus moved to. Measured on the
- * anchor page when there is one, since centring makes content not scale from the origin; otherwise
- * newScroll = (oldScroll + f) * k - (f + d).
+ * Once the transform is gone, scroll so the content point that was under the focus lands where the focus
+ * moved to. Measured on the anchor page when there is one, since centring makes content not scale from
+ * the origin; otherwise newScroll = (startScroll + f) * k - (f + d).
  */
-function applyZoomScroll(el: HTMLElement, f: ZoomFocus, k: number) {
+function applyZoomScroll(el: HTMLElement, f: ZoomPreview, k: number) {
   const a = f.anchor
   if (a?.page.isConnected && el.contains(a.page)) {
     const r = el.getBoundingClientRect()
     const p = a.page.getBoundingClientRect()
-    el.scrollLeft += p.left + a.u * p.width - (r.left + f.x + f.dx)
-    el.scrollTop += p.top + a.v * p.height - (r.top + f.y + f.dy)
+    el.scrollLeft += p.left + a.u * p.width - (r.left + f.fx + f.dx)
+    el.scrollTop += p.top + a.v * p.height - (r.top + f.fy + f.dy)
     return
   }
-  el.scrollLeft = (el.scrollLeft + f.x) * k - (f.x + f.dx)
-  el.scrollTop = (el.scrollTop + f.y) * k - (f.y + f.dy)
+  el.scrollLeft = (f.sx + f.fx) * k - (f.fx + f.dx)
+  el.scrollTop = (f.sy + f.fy) * k - (f.fy + f.dy)
 }
 
 export interface PageCtx {
@@ -822,6 +866,7 @@ function PagedStop({ stop, pages, box, fit, zoom, gap, ctx, direction, transitio
   const total = { width: sizes.reduce((a, b) => a + b.width, 0) + gap * (sizes.length - 1), height: Math.max(...sizes.map((b) => b.height)) }
   return (
     <div
+      data-zoom-content
       className={`flex items-center justify-center ${anim}`}
       style={{ minWidth: '100%', minHeight: '100%', width: total.width, height: total.height, gap, margin: '0 auto' }}
     >
@@ -874,40 +919,67 @@ function ScrollStrip({ scrollRef, pages, box, fit, zoom, gap, ctx, horizontal, o
   useEffect(() => {
     const root = scrollRef.current
     if (!root) return
-    const io = new IntersectionObserver(
-      (entries) => {
+    // While a zoom preview transforms the strip, pages entering or leaving the range wait for it to end,
+    // except ones that come on screen: the rest would only be rendered at the old zoom for nothing.
+    const pending = new Map<number, boolean>()
+    let raf = 0
+    const flush = () => {
+      raf = 0
+      const zooming = root.hasAttribute(ZOOM_PREVIEW_ATTR)
+      const r = zooming ? root.getBoundingClientRect() : null
+      const apply: [number, boolean][] = []
+      for (const [i, on] of pending) {
+        if (r) {
+          const b = on ? root.querySelector(`[data-page="${i}"]`)?.getBoundingClientRect() : undefined
+          if (!b || b.bottom <= r.top || b.top >= r.bottom || b.right <= r.left || b.left >= r.right) continue
+        }
+        apply.push([i, on])
+        pending.delete(i)
+      }
+      if (apply.length)
         setVisible((prev) => {
           const nextSet = new Set(prev)
-          for (const e of entries) {
-            const i = Number((e.target as HTMLElement).dataset.page)
-            if (e.isIntersecting) nextSet.add(i)
+          for (const [i, on] of apply) {
+            if (on) nextSet.add(i)
             else nextSet.delete(i)
           }
           return nextSet
         })
+      if (zooming && pending.size) raf = requestAnimationFrame(flush)
+    }
+    const io = new IntersectionObserver(
+      (entries) => {
+        for (const e of entries) pending.set(Number((e.target as HTMLElement).dataset.page), e.isIntersecting)
+        if (!raf) flush()
       },
       { root, rootMargin: '150% 150%' },
     )
     root.querySelectorAll('[data-page]').forEach((el) => io.observe(el))
-    return () => io.disconnect()
-  }, [scrollRef, pages])
+    return () => {
+      io.disconnect()
+      cancelAnimationFrame(raf)
+    }
+  }, [scrollRef, pages, horizontal]) // switching direction re-parents the pages
   // A thin seam between pages (the page-gap setting widens it); the strip starts below the top bar and
   // ends above the bottom bar so neither hides the first or last system.
   const seam = Math.max(gap, 4)
+  const items = pages.map((dp, i) => {
+    const size = horizontal ? fitPage(dp.aspect, box, 'page') : scrollPageSize(dp.aspect, box, fit, zoom)
+    return (
+      <div key={dp.key} data-page={i} className={horizontal ? 'flex shrink-0 snap-start items-center justify-center' : 'mx-auto'} style={horizontal ? { width: box.width, height: box.height } : { width: size.width, height: size.height, marginTop: i ? seam : 0 }}>
+        {visible.has(i) ? <DisplayPageView dp={dp} index={i} size={size} ctx={ctx} /> : <div style={size} className="bg-white/5" />}
+      </div>
+    )
+  })
   return (
     <div
       ref={scrollRef}
       className={`absolute inset-0 overflow-auto ${horizontal ? 'flex snap-x snap-mandatory' : ''}`}
       style={horizontal ? { gap: Math.max(gap, 8) } : { paddingTop: topPad, paddingBottom: 56, scrollPaddingTop: scrollPad }}
     >
-      {pages.map((dp, i) => {
-        const size = horizontal ? fitPage(dp.aspect, box, 'page') : scrollPageSize(dp.aspect, box, fit, zoom)
-        return (
-          <div key={dp.key} data-page={i} className={horizontal ? 'flex shrink-0 snap-start items-center justify-center' : 'mx-auto'} style={horizontal ? { width: box.width, height: box.height } : { width: size.width, height: size.height, marginTop: i ? seam : 0 }}>
-            {visible.has(i) ? <DisplayPageView dp={dp} index={i} size={size} ctx={ctx} /> : <div style={size} className="bg-white/5" />}
-          </div>
-        )
-      })}
+      {/* The vertical strip's pages share one wrapper for the zoom preview to transform (horizontal never zooms).
+          It is a static block, so the pages' offsetParent is still the scroller. */}
+      {horizontal ? items : <div data-zoom-content>{items}</div>}
     </div>
   )
 }

@@ -20,6 +20,9 @@ export interface ViewerApi {
   prev: () => void
 }
 
+/** Set on the scroller while a zoom preview (pinch, Ctrl+wheel) transforms its content: its scroll offset is not real. */
+export const ZOOM_PREVIEW_ATTR = 'data-zoom-preview'
+
 let current: ViewerApi | null = null
 
 export function setViewerApi(api: ViewerApi | null) {

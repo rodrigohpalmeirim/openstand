@@ -4,7 +4,7 @@ import type { Song } from '../../db/schema'
 import { settings, useSettings } from '../../state/settings'
 import { useViewer } from '../../state/viewer'
 import { toast } from '../../ui/primitives'
-import { viewerApi } from '../../viewer/api'
+import { viewerApi, ZOOM_PREVIEW_ATTR } from '../../viewer/api'
 import type { Stop } from '../../viewer/layout'
 import { stopAutoScroll, useTools } from '../store'
 import { songAutoScroll } from './config'
@@ -43,7 +43,7 @@ export function AutoScroller({ song, stops, pos, paged }: { song: Song; stops: S
     const skip = useTools.getState().skipScrollDelay
     useTools.setState({ skipScrollDelay: false })
     let last = performance.now()
-    const startAt = last + (skip ? 0 : Math.max(0, s.delay) * 1000)
+    let startAt = last + (skip ? 0 : Math.max(0, s.delay) * 1000)
     if (!skip && s.delay >= 1) toast(`Auto-scroll starts in ${Math.round(s.delay)} s`)
     let acc: number | null = null
     let waitUntil = 0
@@ -60,9 +60,19 @@ export function AutoScroller({ song, stops, pos, paged }: { song: Song; stops: S
 
     const frame = (now: number) => {
       raf = requestAnimationFrame(frame)
+      const api = viewerApi()
+      if (api?.scroller?.hasAttribute(ZOOM_PREVIEW_ATTR)) {
+        // Zoom preview: the scroller sits at 0,0 with a shrunken range, so its scroll is not real. Freeze
+        // (shift the deadlines by the time spent here); acc resyncs to the settled scroll afterwards.
+        const gap = now - last
+        last = now
+        startAt += gap
+        if (waitUntil) waitUntil += gap
+        if (nextTurnAt) nextTurnAt += gap
+        return
+      }
       const dt = Math.min(0.1, (now - last) / 1000)
       last = now
-      const api = viewerApi()
       if (!api) return
       const { stops: st, pos: p, paged: isPaged } = live.current
       const views = isPaged ? Math.max(1, st.length) : Math.max(1, api.pageCount)
