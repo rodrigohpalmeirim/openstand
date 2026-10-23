@@ -30,6 +30,7 @@ import { SyncStatus } from '../sync/SyncStatus'
 import { ViewerAddons } from '../tools/ViewerAddons'
 import { cx, useMenu } from '../ui/primitives'
 import { DARK_VARS, DarkMenu } from './dark'
+import { isFullscreen, onFullscreenChange } from './fullscreen'
 import { askGoToPage } from './askPage'
 import { PagePreview } from './PagePreview'
 import { runAction } from './actions'
@@ -106,7 +107,7 @@ export function ViewerChrome(props: Props) {
   const s = useSettings((st) => st.s)
   const setlist = useLiveQuery(() => (v.setlistId ? db.setlists.get(v.setlistId) : undefined), [v.setlistId])
   const nextSong = useLiveQuery(() => (v.queue[v.index + 1] ? db.songs.get(v.queue[v.index + 1]) : undefined), [v.queue, v.index])
-  const [fs, setFs] = useState(!!document.fullscreenElement)
+  const [fs, setFs] = useState(isFullscreen)
   const more = useMenu()
   const [scrub, setScrub] = useState<{ index: number; left: number } | null>(null)
   const isText = pages.some((p) => p.type === 'text' || p.type === 'abc')
@@ -115,11 +116,7 @@ export function ViewerChrome(props: Props) {
   const compactAnnot = useMedia('(max-width: 639px), (max-height: 500px)') && v.annotating
   const keyText = useMemo(() => keyLabel(song, pages), [song, pages])
 
-  useEffect(() => {
-    const on = () => setFs(!!document.fullscreenElement)
-    document.addEventListener('fullscreenchange', on)
-    return () => document.removeEventListener('fullscreenchange', on)
-  }, [])
+  useEffect(() => onFullscreenChange(() => setFs(isFullscreen())), [])
 
   const togglePanel = (p: Panel) => v.set({ panel: v.panel === p ? null : p })
   const panelProps: PanelProps = { ...props, close: () => v.set({ panel: null }) }

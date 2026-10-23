@@ -317,7 +317,7 @@ export const DEFAULT_SETTINGS: Settings = {
     keepScreenOn: true,
     toolbarAutoHide: 3,
     showNextSongHint: true,
-    fullscreen: false,
+    fullscreen: true,
     performanceLock: false,
   },
 

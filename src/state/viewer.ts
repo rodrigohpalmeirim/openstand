@@ -1,4 +1,6 @@
 import { create } from 'zustand'
+import { enterPerformanceFullscreen, leavePerformanceFullscreen } from '../viewer/fullscreen'
+import { settings } from './settings'
 
 export type Panel = null | 'setlist' | 'bookmarks' | 'display' | 'metronome' | 'audio' | 'notes' | 'text' | 'goto' | 'links' | 'midi' | 'pages' | 'autoscroll'
 
@@ -48,6 +50,8 @@ export const useViewer = create<ViewerState>((set) => ({
   autoScrollOn: false,
 
   open: (queue, index = 0, opts = {}) => {
+    // Synchronously, while the opening click's user activation is still valid.
+    if (settings().display.fullscreen) enterPerformanceFullscreen()
     const toolbar = !openedThisSession
     openedThisSession = true
     set({
@@ -62,7 +66,10 @@ export const useViewer = create<ViewerState>((set) => ({
       autoScrollOn: false,
     })
   },
-  close: () => set({ queue: [], index: 0, setlistId: undefined, annotating: false, panel: null, metronomeOn: false, autoScrollOn: false }),
+  close: () => {
+    leavePerformanceFullscreen()
+    set({ queue: [], index: 0, setlistId: undefined, annotating: false, panel: null, metronomeOn: false, autoScrollOn: false })
+  },
   goSong: (index, position = 0) => set({ index, position, linkReturn: [], autoScrollOn: false }),
   setPosition: (position) => set({ position }),
   set: (patch) => set(patch),
