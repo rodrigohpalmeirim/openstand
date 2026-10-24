@@ -1,5 +1,6 @@
-import Dexie, { type EntityTable } from 'dexie'
+import Dexie, { type EntityTable, type Table } from 'dexie'
 import type { BlobRecord, KV, PageAnnotations, Setlist, Song, ThumbRecord } from './schema'
+import type { ChunkRow, DirtyRow, OutboxRow, ShadowRecord, SyncStateRow, TransferRow } from '../libsync/model'
 
 export class OpenStandDB extends Dexie {
   songs!: EntityTable<Song, 'id'>
@@ -8,6 +9,13 @@ export class OpenStandDB extends Dexie {
   annotations!: EntityTable<PageAnnotations, 'id'>
   thumbs!: EntityTable<ThumbRecord, 'id'>
   kv!: EntityTable<KV, 'key'>
+  // Library sync (docs/SYNC.md §6.2). Never backed up or synced themselves.
+  syncState!: EntityTable<SyncStateRow, 'key'>
+  syncDirty!: EntityTable<DirtyRow, 'id'>
+  syncShadow!: EntityTable<ShadowRecord, 'id'>
+  syncOutbox!: EntityTable<OutboxRow, 'seq'>
+  syncTransfers!: Table<TransferRow, [TransferRow['dir'], string]>
+  syncChunks!: Table<ChunkRow, [string, number]>
 
   constructor(name = 'openstand') {
     super(name)
@@ -20,6 +28,14 @@ export class OpenStandDB extends Dexie {
       annotations: 'id, songId, fileId',
       thumbs: 'id',
       kv: 'key',
+    })
+    this.version(2).stores({
+      syncState: 'key',
+      syncDirty: 'id, deferredSince',
+      syncShadow: 'id, c',
+      syncOutbox: 'seq',
+      syncTransfers: '[dir+hash], state, priority',
+      syncChunks: '[hash+index]',
     })
   }
 }
