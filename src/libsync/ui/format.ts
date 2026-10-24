@@ -90,7 +90,32 @@ export function phaseLine(s: LibSyncStatus, now = Date.now()): string {
   }
 }
 
-export type ErrorAction = 'updateKeys' | 'showCors' | 'openProvider' | 'storageSettings' | 'retry' | 'joinAgain' | 'joinNew' | 'stopSyncing' | 'reload' | 'rejoin'
+/** Connection details → "Instant updates": the relay state, and why when it's off. */
+export function relayLine(s: Pick<LibSyncStatus, 'phase' | 'relay' | 'relayConfigured'>): string {
+  switch (s.relay) {
+    case 'open':
+      return 'Connected'
+    case 'connecting':
+      return 'Connecting…'
+    case 'error':
+      return 'Not connected (retrying)'
+  }
+  if (s.phase === 'paused') return 'Paused'
+  if (s.phase === 'off' || s.phase === 'starting') return 'Starting…'
+  if (s.relayConfigured === false) return 'No relay configured'
+  return 'Not connected (retrying)'
+}
+
+/** Status card: what instant updates are doing, once sync runs (paused/offline/error say it themselves). */
+export function relayNote(s: Pick<LibSyncStatus, 'phase' | 'relay' | 'relayConfigured'>): string | undefined {
+  if (s.phase !== 'idle' && s.phase !== 'syncing') return undefined
+  if (s.relay === 'open') return 'Instant updates on'
+  if (s.relay === 'error') return 'Instant updates reconnecting'
+  if (s.relay === 'off' && s.relayConfigured === false) return 'Instant updates off: no relay configured'
+  return 'Instant updates connecting…'
+}
+
+export type ErrorAction ='updateKeys' | 'showCors' | 'openProvider' | 'storageSettings' | 'retry' | 'joinAgain' | 'joinNew' | 'stopSyncing' | 'reload' | 'rejoin'
 
 export interface ErrorText {
   message: string

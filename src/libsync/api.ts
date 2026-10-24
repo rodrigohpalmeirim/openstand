@@ -63,6 +63,8 @@ export interface LibSyncStatus {
   /** Initial upload (enable) or join in progress. */
   initial?: { kind: 'upload' | 'join'; step: string; done: number; total: number }
   relay: 'off' | 'connecting' | 'open' | 'error'
+  /** A relay is set for this library; when false, `relay` is 'off' because there is none (sync polls). */
+  relayConfigured?: boolean
   devices: (DeviceRecord & { self: boolean })[]
   /**
    * Fatal when `phase` is `error`. For compatibility a non-fatal `warning` is also mirrored here while the

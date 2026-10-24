@@ -215,6 +215,8 @@ export interface EngineStatus {
   download: TransferProgress
   offlineReady: { have: number; total: number }
   relay: RelayState
+  /** A relay is set for this library (`config.relay`); without one `relay` stays 'off' and sync polls. */
+  relayConfigured: boolean
   devices: (DeviceRecord & { self: boolean })[]
   error?: LibSyncError
   /** Another device's clock is ahead (§6.1), or a device's changes can't be read for now; shown, not fatal. */
@@ -356,6 +358,7 @@ export class Engine {
       download: { files: 0, bytes: 0, doneFiles: 0, doneBytes: 0 },
       offlineReady: { have: 0, total: 0 },
       relay: 'off',
+      relayConfigured: !!core.config.relay,
       devices: [],
       diag: { pollMs: POLL.visible },
     }
@@ -1573,6 +1576,20 @@ export class Engine {
     this.connectRelay()
     await this.refreshStatus().catch(() => {})
     this.runSoon(0, 'start')
+    void this.refreshOwnRecord().catch((e) => this.core.log?.('device record refresh failed', e))
+  }
+
+  /**
+   * This device's record names it by default (no name of the user's own) or its platform changed, e.g. a
+   * newer version detects the device better: rewrite it now rather than at the next daily refresh.
+   */
+  private async refreshOwnRecord() {
+    const own = this.status.devices.find((d) => d.self)
+    if (!own || this.config.paused) return
+    if (own.name === (await this.ownName()) && own.platform === platformName()) return
+    await this.locked(async () => {
+      if (!this.stopped) await this.putDevice()
+    })
   }
 
   stop() {
@@ -1585,6 +1602,19 @@ export class Engine {
     this.relay?.close()
     this.relay = undefined
     this.transfers.stop()
+  }
+
+  /**
+   * Use this relay from now on (config persisted by the caller): a library set up without one (the site's
+   * relay check failed then) adopts the site's relay once it answers.
+   */
+  adoptRelay(base: string) {
+    if (this.config.relay === base) return
+    this.relay?.close()
+    this.relay = undefined
+    this.core.config = { ...this.core.config, relay: base }
+    this.setStatus({ relay: 'off', relayConfigured: true })
+    if (this.started && !this.stopped) this.connectRelay()
   }
 
   /** Pause or resume (config persisted by the caller). */

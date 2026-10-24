@@ -27,7 +27,7 @@ import { useSettings } from '../../state/settings'
 import { defaultDeviceName } from '../../sync/deviceName'
 import { Button, Dialog, Field, IconButton, Input, confirmDialog, cx, toast } from '../../ui/primitives'
 import { checkBackend, currentPayload, deleteRemoteData, enableSync, leaveSync, renameDevice, repair, setPaused, syncNow, testInstantSync, updateBackend } from './client'
-import { active, controls, downloadLine, errorText, failureText, fraction, initialLine, phaseLine, plural, syncProblem, timeAgo, uploadLine, type ErrorAction } from './format'
+import { active, controls, downloadLine, errorText, failureText, fraction, initialLine, phaseLine, plural, relayLine, relayNote, syncProblem, timeAgo, uploadLine, type ErrorAction } from './format'
 import { JoinFlow } from './JoinFlow'
 import { PairingQr } from './PairingQr'
 import { Bar, Block, Note, SwitchRow } from './parts'
@@ -178,6 +178,7 @@ function StatusCard({ s }: { s: LibSyncStatus }) {
   const warned = !!syncProblem(s).warning
   const dot = s.phase === 'idle' ? (warned ? 'bg-warn' : 'bg-ok') : s.phase === 'error' ? 'bg-danger' : s.phase === 'offline' || s.phase === 'paused' ? 'bg-faint' : 'bg-warn animate-pulse'
   const missing = s.offlineReady.total - s.offlineReady.have
+  const note = relayNote(s)
   return (
     <div className="grid gap-3 rounded-xl border border-line bg-surface-2 px-4 py-3" role="status" aria-live="polite">
       <div className="flex items-start gap-3">
@@ -189,7 +190,7 @@ function StatusCard({ s }: { s: LibSyncStatus }) {
           </div>
           <div className="text-xs text-muted">
             {s.pendingChanges > 0 ? `${plural(s.pendingChanges, 'change')} waiting to upload` : s.phase === 'idle' ? 'All changes uploaded' : ''}
-            {s.relay === 'open' && (s.phase === 'idle' || s.phase === 'syncing') ? `${s.pendingChanges > 0 || s.phase === 'idle' ? ' · ' : ''}Instant updates on` : ''}
+            {note ? `${s.pendingChanges > 0 || s.phase === 'idle' ? ' · ' : ''}${note}` : ''}
           </div>
         </div>
       </div>
@@ -228,8 +229,15 @@ function clock(at: number) {
 
 const seconds = (ms: number) => (ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(ms < 10_000 ? 1 : 0)} s`)
 
-function testText(r: InstantSyncTest): { tone: 'ok' | 'warn'; text: string } {
-  if (!r.sent) return { tone: 'warn', text: r.relay === 'off' ? 'Instant updates are off on this device.' : 'Not connected to the relay right now. Try again in a moment.' }
+function testText(r: InstantSyncTest, relayConfigured?: boolean): { tone: 'ok' | 'warn'; text: string } {
+  if (!r.sent)
+    return {
+      tone: 'warn',
+      text:
+        r.relay === 'off' && relayConfigured === false
+          ? 'This library has no relay, so instant updates are off. Changes arrive with the regular checks.'
+          : 'Not connected to the relay right now. Try again in a moment.',
+    }
   if (!r.answers.length)
     return { tone: 'warn', text: 'No other device answered within 5 s. Open OpenStand on another device of this library, keep it on screen, and try again.' }
   return { tone: 'ok', text: r.answers.map((a) => `“${a.name}” answered in ${seconds(a.rtt)}`).join(' · ') }
@@ -240,16 +248,7 @@ function ConnectionDetails({ s }: { s: LibSyncStatus }) {
   const [test, setTest] = useState<{ busy: boolean; result?: InstantSyncTest; error?: string }>({ busy: false })
   const d = s.diag
   const name = (id: string) => s.devices.find((x) => x.id === id)?.name ?? 'another device'
-  const relay =
-    s.relay === 'open'
-      ? 'Connected'
-      : s.relay === 'connecting'
-        ? 'Connecting…'
-        : s.relay === 'error'
-          ? 'Not connected, retrying'
-          : s.phase === 'paused'
-            ? 'Off while paused'
-            : 'Off'
+  const relay = relayLine(s)
   const run = async () => {
     setTest({ busy: true })
     try {
@@ -258,7 +257,7 @@ function ConnectionDetails({ s }: { s: LibSyncStatus }) {
       setTest({ busy: false, error: failureText(e) })
     }
   }
-  const out = test.result ? testText(test.result) : test.error ? { tone: 'warn' as const, text: test.error } : null
+  const out = test.result ? testText(test.result, s.relayConfigured) : test.error ? { tone: 'warn' as const, text: test.error } : null
   const rows: [string, ReactNode][] = [
     ['Instant updates', `${relay}${d?.relaySince ? ` since ${clock(d.relaySince)}` : ''}`],
     ['Last notice sent', d?.noticeSent ? `${clock(d.noticeSent.at)} (change ${d.noticeSent.seq})` : 'None yet'],
@@ -585,7 +584,8 @@ function ResetDialog({ s, onClose }: { s: LibSyncStatus; onClose: () => void }) 
         await updateBackend(backend)
       }
       await deleteRemoteData()
-      await enableSync({ backend, relay })
+      // No relay saved (the site's check failed at setup): look again rather than carry that forward.
+      await enableSync({ backend, relay: relay ?? undefined })
       if (rotate) setRotated(config.accessKeyId)
       else {
         toast('Sync was reset. Pair your other devices again.', 'ok')

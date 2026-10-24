@@ -815,7 +815,12 @@ work.
 
 - Reuses `RelayTransport` from `src/sync/transports.ts`, with the URL `${relayBase}/lib/${roomId}`.
 - `relayBase` comes from `config.relay`: the default is `/relay` when `sameSiteRelayAvailable()`,
-  otherwise `null` (polling only). It is included in the pairing payload.
+  otherwise `null` (polling only). It is included in the pairing payload. The check retries when there's no
+  answer (network error, timeout, 5xx), uses a unique URL, and the service worker routes `/relay` network-only.
+- A device whose config has no relay checks again on every engine start and on `online`; when this site hosts
+  one it saves `/relay` in its config and connects (`adoptSiteRelay`), so a library set up while the check
+  failed heals on every device and later pairing codes carry it. The relay only sees sealed notices in a room
+  derived from the secret, so adopting it needs no confirmation. Reset with a `null` relay checks again too.
 - Connected while sync is on, also while the page is hidden: a covered, minimised or background window still
   gets notices and pulls (mobile browsers may drop the socket; see the wake checks below). Going hidden
   pushes at once.

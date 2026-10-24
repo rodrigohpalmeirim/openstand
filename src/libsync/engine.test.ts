@@ -317,3 +317,20 @@ describe('blobs', () => {
     expect(await ids(B)).toEqual(both)
   })
 })
+
+describe('device record', () => {
+  it('a default name that changed (better device detection) is rewritten when the engine starts', async () => {
+    const w = world()
+    const A = w.db('A')
+    await addSong(A, 's1', 'One')
+    const eA = await enableDevice(w, A, { deviceName: () => 'Linux PC' })
+    expect(eA.status.devices.find((d) => d.self)?.name).toBe('Linux PC')
+    eA.stop()
+    const { Engine } = await import('./engine')
+    const again = await Engine.open(A, w.opts({ deviceName: () => 'Android tablet' }))
+    await again.start()
+    for (let i = 0; i < 50 && again.status.devices.find((d) => d.self)?.name !== 'Android tablet'; i++) await new Promise((r) => setTimeout(r, 20))
+    expect(again.status.devices.find((d) => d.self)?.name).toBe('Android tablet')
+    again.stop()
+  })
+})

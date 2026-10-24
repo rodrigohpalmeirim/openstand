@@ -6,7 +6,9 @@ import { deriveLibraryKeys, newSecret, openNotice, sealNotice } from './crypto'
 import type { Engine, EngineEnv, EngineTimers } from './engine'
 import type { NoticePayload } from './model'
 import { libRelayUrl, NoticeChannel, PING_INTERVAL, PONG_TIMEOUT } from './relay'
-import { addSong, enableDevice, joinDevice, world } from './sync.test-helper'
+import { adoptSiteRelay } from './join'
+import { getConfig } from './state'
+import { addSong, enableDevice, joinDevice, pairing, world } from './sync.test-helper'
 
 interface Peer {
   ev: TransportEvents
@@ -471,5 +473,46 @@ describe('engine scheduling with the relay', () => {
     await tick(100)
     expect(last()).toBe(w.now())
     stop(eA, eB)
+  })
+})
+
+describe('a library set up without a relay (§9)', () => {
+  it('adopts the site relay once it answers: saved, connected, and carried by new pairing codes', async () => {
+    const w = world()
+    const hub = new Hub()
+    const A = w.db('A')
+    await addSong(A, 's1', 'One')
+    const eA = await enableDevice(w, A, { relayTransport: hub.transport, timers: manualTimers().timers })
+    await eA.start()
+    await tick(50)
+    expect(eA.status).toMatchObject({ relay: 'off', relayConfigured: false })
+    expect(hub.urls).toEqual([])
+    // A joiner takes the missing relay from the pairing code.
+    const B = w.db('B')
+    const eB = await joinDevice(w, B, A, 'here', { relayTransport: hub.transport, timers: manualTimers().timers })
+    expect(eB.config.relay).toBeNull()
+
+    // This site has no relay: nothing changes.
+    expect(await adoptSiteRelay(eA, '/relay', async () => false)).toBe(false)
+    expect((await getConfig(A))!.relay).toBeNull()
+    // It has one: saved and connected at once.
+    expect(await adoptSiteRelay(eA, '/relay', async () => true)).toBe(true)
+    await tick(50)
+    expect((await getConfig(A))!.relay).toBe('/relay')
+    expect(eA.status).toMatchObject({ relay: 'open', relayConfigured: true })
+    expect(hub.urls[0]).toBe(libRelayUrl('/relay', eA.core.keys.roomId))
+    expect((await pairing(A)).r).toBe('/relay')
+    // A configured relay is never replaced.
+    expect(await adoptSiteRelay(eA, '/other', async () => true)).toBe(false)
+    expect(eA.config.relay).toBe('/relay')
+
+    // The joiner heals the same way, and both meet in the library's room.
+    await eB.start()
+    expect(await adoptSiteRelay(eB, '/relay', async () => true)).toBe(true)
+    await tick(50)
+    expect(eB.status).toMatchObject({ relay: 'open', relayConfigured: true })
+    expect(hub.peers()).toHaveLength(2)
+    eA.stop()
+    eB.stop()
   })
 })

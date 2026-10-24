@@ -17,6 +17,11 @@ export default defineConfig({
         globPatterns: ['**/*.{js,css,html,svg,png,woff2,mjs}', 'pdfjs/{standard_fonts,wasm,iccs}/*.{pfb,ttf,wasm,icc,js}'],
         runtimeCaching: [
           {
+            // The relay's health check (and its WebSocket paths) must always reach the network.
+            urlPattern: ({ url, sameOrigin }) => sameOrigin && (url.pathname === '/relay' || url.pathname.startsWith('/relay/')),
+            handler: 'NetworkOnly',
+          },
+          {
             urlPattern: ({ url }) => url.pathname.includes('/pdfjs/cmaps/'),
             handler: 'CacheFirst',
             options: { cacheName: 'pdfjs-cmaps', expiration: { maxEntries: 200 } },

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { describeDevice, uniqueDeviceName } from './deviceName'
 
 const UA = {
@@ -39,6 +39,101 @@ describe('default device names', () => {
 
   it('never names a device after its browser', () => {
     for (const ua of Object.values(UA)) expect(describeDevice({ userAgent: ua }).name).not.toMatch(/Chrome |Safari|Firefox|Edge| on /)
+  })
+})
+
+describe('tablets and phones asking for the desktop site', () => {
+  // Chrome on Android with "Desktop site" (the default on large tablets): desktop Linux UA, hints say Linux.
+  const desktopSite = { userAgent: UA.linux, hints: { platform: 'Linux', mobile: false, model: '' } }
+  const touch = { touchPrimary: true, maxTouchPoints: 10 }
+
+  it.each([
+    // formFactors (newer Chrome) wins when it says tablet or phone.
+    [{ ...desktopSite, hints: { ...desktopSite.hints, formFactors: ['Tablet'] } }, 'Android tablet', 'Android tablet'],
+    [{ ...desktopSite, hints: { ...desktopSite.hints, formFactors: ['Mobile'] } }, 'Android phone', 'Android'],
+    [{ ...desktopSite, hints: { ...desktopSite.hints, formFactors: ['Tablet'] }, touchPrimary: false }, 'Android tablet', 'Android tablet'],
+    // Without it: touch-first + Linux → Android; the screen's shorter side decides tablet or phone.
+    [{ ...desktopSite, ...touch, screenShort: 800 }, 'Android tablet', 'Android tablet'],
+    [{ ...desktopSite, ...touch, screenShort: 600 }, 'Android tablet', 'Android tablet'],
+    [{ ...desktopSite, ...touch, screenShort: 412 }, 'Android phone', 'Android'],
+    [{ ...desktopSite, hints: { ...desktopSite.hints, formFactors: ['Desktop'] }, ...touch, screenShort: 800 }, 'Android tablet', 'Android tablet'],
+    [{ userAgent: UA.linux, ...touch, screenShort: 800 }, 'Android tablet', 'Android tablet'],
+    // Linux laptops: a mouse or touchpad is the primary pointer, even with a touchscreen.
+    [{ ...desktopSite, touchPrimary: false, maxTouchPoints: 10, screenShort: 1080 }, 'Linux PC', 'Linux'],
+    [{ ...desktopSite, touchPrimary: false, maxTouchPoints: 0, screenShort: 1080 }, 'Linux PC', 'Linux'],
+    [{ ...desktopSite, hints: { ...desktopSite.hints, formFactors: ['Desktop'] }, touchPrimary: false, maxTouchPoints: 0 }, 'Linux PC', 'Linux'],
+    [{ ...desktopSite, touchPrimary: true, maxTouchPoints: 0, screenShort: 800 }, 'Linux PC', 'Linux'],
+    // Not Linux: a touch-first Windows tablet or a Chromebook keeps its own name.
+    [{ userAgent: UA.windows, ...touch, screenShort: 800, hints: { platform: 'Windows', formFactors: ['Desktop', 'Tablet'] } }, 'Windows PC', 'Windows'],
+    [{ userAgent: UA.chromebook, ...touch, screenShort: 800 }, 'Chromebook', 'ChromeOS'],
+    // A real Android UA: formFactors overrides the Mobile token.
+    [{ userAgent: UA.reducedPhone, hints: { platform: 'Android', mobile: true, formFactors: ['Tablet'] } }, 'Android tablet', 'Android tablet'],
+    // iPadOS asks for the desktop site too: a Mac UA with touch points.
+    [{ userAgent: UA.ipadDesktop, platform: 'MacIntel', maxTouchPoints: 5, touchPrimary: true, screenShort: 820 }, 'iPad', 'iPadOS'],
+    [{ userAgent: UA.ipadDesktop, maxTouchPoints: 5 }, 'iPad', 'iPadOS'],
+    [{ userAgent: UA.mac, platform: 'MacIntel', maxTouchPoints: 0, touchPrimary: false }, 'Mac', 'macOS'],
+  ])('%o → %s', (info, name, platform) => {
+    expect(describeDevice(info)).toEqual({ name, platform })
+  })
+})
+
+describe('thisDevice (the running browser)', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.resetModules()
+  })
+
+  /** Stubs navigator, matchMedia and screen, then loads a fresh module (the hints are cached per module). */
+  async function load(o: {
+    ua: string
+    platform?: string
+    maxTouchPoints?: number
+    coarse: boolean
+    hover: boolean
+    screen: [number, number]
+    uaData?: { platform: string; mobile: boolean; high?: Record<string, unknown> }
+  }) {
+    const uaData = o.uaData && {
+      platform: o.uaData.platform,
+      mobile: o.uaData.mobile,
+      getHighEntropyValues: async (hints: string[]) => ({
+        platform: o.uaData!.platform,
+        mobile: o.uaData!.mobile,
+        ...Object.fromEntries(Object.entries(o.uaData!.high ?? {}).filter(([k]) => hints.includes(k))),
+      }),
+    }
+    vi.stubGlobal('navigator', { userAgent: o.ua, platform: o.platform ?? '', maxTouchPoints: o.maxTouchPoints ?? 0, userAgentData: uaData })
+    vi.stubGlobal('matchMedia', (q: string) => ({ matches: q === '(pointer: coarse)' ? o.coarse : q === '(hover: hover)' ? o.hover : false }))
+    vi.stubGlobal('screen', { width: o.screen[0], height: o.screen[1] })
+    vi.resetModules()
+    const m = await import('./deviceName')
+    await m.loadDeviceHints()
+    return m.thisDevice()
+  }
+
+  it('Android tablet in desktop mode (Chrome without formFactors) is an Android tablet', async () => {
+    const d = await load({ ua: UA.linux, platform: 'Linux armv81', maxTouchPoints: 10, coarse: true, hover: false, screen: [1280, 800], uaData: { platform: 'Linux', mobile: false, high: { model: '' } } })
+    expect(d).toEqual({ name: 'Android tablet', platform: 'Android tablet' })
+  })
+
+  it('uses formFactors when Chrome reports it', async () => {
+    const d = await load({ ua: UA.linux, maxTouchPoints: 10, coarse: true, hover: false, screen: [1280, 800], uaData: { platform: 'Linux', mobile: false, high: { model: '', formFactors: ['Tablet'] } } })
+    expect(d).toEqual({ name: 'Android tablet', platform: 'Android tablet' })
+  })
+
+  it('Android phone in desktop mode is an Android phone', async () => {
+    const d = await load({ ua: UA.linux, maxTouchPoints: 5, coarse: true, hover: false, screen: [412, 915], uaData: { platform: 'Linux', mobile: false } })
+    expect(d).toEqual({ name: 'Android phone', platform: 'Android' })
+  })
+
+  it('a Linux laptop with a touchscreen stays a Linux PC', async () => {
+    const d = await load({ ua: UA.linux, platform: 'Linux x86_64', maxTouchPoints: 10, coarse: false, hover: true, screen: [1920, 1080], uaData: { platform: 'Linux', mobile: false, high: { formFactors: ['Desktop'] } } })
+    expect(d).toEqual({ name: 'Linux PC', platform: 'Linux' })
+  })
+
+  it('iPad Safari (desktop UA, no client hints) is an iPad', async () => {
+    const d = await load({ ua: UA.ipadDesktop, platform: 'MacIntel', maxTouchPoints: 5, coarse: true, hover: false, screen: [820, 1180] })
+    expect(d).toEqual({ name: 'iPad', platform: 'iPadOS' })
   })
 })
 

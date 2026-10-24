@@ -37,7 +37,7 @@ function TargetBox({ t }: { t: JoinTarget }) {
     <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-1 rounded-xl border border-line px-4 py-3 text-sm" aria-label="Where this code syncs to">
       {row('Storage', t.storage)}
       {t.bucket && row('Bucket', t.bucket)}
-      {row('Instant updates', t.relay ?? 'Off (checks every few minutes)')}
+      {row('Instant updates', t.relay ?? 'This site’s relay, if it has one')}
     </dl>
   )
 }

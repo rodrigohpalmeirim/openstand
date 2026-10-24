@@ -92,6 +92,25 @@ export async function initialUpload(engine: Engine, o: { onProgress?: FlowOption
   await engine.writeSnapshot()
 }
 
+/**
+ * A library without a relay (the site's relay check failed at setup, or the pairing code carried none from
+ * such a device) adopts `base` when `available()` says this site hosts one: saved in the config, so new
+ * pairing codes carry it, and connected at once. Safe: the relay only carries sealed hints, in a room derived
+ * from the library secret. Returns whether it was adopted.
+ */
+export async function adoptSiteRelay(engine: Engine, base: string, available: () => Promise<boolean>): Promise<boolean> {
+  if (engine.config.relay || !(await available())) return false
+  const d = engine.db
+  const adopted = await d.transaction('rw', d.syncState, async () => {
+    const config = await getConfig(d)
+    if (!config || config.relay || config.libraryId !== engine.config.libraryId) return false
+    await putState(d, 'config', { ...config, relay: base })
+    return true
+  })
+  if (adopted) engine.adoptRelay(base)
+  return adopted
+}
+
 // ---------------------------------------------------------------------------------------------
 // Join
 // ---------------------------------------------------------------------------------------------

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { LibSyncFailure, offStatus, type LibSyncErrorCode, type LibSyncStatus } from '../api'
-import { controls, downloadLine, errorText, failureText, fmtBytes, indicatorState, initialLine, phaseLine, stepLabel, syncProblem, timeAgo, uploadLine } from './format'
+import { controls, downloadLine, errorText, failureText, fmtBytes, indicatorState, initialLine, phaseLine, relayLine, relayNote, stepLabel, syncProblem, timeAgo, uploadLine } from './format'
 
 const NOW = 1_800_000_000_000
 const on = (p: Partial<LibSyncStatus> = {}): LibSyncStatus => ({ ...offStatus(), configured: true, phase: 'idle', ...p })
@@ -149,5 +149,30 @@ describe('controls per state', () => {
     expect(controls(err('auth'))).toMatchObject({ syncNow: true, syncNowOff: undefined, addDevice: true, storageKeys: true })
     expect(controls(on({ phase: 'paused' }))).toMatchObject({ syncNow: true, syncNowOff: 'Sync is paused.', addDevice: true, pause: true })
     expect(controls(on({ phase: 'offline' })).syncNowOff).toBeUndefined()
+  })
+})
+
+describe('instant updates: never a bare "off"', () => {
+  it('connection details say why the relay is off', () => {
+    expect(relayLine(on({ relay: 'open', relayConfigured: true }))).toBe('Connected')
+    expect(relayLine(on({ relay: 'connecting', relayConfigured: true }))).toBe('Connecting…')
+    expect(relayLine(on({ relay: 'error', relayConfigured: true }))).toBe('Not connected (retrying)')
+    expect(relayLine(on({ relay: 'off', relayConfigured: false }))).toBe('No relay configured')
+    expect(relayLine(on({ phase: 'paused', relay: 'off', relayConfigured: true }))).toBe('Paused')
+    expect(relayLine(on({ phase: 'paused', relay: 'off', relayConfigured: false }))).toBe('Paused')
+    expect(relayLine(on({ phase: 'starting', relay: 'off' }))).toBe('Starting…')
+    expect(relayLine(on({ relay: 'off', relayConfigured: true }))).toBe('Not connected (retrying)')
+    for (const relay of ['off', 'connecting', 'open', 'error'] as const)
+      for (const relayConfigured of [true, false, undefined])
+        for (const phase of ['idle', 'syncing', 'offline', 'paused', 'error', 'starting'] as const) expect(relayLine(on({ phase, relay, relayConfigured }))).not.toMatch(/^off$/i)
+  })
+
+  it('the status card notes it while syncing runs', () => {
+    expect(relayNote(on({ relay: 'open', relayConfigured: true }))).toBe('Instant updates on')
+    expect(relayNote(on({ relay: 'off', relayConfigured: false }))).toBe('Instant updates off: no relay configured')
+    expect(relayNote(on({ relay: 'error', relayConfigured: true }))).toBe('Instant updates reconnecting')
+    expect(relayNote(on({ relay: 'connecting', relayConfigured: true }))).toBe('Instant updates connecting…')
+    expect(relayNote(on({ phase: 'paused', relay: 'off' }))).toBeUndefined()
+    expect(relayNote(on({ phase: 'offline', relay: 'error' }))).toBeUndefined()
   })
 })

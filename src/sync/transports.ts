@@ -76,15 +76,38 @@ export function mixedContentProblem(input: string): boolean {
 /** Path of the relay that the Cloudflare Worker deployment serves next to the app (worker/index.ts). */
 export const SAME_SITE_RELAY = '/relay'
 
-/** Whether the site OpenStand is served from also hosts a relay (true on the Cloudflare Worker deployment). */
-export async function sameSiteRelayAvailable(): Promise<boolean> {
+/** One probe of the health JSON. `null`: no answer (offline, timeout); false: something else answered. */
+async function probeRelay(timeoutMs: number): Promise<boolean | null> {
+  const ctl = typeof AbortController !== 'undefined' ? new AbortController() : undefined
+  const timer = ctl ? setTimeout(() => ctl.abort(), timeoutMs) : undefined
   try {
-    const res = await fetch(SAME_SITE_RELAY, { cache: 'no-store' })
-    if (!res.ok || !res.headers.get('content-type')?.includes('json')) return false
-    return (await res.json())?.service === 'openstand-relay'
-  } catch {
-    return false
+    // The query makes the URL unique, so no cache (HTTP or a service worker's) can answer it; the service
+    // worker also routes /relay network-only (vite.config.ts).
+    const res = await fetch(`${SAME_SITE_RELAY}?probe=${Date.now().toString(36)}`, { cache: 'no-store', signal: ctl?.signal })
+    if (res.status >= 500) return null
+    if (!res.ok) return false
+    // Parse the body rather than trusting the content type: an SPA fallback answers with index.html.
+    const body = JSON.parse(await res.text()) as { service?: unknown } | null
+    return body?.service === 'openstand-relay'
+  } catch (e) {
+    return e instanceof SyntaxError ? false : null
+  } finally {
+    if (timer) clearTimeout(timer)
   }
+}
+
+/**
+ * Whether the site OpenStand is served from also hosts a relay (true on the Cloudflare Worker deployment).
+ * Retries when there's no answer (a flaky network, a 5xx), so a blip doesn't read as "no relay".
+ */
+export async function sameSiteRelayAvailable(o: { attempts?: number; timeoutMs?: number } = {}): Promise<boolean> {
+  const attempts = o.attempts ?? 3
+  for (let i = 0; i < attempts; i++) {
+    const r = await probeRelay(o.timeoutMs ?? 5000)
+    if (r !== null) return r
+    if (i < attempts - 1) await new Promise((res) => setTimeout(res, 500 * 2 ** i))
+  }
+  return false
 }
 
 const BACKOFF = [1000, 2000, 4000, 8000, 15000]

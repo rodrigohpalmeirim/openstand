@@ -74,6 +74,7 @@ function publish(s: EngineStatus | null, configured: boolean) {
         offlineReady: s.offlineReady,
         initial,
         relay: s.relay,
+        relayConfigured: s.relayConfigured,
         devices: s.devices,
         error: s.error ?? (s.warning && s.phase !== 'error' ? s.warning : undefined),
         warning: s.phase !== 'error' ? s.warning : undefined,
@@ -132,6 +133,8 @@ export async function restart(o: { afterStart?: (e: Engine) => Promise<void> } =
   if (gen !== generation) return
   if (!config) return publish(null, false)
   publish(null, true)
+  // Another tab may already run the engine: ask it for its status rather than wait for its next change.
+  channel?.postMessage({ db: d.name, cmd: 'status?' })
   const run = async () => {
     if (gen !== generation) return
     try {
@@ -142,6 +145,7 @@ export async function restart(o: { afterStart?: (e: Engine) => Promise<void> } =
       if (gen !== generation) return e.stop()
       engine = e
       await e.start()
+      void healRelay(e)
       if (o.afterStart) void o.afterStart(e).catch((err) => console.warn('[libsync]', err))
     } catch (err) {
       const { toSyncError } = await engineModule()
@@ -157,6 +161,27 @@ export async function restart(o: { afterStart?: (e: Engine) => Promise<void> } =
       void run()
     })
   })
+}
+
+/** Relay checks in flight, per engine (one at a time; `online` may start another later). */
+const healing = new WeakMap<Engine, Promise<void>>()
+
+/**
+ * No relay in the config (the site's check failed when the library was set up, and pairing codes spread that):
+ * adopt this site's relay if it has one (`adoptSiteRelay`). Runs on every start and when the network returns.
+ */
+function healRelay(e: Engine): Promise<void> {
+  if (e.config.relay) return Promise.resolve()
+  const busy = healing.get(e)
+  if (busy) return busy
+  const run = (async () => {
+    const [{ sameSiteRelayAvailable, SAME_SITE_RELAY }, { adoptSiteRelay }] = await Promise.all([import('../sync/transports'), joinModule()])
+    await adoptSiteRelay(e, SAME_SITE_RELAY, async () => (await sameSiteRelayAvailable()) && engine === e)
+  })()
+    .catch((err) => console.warn('[libsync] relay check failed', err))
+    .finally(() => healing.delete(e))
+  healing.set(e, run)
+  return run
 }
 
 /** Give the engine to the caller's flow (enable/join) and restart it afterwards. */
@@ -197,6 +222,7 @@ registerService(() => {
       const m = ev.data as { db?: string; status?: LibSyncStatus; cmd?: string; name?: string }
       if (m.db !== currentDb.name) return
       if (m.status && !engine) useLibSync.setState(m.status, true)
+      if (m.cmd === 'status?' && engine) publish(engine.status, true)
       if (m.cmd === 'syncNow' && engine) void engine.sync().catch(() => {})
       if (m.cmd === 'rename' && engine && typeof m.name === 'string') {
         useSettings.getState().setIn('sync', { deviceName: m.name })
@@ -215,7 +241,11 @@ registerService(() => {
     }
   }
   const vis = () => engine?.onVisibility(env.visible())
-  const online = () => engine?.onOnline()
+  const online = () => {
+    engine?.onOnline()
+    // The relay check may have failed for want of a network.
+    if (engine) void healRelay(engine)
+  }
   // Focus, bfcache restore and unfreeze: the relay may have died meanwhile (mobile), so check it and catch up.
   const wake = () => engine?.wake('focus')
   const offline = () => useLibSync.setState({ phase: 'offline' })
