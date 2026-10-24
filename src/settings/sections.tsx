@@ -10,7 +10,7 @@ import {
   Timer,
   Type,
   Database,
-  ArchiveRestore,
+  ArrowDownUp,
   RadioTower,
   Cable,
   Cloud,
@@ -511,10 +511,10 @@ const sync: SectionDef = {
 
 const backup: SectionDef = {
   id: 'backup',
-  title: 'Backup & restore',
-  icon: ArchiveRestore,
-  summary: 'Save and restore your library',
-  groups: [{ items: [customItem('backup', 'Backup and restore', wrap(() => <BackupSettings />), 'backup restore export import reminder')] }],
+  title: 'Export & import',
+  icon: ArrowDownUp,
+  summary: 'Export to a file, or import one',
+  groups: [{ items: [customItem('backup', 'Export and import', wrap(() => <BackupSettings />), 'export import backup restore reminder package osbackup')] }],
 }
 
 /* -------------------------------------------------------- Face gestures */

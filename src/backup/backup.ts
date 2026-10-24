@@ -3,6 +3,7 @@
  */
 import { create } from 'zustand'
 import { db, getKV, setKV } from '../db/db'
+import { useLibSync } from '../libsync/api'
 import { registerService } from '../services'
 import { terms } from '../library/browse/terms'
 import { settings, useSettings } from '../state/settings'
@@ -85,11 +86,11 @@ export async function createBackup(): Promise<boolean> {
       downloadBlob(sink.blob(BACKUP_MIME), name)
     }
     await markBackedUp()
-    toast(`Backed up ${terms(settings()).count(manifest.counts.songs)}`, 'ok')
+    toast(`Exported ${terms(settings()).count(manifest.counts.songs)}`, 'ok')
     return true
   } catch (e) {
     console.error(e)
-    toast(`Backup failed: ${(e as Error).message ?? e}`, 'error')
+    toast(`Export failed: ${(e as Error).message ?? e}`, 'error')
     return false
   } finally {
     useBackupJob.setState({ busy: null, progress: undefined })
@@ -222,7 +223,8 @@ async function check() {
     }
   }
 
-  if (!b.reminderDays) return
+  // Library sync already keeps a copy in the user's storage, so don't nag about exports.
+  if (!b.reminderDays || useLibSync.getState().configured) return
   const songs = await db.songs.count()
   if (!songs) return
   const remindedAt = (await getKV<number | undefined>(KV_REMINDED, undefined)) ?? 0
@@ -232,15 +234,15 @@ async function check() {
   if (last) {
     const d = daysSince(last, now)
     due = d >= b.reminderDays
-    msg = `Last backup was ${d} days ago`
+    msg = `Last export was ${d} days ago`
   } else {
     const first = await db.songs.orderBy('createdAt').first()
     due = !!first && daysSince(first.createdAt, now) >= b.reminderDays
-    msg = 'Your library has never been backed up'
+    msg = 'Your library has never been exported'
   }
   if (!due) return
   await setKV(KV_REMINDED, now)
-  toast(msg, 'info', { label: 'Back up', run: () => void createBackup() })
+  toast(msg, 'info', { label: 'Export', run: () => void createBackup() })
 }
 
 registerService(() => {

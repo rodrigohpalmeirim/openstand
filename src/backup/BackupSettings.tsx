@@ -1,4 +1,4 @@
-import { ArchiveRestore, FolderOpen, HardDriveDownload, Loader2, PackageOpen, ShieldAlert, ShieldCheck } from 'lucide-react'
+import { ArchiveRestore, Cloud, FolderOpen, HardDriveDownload, Loader2, PackageOpen, ShieldAlert, ShieldCheck } from 'lucide-react'
 import { useRef, useState } from 'react'
 import { terms, useTerms } from '../library/browse/terms'
 import { useLibSync } from '../libsync/api'
@@ -93,7 +93,7 @@ function RestoreDialog({ file, archive, onClose }: { file: File; archive: Opened
       const r = await restoreBackup(file, { mode, conflict, restoreSettings: withSettings && hasSettings })
       if (r) setResult(r)
     } catch (e) {
-      toast(`Restore failed: ${(e as Error).message ?? e}`, 'error')
+      toast(`Import failed: ${(e as Error).message ?? e}`, 'error')
     }
   }
 
@@ -101,7 +101,7 @@ function RestoreDialog({ file, archive, onClose }: { file: File; archive: Opened
     <Dialog
       open
       onClose={() => !busy && onClose()}
-      title={result ? 'Restore finished' : 'Restore backup'}
+      title={result ? 'Import finished' : 'Import library'}
       footer={
         result ? (
           <Button variant="primary" onClick={onClose}>
@@ -181,25 +181,35 @@ function RestoreDialog({ file, archive, onClose }: { file: File; archive: Opened
 function LastBackup() {
   const lastAt = useBackupJob((j) => j.lastAt)
   const reminderDays = useSettings((s) => s.s.backup.reminderDays)
+  const synced = useLibSync((st) => st.configured)
   const d = lastAt ? daysSince(lastAt) : undefined
-  const stale = d === undefined || (reminderDays > 0 && d >= reminderDays)
+  // With library sync on, the storage already holds a copy, so an old (or missing) export isn't a warning.
+  const stale = !synced && (d === undefined || (reminderDays > 0 && d >= reminderDays))
   return (
     <div className={cx('flex items-center gap-3 rounded-xl border px-4 py-3', stale ? 'border-warn/40 bg-warn/10' : 'border-line bg-surface-2')}>
-      {stale ? <ShieldAlert className="size-5 shrink-0 text-warn" /> : <ShieldCheck className="size-5 shrink-0 text-ok" />}
+      {synced ? <Cloud className="size-5 shrink-0 text-ok" /> : stale ? <ShieldAlert className="size-5 shrink-0 text-warn" /> : <ShieldCheck className="size-5 shrink-0 text-ok" />}
       <div className="text-sm">
         <div className="font-medium">
-          {d === undefined ? 'Never backed up' : d === 0 ? 'Backed up today' : d === 1 ? 'Last backup yesterday' : `Last backup ${d} days ago`}
+          {d === undefined ? 'No export yet' : d === 0 ? 'Last export today' : d === 1 ? 'Last export yesterday' : `Last export ${d} days ago`}
         </div>
         {lastAt && <div className="text-xs text-muted">{new Date(lastAt).toLocaleString()}</div>}
-        {d === undefined && <div className="text-xs text-muted">Your music lives only in this browser. Keep a copy somewhere safe.</div>}
+        {synced ? (
+          <div className="text-xs text-muted">
+            Your library is synced to your storage and your other devices. An export is an independent copy, handy as an extra backup or to move
+            songs to another library.
+          </div>
+        ) : (
+          d === undefined && <div className="text-xs text-muted">Your music lives only in this browser. Export a copy and keep it somewhere safe.</div>
+        )}
       </div>
     </div>
   )
 }
 
-/** Backup & restore section of the settings screen. */
+/** Export & import section of the settings screen. */
 export function BackupSettings() {
   const b = useSettings((s) => s.s.backup)
+  const synced = useLibSync((st) => st.configured)
   const setIn = useSettings((s) => s.setIn)
   const { busy, progress, autoDir } = useBackupJob()
   const restoreInput = useRef<HTMLInputElement>(null)
@@ -231,22 +241,22 @@ export function BackupSettings() {
 
   return (
     <div className="grid gap-8">
-      <Section title="Back up" icon={<HardDriveDownload className="size-4" />} description={`One ${BACKUP_EXT} file with every song, file, setlist and annotation.`}>
+      <Section title="Export library" icon={<HardDriveDownload className="size-4" />} description={`One ${BACKUP_EXT} file with every song, file, setlist and annotation.`}>
         <LastBackup />
         {busy === 'backup' ? (
           <ProgressBar progress={progress} />
         ) : (
           <div className="flex flex-wrap items-center gap-3">
             <Button variant="primary" onClick={() => void createBackup()} disabled={!!busy}>
-              Back up now
+              Export now
             </Button>
           </div>
         )}
         <SwitchRow label="Include settings" hint="So a restore brings back your preferences too" checked={b.includeSettings} onChange={(includeSettings) => setIn('backup', { includeSettings })} />
         <label className="flex min-h-11 items-center justify-between gap-4 text-sm">
           <span>
-            Remind me to back up
-            <span className="block text-xs text-muted">A gentle reminder when the last backup is older than this</span>
+            Remind me to export
+            <span className="block text-xs text-muted">{synced ? 'Off while library sync is on' : 'A gentle reminder when the last export is older than this'}</span>
           </span>
           <Select className="!w-auto shrink-0" value={b.reminderDays} onChange={(e) => setIn('backup', { reminderDays: Number(e.target.value) })}>
             <option value={0}>Never</option>
@@ -319,10 +329,10 @@ export function BackupSettings() {
         </Section>
       )}
 
-      <Section title="Restore" icon={<ArchiveRestore className="size-4" />} description="Bring back a library from a backup file — merge it with what is here, or replace everything.">
+      <Section title="Import library" icon={<ArchiveRestore className="size-4" />} description={`Load an ${BACKUP_EXT} file and merge it with what is here, or replace everything.`}>
         <div>
           <Button onClick={() => restoreInput.current?.click()} disabled={!!busy}>
-            Choose backup file…
+            Choose file…
           </Button>
           <input
             ref={restoreInput}

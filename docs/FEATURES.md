@@ -89,7 +89,7 @@ workspace). This table tracks where OpenStand stands. ✅ = implemented, ◐ = p
 | MIDI learn, MIDI → actions, song recall from MIDI | ✅ | |
 | Library sync between devices | ✅ | Whole library (songs, files, annotations, layers, setlists, play history) through your own S3-compatible storage (R2, B2, S3, MinIO), end-to-end encrypted, full offline copy on every device, merges offline edits per field. Pair by QR or text code; instant updates through the relay, else polling. Dropbox / Google Drive / OneDrive planned |
 | Leader/follower page sync between devices | ✅ | BroadcastChannel, or a WebSocket relay (`server/relay.mjs`, or built into the Cloudflare deployment) |
-| Full backup / restore (replace or merge) | ✅ | `.osbackup` |
+| Full library export / import (backup and restore; replace or merge) | ✅ | `.osbackup`, Settings → Export & import |
 | Share songs/setlists as packages | ✅ | `.ospkg` |
 | Export files (with annotations, crop, merged PDF), title lists (.txt/.pdf), print | ✅ | |
 | Settings export/import | ✅ | |

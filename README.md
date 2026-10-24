@@ -29,7 +29,7 @@ modernised interface.
   messages to actions (Web MIDI).
 - 🔄 **Devices** — library sync across your devices through your own storage, end-to-end encrypted;
   leader/follower page sync between devices (same browser windows or via a tiny relay server); full-library
-  backup/restore, song packages for sharing, export with annotations.
+  export/import (backup and restore), song packages for sharing, export with annotations.
 
 ## Getting started
 
