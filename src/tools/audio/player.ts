@@ -3,6 +3,7 @@ import { db, getBlob, updateSong } from '../../db/db'
 import type { AudioTrack, Song } from '../../db/schema'
 import { settings } from '../../state/settings'
 import { toast } from '../../ui/primitives'
+import { safeExternalUrl } from '../../util/safeUrl'
 
 interface AudioStatus {
   songId: string | null
@@ -81,7 +82,11 @@ class Player {
     const st = useAudio.getState()
     if (st.trackId !== track.id || st.songId !== song.id) {
       el.pause()
-      let src = track.url ?? ''
+      let src = ''
+      if (track.url && !track.blobId) {
+        src = safeExternalUrl(track.url) ?? ''
+        if (!src) return toast(`"${track.name}" doesn’t link to a web address (http/https)`, 'error')
+      }
       if (track.blobId) {
         try {
           const blob = await getBlob(track.blobId)

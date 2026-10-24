@@ -1,13 +1,18 @@
 /**
  * Library sync cryptography (docs/SYNC.md §2, §4.1, §4.2, §4.3).
  *
- * - `deriveLibraryKeys(secret)`: HKDF-SHA256 → libraryId, roomId, AES-GCM and HMAC keys (non-extractable).
+ * - `deriveLibraryKeys(secret)`: HKDF-SHA256 → libraryId, roomId and separate AES-GCM keys for envelopes,
+ *   blob chunks and snapshots, plus HMAC keys (all non-extractable).
  * - `seal` / `open`: small sealed envelopes (meta, devices, batches, notices) with the AAD bound to the key path.
  * - `encryptChunks` / `decryptChunk`: the chunked container for blobs and snapshots. Encryption is lazy and
  *   random-access (a `ByteSource` that encrypts only the chunks a read touches), so memory stays bounded.
- * - `blobName`, `sealNotice` / `openNotice`.
+ * - `blobName`, `sealNotice` / `openNotice`, streaming SHA-256 (`sha256Blob`, `createSha256`).
  *
- * Everything here is pure WebCrypto: it runs in browsers, workers and Node ≥ 20.
+ * Wire format v2 (§4). v1 objects are never read: they are recognised (only when they authenticate under
+ * the v1 key) and reported as `oldFormat`, which the user resolves with "Reset sync".
+ *
+ * Everything here is WebCrypto (browsers, workers, Node ≥ 20), except streaming SHA-256 for large files,
+ * which lazy-loads @noble/hashes.
  */
 import type { ByteSource } from './backends/types'
 import { CHUNK, type NoticeFrame, type NoticePayload } from './model'
@@ -18,13 +23,19 @@ import { pad10 } from './paths'
 // ---------------------------------------------------------------------------------------------
 
 /**
- * Data that can't be read. `corrupt`: authentication failed, truncated or malformed (wrong key, tampering,
- * or a bug). `newerFormat`: a version or key epoch this build doesn't know (§2, §10.1). The codes match
- * `LibSyncErrorCode`, so the engine can surface them as is.
+ * Data that can't be read (§4.4). Only authenticated bytes ever produce a format verdict:
+ *
+ * - `corrupt`: this one object can't be read: authentication failed, truncated, malformed, a hash
+ *   mismatch, or an unknown version/epoch byte (unauthenticated, so it can't be trusted to mean "newer").
+ * - `newerFormat`: the object authenticated and its JSON says a newer `v` than this build knows.
+ * - `oldFormat`: the object authenticated under the v1 key with the v1 layout: written by a pre-v2 build.
+ *   Nothing reads v1; the user has to "Reset sync" (§10.5).
  */
+export type FormatErrorCode = 'corrupt' | 'newerFormat' | 'oldFormat'
+
 export class FormatError extends Error {
-  readonly code: 'corrupt' | 'newerFormat'
-  constructor(code: 'corrupt' | 'newerFormat', message?: string, cause?: unknown) {
+  readonly code: FormatErrorCode
+  constructor(code: FormatErrorCode, message?: string, cause?: unknown) {
     super(message ?? code, cause === undefined ? undefined : { cause })
     this.name = 'FormatError'
     this.code = code
@@ -124,11 +135,45 @@ export async function sha256Hex(data: Uint8Array | Blob): Promise<string> {
   return bytesToHex(new Uint8Array(await crypto.subtle.digest('SHA-256', buf)))
 }
 
+/** Incremental SHA-256 (@noble/hashes, loaded on first use): memory stays at one piece. */
+export interface Sha256Stream {
+  update(piece: Uint8Array): void
+  /** Lowercase hex. */
+  hex(): string
+}
+
+export async function createSha256(): Promise<Sha256Stream> {
+  const { sha256 } = await import('@noble/hashes/sha2.js')
+  const h = sha256.create()
+  return {
+    update: (piece) => void h.update(piece),
+    hex: () => bytesToHex(h.digest()),
+  }
+}
+
+/** Files up to this size are hashed in one WebCrypto call (fast, native); larger ones stream. */
+export const HASH_INLINE_MAX = 32 * 1024 * 1024
+
+/**
+ * SHA-256 hex of a Blob (or of Blob parts, in order) of any size. Small inputs use WebCrypto; larger ones
+ * are read `piece` bytes at a time into a streaming hash, so memory stays bounded.
+ */
+export async function sha256Blob(data: Blob | readonly Blob[], piece = 1024 * 1024): Promise<string> {
+  const parts = data instanceof Blob ? [data] : data
+  let total = 0
+  for (const p of parts) total += p.size
+  if (total <= HASH_INLINE_MAX) return sha256Hex(parts.length === 1 ? parts[0] : new Blob(parts as Blob[]))
+  const h = await createSha256()
+  for (const p of parts) for (let o = 0; o < p.size; o += piece) h.update(new Uint8Array(await p.slice(o, Math.min(p.size, o + piece)).arrayBuffer()))
+  return h.hex()
+}
+
 // ---------------------------------------------------------------------------------------------
 // §2 Keys
 // ---------------------------------------------------------------------------------------------
 
 export const SECRET_BYTES = 32
+/** Unchanged since v1, so `libraryId`, `roomId` and blob names stay where they were. */
 const SALT = utf8('openstand-sync-v1')
 /** Current key epoch (§2). Epoch > 0 is reserved for a future keyring. */
 export const KEY_EPOCH = 0
@@ -140,12 +185,18 @@ export interface LibraryKeys {
   readonly roomId: string
   /** Epoch new ciphertexts are written with. */
   readonly epoch: number
-  /** AES-GCM-256 `encKey[epoch]`. Readers reject epochs that are not in here (`newerFormat`). */
+  /** AES-GCM-256 `envKey[epoch]`: sealed envelopes (meta, devices, batches, notices). */
   readonly enc: ReadonlyMap<number, CryptoKey>
-  /** HMAC-SHA-256 `nonceKey[epoch]` for deterministic blob chunk nonces. */
+  /** AES-GCM-256 `blobKey[epoch]`: blob container chunks. */
+  readonly blob: ReadonlyMap<number, CryptoKey>
+  /** AES-GCM-256 `snapKey[epoch]`: snapshot container chunks. */
+  readonly snap: ReadonlyMap<number, CryptoKey>
+  /** HMAC-SHA-256 `nonceKey[epoch]` for deterministic, content-derived blob chunk nonces. */
   readonly nonce: ReadonlyMap<number, CryptoKey>
   /** HMAC-SHA-256 `nameKey` for blob object names. */
   readonly name: CryptoKey
+  /** The v1 AES-GCM key (decrypt only): recognises authentic v1 objects so they report `oldFormat`. */
+  readonly v1: CryptoKey
 }
 
 /** `secret`: the raw 32 bytes, or their base64url form (`SyncConfig.secret`, `PairingPayload.s`). */
@@ -157,15 +208,30 @@ export async function deriveLibraryKeys(secret: Uint8Array | string): Promise<Li
   const bits = async (label: string) => new Uint8Array(await crypto.subtle.deriveBits(p(label), ikm, 128))
   const hmac = (label: string) =>
     crypto.subtle.deriveKey(p(label), ikm, { name: 'HMAC', hash: 'SHA-256', length: 256 }, false, ['sign'])
+  const aes = (label: string, usages: KeyUsage[] = ['encrypt', 'decrypt']) =>
+    crypto.subtle.deriveKey(p(label), ikm, { name: 'AES-GCM', length: 256 }, false, usages)
   const e = KEY_EPOCH
-  const [libraryId, roomId, encKey, nameKey, nonceKey] = await Promise.all([
+  const [libraryId, roomId, envKey, blobKey, snapKey, nameKey, nonceKey, v1Key] = await Promise.all([
     bits('library-id').then(base32),
     bits('room-id').then(base32),
-    crypto.subtle.deriveKey(p(`enc-key/${e}`), ikm, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']),
+    aes(`v2/envelope/${e}`),
+    aes(`v2/blob/${e}`),
+    aes(`v2/snapshot/${e}`),
     hmac('blob-name'),
-    hmac(`blob-nonce/${e}`),
+    hmac(`v2/blob-nonce/${e}`),
+    aes('enc-key/0', ['decrypt']),
   ])
-  return { libraryId, roomId, epoch: e, enc: new Map([[e, encKey]]), nonce: new Map([[e, nonceKey]]), name: nameKey }
+  return {
+    libraryId,
+    roomId,
+    epoch: e,
+    enc: new Map([[e, envKey]]),
+    blob: new Map([[e, blobKey]]),
+    snap: new Map([[e, snapKey]]),
+    nonce: new Map([[e, nonceKey]]),
+    name: nameKey,
+    v1: v1Key,
+  }
 }
 
 async function hmac(key: CryptoKey, data: Uint8Array): Promise<Uint8Array<ArrayBuffer>> {
@@ -180,14 +246,29 @@ export async function blobName(keys: LibraryKeys, sha256: string): Promise<strin
   return base32(await hmac(keys.name, hexToBytes(sha256)))
 }
 
-function encKeyFor(keys: LibraryKeys, epoch: number): CryptoKey {
-  const k = keys.enc.get(epoch)
-  if (!k) throw new FormatError('newerFormat', `unknown key epoch ${epoch}`)
+/** The key for `epoch`. An unknown epoch byte is unauthenticated, so it is `corrupt`, never `newerFormat`. */
+function keyFor<K>(map: ReadonlyMap<number, K>, epoch: number): K {
+  const k = map.get(epoch)
+  if (!k) throw new FormatError('corrupt', `unknown key epoch ${epoch} (unauthenticated)`)
   return k
 }
 
+/** Whether `ct` authenticates under the v1 key: only then is a v1-looking object reported as `oldFormat`. */
+async function isAuthenticV1(keys: LibraryKeys, nonce: Uint8Array, aad: Uint8Array, ct: Uint8Array): Promise<boolean> {
+  try {
+    await crypto.subtle.decrypt({ name: 'AES-GCM', iv: ab(nonce), additionalData: ab(aad) }, keys.v1, ab(ct))
+    return true
+  } catch {
+    return false
+  }
+}
+
+const OLD_FORMAT_MESSAGE = 'written by an older OpenStand sync format (v1); reset sync to continue'
+
 const TAG = 16
 const NONCE = 12
+/** AES-GCM nonce length: a container's first `HEADER_BYTES + NONCE_BYTES` bytes fingerprint a blob (§10.2). */
+export const NONCE_BYTES = NONCE
 
 async function gcmEncrypt(key: CryptoKey, nonce: Uint8Array, aad: Uint8Array, pt: Uint8Array): Promise<Uint8Array<ArrayBuffer>> {
   return new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv: ab(nonce), additionalData: ab(aad) }, key, ab(pt)))
@@ -212,7 +293,7 @@ export type SealContext =
   | { kind: 'batch'; deviceId: string; seq: number }
   | { kind: 'notice' }
 
-export const ENVELOPE_VERSION = 1
+export const ENVELOPE_VERSION = 2
 const ENV_HEAD = 2 + NONCE
 
 export function sealAad(keys: LibraryKeys, ctx: SealContext): string {
@@ -228,10 +309,14 @@ export function sealAad(keys: LibraryKeys, ctx: SealContext): string {
   }
 }
 
-/** `[0x01, epoch, nonce(12), AES-GCM(plaintext) || tag]`. The caller gzips first where §4.1 says so. */
+/** v2 AAD: the version and epoch bytes, then the key path. */
+const envelopeAad = (version: number, epoch: number, path: string) => concatBytes([Uint8Array.of(version, epoch), utf8(path)])
+
+/** `[0x02, epoch, nonce(12), AES-GCM(envKey, plaintext) || tag]`. The caller gzips first where §4.1 says so. */
 export async function seal(keys: LibraryKeys, ctx: SealContext, plaintext: Uint8Array): Promise<Uint8Array<ArrayBuffer>> {
   const nonce = randomBytes(NONCE)
-  const ct = await gcmEncrypt(encKeyFor(keys, keys.epoch), nonce, utf8(sealAad(keys, ctx)), plaintext)
+  const aad = envelopeAad(ENVELOPE_VERSION, keys.epoch, sealAad(keys, ctx))
+  const ct = await gcmEncrypt(keyFor(keys.enc, keys.epoch), nonce, aad, plaintext)
   const out = new Uint8Array(ENV_HEAD + ct.length)
   out[0] = ENVELOPE_VERSION
   out[1] = keys.epoch
@@ -240,12 +325,19 @@ export async function seal(keys: LibraryKeys, ctx: SealContext, plaintext: Uint8
   return out
 }
 
-/** Throws `FormatError`: `newerFormat` for an unknown version or epoch, `corrupt` for anything else. */
+/**
+ * Throws `FormatError`: `oldFormat` for an authentic v1 envelope, `corrupt` for anything else that doesn't
+ * authenticate (including unknown version or epoch bytes).
+ */
 export async function open(keys: LibraryKeys, ctx: SealContext, sealed: Uint8Array): Promise<Uint8Array<ArrayBuffer>> {
   if (sealed.length < ENV_HEAD + TAG) throw new FormatError('corrupt', 'envelope too short')
-  if (sealed[0] !== ENVELOPE_VERSION) throw new FormatError('newerFormat', `unknown envelope version ${sealed[0]}`)
-  const key = encKeyFor(keys, sealed[1])
-  return gcmDecrypt(key, sealed.subarray(2, ENV_HEAD), utf8(sealAad(keys, ctx)), sealed.subarray(ENV_HEAD))
+  const [version, epoch] = sealed
+  const nonce = sealed.subarray(2, ENV_HEAD)
+  const ct = sealed.subarray(ENV_HEAD)
+  if (version === ENVELOPE_VERSION) return gcmDecrypt(keyFor(keys.enc, epoch), nonce, envelopeAad(version, epoch, sealAad(keys, ctx)), ct)
+  if (version === 1 && epoch === 0 && (await isAuthenticV1(keys, nonce, utf8(sealAad(keys, ctx)), ct)))
+    throw new FormatError('oldFormat', `envelope ${OLD_FORMAT_MESSAGE}`)
+  throw new FormatError('corrupt', `unknown envelope version ${version} (unauthenticated)`)
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -283,7 +375,7 @@ export async function openNotice(keys: LibraryKeys, frame: string): Promise<Noti
 // ---------------------------------------------------------------------------------------------
 
 export const CONTAINER_MAGIC = 'OSC1'
-export const CONTAINER_VERSION = 1
+export const CONTAINER_VERSION = 2
 export const HEADER_BYTES = 16
 /** Per-chunk overhead: nonce + tag. */
 export const CHUNK_OVERHEAD = NONCE + TAG
@@ -347,12 +439,16 @@ function buildHeader(size: number, epoch: number, deterministic: boolean): Uint8
   return h
 }
 
-/** Parses the 16-byte header (extra bytes after it are ignored). */
+/**
+ * Parses the 16-byte header (extra bytes after it are ignored). The header is unauthenticated until a
+ * chunk decrypts (it is part of every chunk's AAD). Version 1 parses, so `decryptChunk` can tell an
+ * authentic v1 object (`oldFormat`) from tampering; other versions are `corrupt`.
+ */
 export function parseContainerHeader(bytes: Uint8Array): ContainerHeader {
   if (bytes.length < HEADER_BYTES) throw new FormatError('corrupt', 'container header truncated')
   const raw = new Uint8Array(bytes.subarray(0, HEADER_BYTES))
   if (new TextDecoder().decode(raw.subarray(0, 4)) !== CONTAINER_MAGIC) throw new FormatError('corrupt', 'not a container')
-  if (raw[4] !== CONTAINER_VERSION) throw new FormatError('newerFormat', `unknown container version ${raw[4]}`)
+  if (raw[4] !== CONTAINER_VERSION && raw[4] !== 1) throw new FormatError('corrupt', `unknown container version ${raw[4]} (unauthenticated)`)
   const log2Chunk = raw[6]
   if (log2Chunk < 10 || log2Chunk > 26) throw new FormatError('corrupt', 'bad chunk size')
   const size = new DataView(raw.buffer).getBigUint64(8)
@@ -364,15 +460,22 @@ function containerCtx(keys: LibraryKeys, ctx: ContainerContext): string {
   return ctx.kind === 'blob' ? `blob|${ctx.name}` : `snap|${keys.libraryId}|${ctx.deviceId}|${pad10(ctx.n)}`
 }
 
-function chunkAad(header: Uint8Array, ctxStr: string, i: number, last: boolean): Uint8Array {
+function chunkAad(header: Uint8Array, ctxStr: string, i: number, last: boolean): Uint8Array<ArrayBuffer> {
   return concatBytes([header, utf8(`|${ctxStr}|${i}|${last ? 1 : 0}`)])
 }
 
-async function blobNonce(keys: LibraryKeys, epoch: number, sha256: string, log2Chunk: number, i: number): Promise<Uint8Array> {
-  const k = keys.nonce.get(epoch)
-  if (!k) throw new FormatError('newerFormat', `unknown key epoch ${epoch}`)
-  return (await hmac(k, utf8(`${sha256}|${log2Chunk}|${i}`))).subarray(0, NONCE)
+/**
+ * Deterministic blob chunk nonce: `HMAC(nonceKey, u32be(|aad|) || aad || plaintext)[0..12]`. The AAD holds
+ * the header (version, epoch, chunk size, total size), the blob name, the index and the last-flag, so a
+ * nonce repeats only for the identical plaintext at the identical position: identical ciphertext.
+ */
+async function blobNonce(nonceKey: CryptoKey, aad: Uint8Array, pt: Uint8Array): Promise<Uint8Array> {
+  const len = new Uint8Array(4)
+  new DataView(len.buffer).setUint32(0, aad.length)
+  return (await hmac(nonceKey, concatBytes([len, aad, pt]))).subarray(0, NONCE)
 }
+
+const chunkKeyMap = (keys: LibraryKeys, kind: ContainerContext['kind']) => (kind === 'blob' ? keys.blob : keys.snap)
 
 export interface EncryptedSource extends ByteSource {
   /** The 16 header bytes. */
@@ -385,15 +488,16 @@ export interface EncryptedSource extends ByteSource {
  * The container for `src` as a random-access `ByteSource`: `read(start, end)` encrypts only the chunks
  * that range touches (two most recent chunks cached), so a 2 GB file never sits in memory.
  *
- * Blobs use deterministic nonces, so any byte range is identical across reads, runs and devices
- * (multipart parts can be re-sent after a crash). Snapshots use random nonces, remembered per chunk index
- * (12 B each) so re-reading a range from the same source is still consistent.
+ * Blobs use deterministic, content-derived nonces, so any byte range is identical across reads, runs and
+ * devices (multipart parts can be re-sent after a crash). Snapshots use random nonces, remembered per
+ * chunk index (12 B each) so re-reading a range from the same source is still consistent.
  */
 export function encryptChunks(keys: LibraryKeys, src: ByteSource, ctx: ContainerContext): EncryptedSource {
   if (ctx.kind === 'blob' && !SHA256_HEX.test(ctx.sha256)) throw new TypeError('sha256 must be 64 lowercase hex chars')
   const epoch = keys.epoch
-  const key = encKeyFor(keys, epoch)
+  const key = keyFor(chunkKeyMap(keys, ctx.kind), epoch)
   const deterministic = ctx.kind === 'blob'
+  const nonceKey = deterministic ? keyFor(keys.nonce, epoch) : null
   const header = buildHeader(src.size, epoch, deterministic)
   const g = chunkGeom({ size: src.size, log2Chunk: LOG2_CHUNK })
   const ctxStr = containerCtx(keys, ctx)
@@ -404,13 +508,14 @@ export function encryptChunks(keys: LibraryKeys, src: ByteSource, ctx: Container
     const start = i * g.chunk
     const pt = await src.read(start, start + g.plainLen(i))
     if (pt.length !== g.plainLen(i)) throw new Error('ByteSource returned a short read')
+    const aad = chunkAad(header, ctxStr, i, i === g.n - 1)
     let nonce: Uint8Array
-    if (deterministic) nonce = await blobNonce(keys, epoch, (ctx as { sha256: string }).sha256, LOG2_CHUNK, i)
+    if (nonceKey) nonce = await blobNonce(nonceKey, aad, pt)
     else {
       nonce = randomNonces.get(i) ?? randomBytes(NONCE)
       randomNonces.set(i, nonce)
     }
-    const ct = await gcmEncrypt(key, nonce, chunkAad(header, ctxStr, i, i === g.n - 1), pt)
+    const ct = await gcmEncrypt(key, nonce, aad, pt)
     return concatBytes([nonce, ct])
   }
   const chunkAt = (i: number): Promise<Uint8Array> => {
@@ -463,8 +568,15 @@ export async function decryptChunk(
   const g = chunkGeom(header)
   if (!Number.isInteger(i) || i < 0 || i >= g.n) throw new FormatError('corrupt', `chunk ${i} out of range`)
   if (data.length !== g.plainLen(i) + CHUNK_OVERHEAD) throw new FormatError('corrupt', `chunk ${i} has the wrong length`)
-  const key = encKeyFor(keys, header.epoch)
-  return gcmDecrypt(key, data.subarray(0, NONCE), chunkAad(header.raw, containerCtx(keys, ctx), i, i === g.n - 1), data.subarray(NONCE))
+  const aad = chunkAad(header.raw, containerCtx(keys, ctx), i, i === g.n - 1)
+  const nonce = data.subarray(0, NONCE)
+  if (header.version === 1) {
+    // v1 used one AES key for everything, with the same chunk layout and AAD shape.
+    if (header.epoch === 0 && (await isAuthenticV1(keys, nonce, aad, data.subarray(NONCE))))
+      throw new FormatError('oldFormat', `${ctx.kind === 'blob' ? 'file' : 'snapshot'} ${OLD_FORMAT_MESSAGE}`)
+    throw new FormatError('corrupt', 'decryption failed (wrong key, wrong location or tampered data)')
+  }
+  return gcmDecrypt(keyFor(chunkKeyMap(keys, ctx.kind), header.epoch), nonce, aad, data.subarray(NONCE))
 }
 
 /**

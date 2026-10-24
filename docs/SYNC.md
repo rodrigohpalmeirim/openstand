@@ -1,6 +1,6 @@
 # Library sync: implementation spec
 
-Status: phase 1 (S3-compatible storage) implemented. Read `AGENTS.md` first.
+Status: phase 1 (S3-compatible storage) implemented, wire format **v2** (§4.4). Read `AGENTS.md` first.
 
 Library sync keeps a whole library (songs, files, annotations, setlists, layers) identical on all of a
 user's devices. There are no accounts: the user brings their own storage. Everything is end-to-end
@@ -80,29 +80,46 @@ HKDF-SHA256(ikm = secret, salt = utf8("openstand-sync-v1"), info = label):
   libraryId = base32(deriveBits("library-id", 128))   // 26 chars [a-z2-7]; storage path segment
   roomId    = base32(deriveBits("room-id", 128))      // 26 chars; relay room. Independent HKDF output,
                                                       // so it can't be linked to the storage location.
-  encKey[e] = deriveKey("enc-key/" + e, AES-GCM-256)  // e = key epoch, 0 for now
-  nameKey   = deriveKey("blob-name", HMAC-SHA-256)    // blob object names
-  nonceKey[e] = deriveKey("blob-nonce/" + e, HMAC-SHA-256)  // deterministic blob chunk nonces
+  envKey[e]   = deriveKey("v2/envelope/" + e, AES-GCM-256)   // e = key epoch, 0 for now; meta, devices, batches, notices
+  blobKey[e]  = deriveKey("v2/blob/" + e, AES-GCM-256)       // blob container chunks
+  snapKey[e]  = deriveKey("v2/snapshot/" + e, AES-GCM-256)   // snapshot container chunks
+  nonceKey[e] = deriveKey("v2/blob-nonce/" + e, HMAC-SHA-256) // content-derived blob chunk nonces (§4.2)
+  nameKey     = deriveKey("blob-name", HMAC-SHA-256)          // blob object names
+  v1Key       = deriveKey("enc-key/0", AES-GCM-256)           // decrypt only: recognises v1 objects (§4.4)
 deviceId    = 16 lowercase hex chars (64 random bits). New on every join; never reused.
 ```
 
 - base32 is RFC 4648, lowercase, without padding. Derived keys are non-extractable.
+- **Key separation (v2).** Envelopes, blob chunks and snapshot chunks each have their own AES key, so the
+  random nonces of envelopes and snapshots and the deterministic nonces of blobs never share a key. The
+  salt and the `library-id`, `room-id` and `blob-name` labels are unchanged from v1, so storage paths, rooms
+  and blob names didn't move.
 - The raw secret is stored in `syncState.config.secret` (base64url), because pairing has to display it.
   It sits in the same trust domain as the library data in IndexedDB.
 - **Blob object names use a keyed HMAC, not the plaintext hash:**
   `blobName = base32(HMAC(nameKey, hexToBytes(sha256)))` (52 chars). A plaintext SHA-256 would let the
-  storage provider (or anyone with bucket access) confirm that a library holds a specific known file, such
-  as a particular published score, and would link identical files across libraries. The HMAC costs nothing
-  and still deduplicates within a library.
-- What the storage provider still sees: the number of devices, batch counts, sizes and timing, and blob
-  sizes. What the relay sees: the room id, IP addresses and notice timing. Neither sees titles, content,
-  or which files are equal across libraries.
+  storage provider (or anyone with bucket access) confirm outright that a library holds a specific known
+  file, and the names would match across libraries. The HMAC costs nothing and still deduplicates within a
+  library. It does **not** hide sizes (next point).
+- **What the storage provider (or anyone who can list the bucket) still sees.** Nothing is padded:
+  - every blob's **exact plaintext size**: `ciphertextSize = size + 16 + 28 · ceil(size / 1 MiB)` is a
+    fixed, public function of it;
+  - the number of blobs, devices and snapshots, the size and count of every batch and snapshot, and the
+    **timing** of every write (when a device is used, how much it changes, when files are added);
+  - so the provider **can match known file sizes**: if a particular published PDF or recording has a
+    distinctive size, an object of exactly that ciphertext size is strong evidence that the library holds
+    it, and objects of the same size in different libraries are probably the same file. Encryption hides
+    contents, titles, names and metadata, not sizes or activity patterns.
+
+  What the relay sees: the room id, IP addresses and notice timing. Neither sees titles, file contents,
+  annotations or song metadata.
 
 **Key rotation (format-ready, not built).** Every ciphertext carries an epoch byte. A real rotation means
 a stolen device knew the secret, so rotation is **"Reset sync"** (§10.5): a new secret gives a new
 `libraryId` path and room, everything is re-uploaded, and the remaining devices pair again by QR.
-Epoch > 0 is reserved for a future keyring (re-encrypting in place without changing location). Readers must
-reject unknown epochs with `newerFormat`.
+Epoch > 0 is reserved for a future keyring (re-encrypting in place without changing location). The epoch
+byte isn't authenticated on its own, so readers treat an unknown epoch as `corrupt` for that object (§4.4),
+never as a format verdict.
 
 ---
 
@@ -147,8 +164,9 @@ A snapshot is the device's full merged state after its own outbox has drained (`
 | Rule | Value |
 | --- | --- |
 | When to write one | Log entries not covered by the newest known snapshot (any device) ≥ 500, or their size ≥ 8 MiB. At most once per 24 h per device, only when idle (not performing, page visible). The first device writes one right after its initial upload. |
-| Choosing one to bootstrap from | The largest `Σ vector`; on ties, the newest `t`. Read the header with a range GET of chunk 0. |
-| What it drops | Field values of dead records whose `a` hlc is older than 30 days (the `a` register stays forever: about 60 B). Element tombstones older than 180 days. Both cut-offs go in `horizon`. |
+| Choosing one to bootstrap from | Read each header with a range GET of chunk 0. Use only snapshots whose vector has valid device ids and seqs and never exceeds the trusted heads, that aren't dated (`t`) or stamped (`hlcMax`) more than 24 h in the future, and whose author has a valid (decryptable) device record. Live authors rank before retired ones, then the largest heads-capped `Σ vector`, then the newest `t`. Cursor moves from a snapshot are capped at the trusted heads. |
+| What it drops | Field values of dead records whose `a` hlc is older than 30 days (the `a` register stays forever: about 60 B). Element tombstones older than 180 days. Both cut-offs go in `horizon`. Readers cap the horizon they act on at `min(horizon.elementTombs, t − 180 d, now − 180 d)`. |
+| Header validation (codec) | `d` a device id, `n ≥ 1` matching the key, `t` a time not more than 24 h (`CLOCK_AHEAD_MAX`) past the reader's clock, `records` a safe integer ≤ 50,000,000, `hlcMax` a valid HLC, `vector` device id → non-negative safe integer, both `horizon` values numbers ≤ `t`. Any violation is `corrupt`. Every record line is validated like a batch op (§4.4), may be at most 64 Mi characters, and there may not be more lines than `records`. |
 
 ### 3.2 Pruning without coordination
 
@@ -176,7 +194,9 @@ merging is idempotent.
   missed tombstones that have since been discarded. On catch-up it applies the snapshot and then deletes,
   locally only, any alive record or element whose `born ≤ lastSync.hlc` and which is absent from the
   snapshot. The network knew about those, so their absence means they were deleted. Newer local items are
-  its own unsynced work and are published normally.
+  its own unsynced work and are published normally. This only happens when the snapshot covers everything
+  this device has merged (its vector is at or past every cursor), so a snapshot that is behind can't delete
+  what it simply hasn't seen.
 
 ---
 
@@ -227,53 +247,105 @@ Size limits:
 ### 4.1 Sealed envelope (meta, devices, batches)
 
 ```
-[0]      0x01               format version
+[0]      0x02               format version
 [1]      epoch              0
 [2..13]  nonce              12 random bytes
-[14..]   AES-GCM(encKey[epoch], nonce, plaintext = gzip(JSON), aad) || tag(16)
-aad = utf8(`os1|${kind}|${libraryId}|${rest}`)   kind/rest:
+[14..]   AES-GCM(envKey[epoch], nonce, plaintext = gzip(JSON), aad) || tag(16)
+aad = [0x02, epoch] || utf8(`os1|${kind}|${libraryId}|${rest}`)   kind/rest:
       batch   -> `${deviceId}|${seq}`
       device  -> `${deviceId}`
       meta    -> ``
+      (notice -> aad = [0x02, epoch] || utf8(`os1|notice|${roomId}`), §4.3)
 ```
 
-The AAD binds every object to its own key path. Anyone who can write to the bucket but lacks the key
-can't swap or replay batches between paths.
+The AAD binds every object to its own key path and to its version and epoch bytes. Anyone who can write to
+the bucket but lacks the key can't swap or replay batches between paths. Random 96-bit nonces under
+`envKey` are fine for the number of envelopes a library writes.
 
 ### 4.2 Chunked container (blobs, snapshots)
 
 ```
-Header (16 B): "OSC1" | ver=1 (u8) | epoch (u8) | log2Chunk=20 (u8) | flags (u8: bit0 deterministic nonces)
+Header (16 B): "OSC1" | ver=2 (u8) | epoch (u8) | log2Chunk=20 (u8) | flags (u8: bit0 deterministic nonces)
                | plaintextSize (u64 BE)
 Chunk i (i = 0..n-1, n = max(1, ceil(size / CHUNK))):  nonce(12) | ciphertext(len_i) | tag(16)
   len_i = CHUNK (1 MiB) except the last; an empty plaintext gives a single 0-length chunk
   offset_i = 16 + i * (CHUNK + 28)                     -> any chunk range is computable
   aad_i    = header(16) || utf8(`|${ctx}|${i}|${i === n-1 ? 1 : 0}`)   // last-flag stops truncation
   ctx      = `blob|${blobName}`  or  `snap|${libraryId}|${deviceId}|${n10}`
-Blob nonces (flags bit0):  nonce_i = HMAC(nonceKey[epoch], utf8(`${sha256}|${log2Chunk}|${i}`))[0..12]
+  key      = blobKey[epoch] for blobs, snapKey[epoch] for snapshots
+Blob nonces (flags bit0):  nonce_i = HMAC(nonceKey[epoch], u32be(len(aad_i)) || aad_i || plaintext_i)[0..12]
 Snapshot nonces:           random
 ciphertextSize(size) = 16 + n * 28 + size
 ```
 
-Blob nonces are deterministic: the same file always encrypts to the same bytes. This means:
+**Blob nonces are deterministic and content-derived.** The nonce is a PRF of the chunk's plaintext and its
+whole AAD (format version, epoch, chunk size, total size, blob name, index, last-flag). So:
 
-- a multipart part can be re-encrypted and re-sent identically after a crash;
-- two devices uploading the same file produce identical objects;
-- a download can resume from any chunk.
+- the same file always encrypts to the same bytes: a multipart part can be re-encrypted and re-sent
+  identically after a crash, two devices uploading the same file produce identical objects, and a download
+  can resume from any chunk;
+- a nonce repeats only for the **identical plaintext chunk at the identical position of an identically
+  sized file with the same name**, which yields identical ciphertext and leaks nothing. Two different
+  plaintexts never meet under one key and nonce, even if a device files content under the wrong hash
+  (v1 derived the nonce from the claimed hash alone, so a wrong claim reused nonces; that is the reason
+  for v2). The 96-bit truncation gives the collision bound of random nonces.
 
-Reusing a nonce only ever happens with the identical plaintext chunk, so it leaks nothing.
-
-After download, a blob is verified with WebCrypto SHA-256 when it is ≤ 32 MiB. Above that, the per-chunk
-GCM tags (bound to `blobName`, the index and the last-flag) authenticate it, which keeps memory bounded.
+**Every download is verified against its SHA-256, whatever its size** (§10.2). Up to 32 MiB with one
+WebCrypto digest; above that with a streaming SHA-256 (`@noble/hashes`, lazy-loaded) fed chunk by chunk
+from the stored chunks, so memory stays at about one chunk. The GCM tags only prove that a key holder
+wrote the object, not that it is the file the hash names; a mismatch is discarded and never stored.
 
 ### 4.3 Relay notice
 
 ```
-text frame: {"v":1,"n":"<base64url(sealed(JSON {d, s}) with aad = utf8(`os1|notice|${roomId}`), no gzip)>"}
+text frame: {"v":1,"n":"<base64url(sealed(JSON {d, s}) with aad = [0x02, epoch] || utf8(`os1|notice|${roomId}`), no gzip)>"}
 ```
 
 Receivers decrypt the notice and ignore their own `d`. If `s > cursor[d]`, they fetch `log/d/(cursor+1..s)`,
 debounced by 300 ms.
+
+### 4.4 Format versions, errors and input validation
+
+**Format v2, no migration.** v2 (2026-10-24) changed the envelope and container version bytes, the keys
+and the blob nonce. Nothing reads v1. Nothing real had been synced with v1, so there is no migration:
+a library that still holds v1 objects has to be recreated with **"Reset sync"** (§10.5).
+
+Only authenticated bytes produce a format verdict. `FormatError.code` is one of:
+
+| Code | Meaning | Scope |
+| --- | --- | --- |
+| `corrupt` | This object doesn't authenticate or is malformed: wrong key or location, tampering, truncation, a bad register, a hash mismatch, or an **unknown version or epoch byte** (unauthenticated, so it can't be trusted to mean "newer"). | That object (or that device's stream). |
+| `newerFormat` | The object authenticated and its JSON `v` is higher than this build knows. | Per stream; tells the user to update. |
+| `oldFormat` | The object authenticates under `v1Key` with the v1 layout (version byte 1, epoch 0, v1 AAD). Flipping a v2 object's version byte to 1 doesn't authenticate and stays `corrupt`. | The library needs "Reset sync". The engine maps it to `rejoin` wording. |
+
+Future writers must keep a format change detectable after authentication (bump the JSON `v` inside a v2
+envelope), or accept that old readers report the new objects as `corrupt`.
+
+**Decode-level validation** (`codec.ts`; the engine adds trust rules on top, §3.1, §10.1):
+
+- Batches: `v`, `d`/`s` equal to the key path, `t` a number, `hlcMax` a valid HLC, `blobsReady` SHA-256
+  hex strings, and every op passes `checkRecordDelta`: string `c` and `id`; every HLC in `a`, `f`, `l.o`
+  and `l.e` (value and born) valid; register tuples of the right length; `m` values numbers; counters
+  non-negative numbers; no `__proto__` key in any map. One bad op makes the batch `corrupt`.
+- Snapshots: the header rules in §3.1, each record line as above, line length ≤ 64 Mi characters.
+- Envelopes decompress to at most 64 MiB.
+
+**Size and work limits against anyone with bucket access:**
+
+| Where | Limit |
+| --- | --- |
+| `backend.get` without a range | `maxBytes`, default `GET_MAX` (64 MiB + 64 KiB); `Content-Length` above it is refused, a stream is cancelled once past it (`BackendError('unknown')`, `providerCode: 'TooLarge'`). |
+| `backend.get` with a range | At most the range's length. A server that ignores `Range` (200 with the whole object) is accepted only if the object fits; otherwise the download is aborted (`providerCode: 'RangeIgnored'`). |
+| S3 XML answers / error bodies | 8 MiB / 64 KiB (error bodies are truncated). XML is scanned with a linear `indexOf` scanner (4 MB in well under a second, also for unclosed tags). |
+| Listing (`listAll` in `backends/util.ts`) | 250,000 keys per prefix, and a cursor that repeats, throw (`TooManyKeys` / `ListLoop`). |
+| Snapshot NDJSON | 64 Mi characters per line; `records` ≤ 50,000,000. |
+| `objectStream` without range support | One GET of at most 1 GiB. |
+
+**Remaining limits.** A key holder can do anything a device can (write any batch, snapshot or blob); the
+checks above bound the damage to availability and to what such a device could do anyway, and downloads
+catch wrong file content by hash. Someone with bucket-only access (no key) can fake a head marker for a
+known device; that lets a lying snapshot's vector pass the heads cap for that device, and holds that
+device's stream back once its real entries run out. Size, count and timing metadata stay visible (§2).
 
 ---
 
@@ -380,9 +452,14 @@ export function parseHlc(h: Hlc): { wall: number; counter: number; device: strin
 
 - `now(wall)` returns `max(last.wall, wall)`. The counter increments within the same ms; when it would
   overflow, `wall` goes up by 1.
-- `receive` is the standard HLC receive.
-- A remote wall more than 5 min ahead of local time still advances the clock (so convergence holds), and
-  sets the `clockAhead` warning naming that device.
+- `receive` is the standard HLC receive and returns a boolean.
+- A remote wall more than 5 min ahead of local time (`CLOCK_AHEAD_WARN`) still advances the clock (so
+  convergence holds), and sets the `clockAhead` warning naming that device.
+- A remote HLC more than 24 h ahead (`CLOCK_AHEAD_MAX`), or a malformed one, is refused: `receive`
+  returns `false` and the clock is untouched, so one bad value can't drag every clock into the future. A
+  batch with ops 24 h–30 d ahead holds back that device's stream until local time catches up; ops more than
+  30 d ahead (`CLOCK_AHEAD_STALL`) are dropped. A restored `last` that far ahead is ignored.
+- The clock saturates at its maximum instead of throwing.
 - `clock.last` is persisted with every batch build and every apply.
 
 ### 6.2 Dexie `version(2)` (in `db.ts`; version 1 untouched)
@@ -465,8 +542,8 @@ export interface StorageBackend {
   /** Keys relative to the backend root. startAfter is exclusive; backends without it filter client-side. */
   list(prefix: string, o?: { startAfter?: string; cursor?: string; limit?: number; signal?: AbortSignal }): Promise<ListPage>
   head(key: string, o?: { signal?: AbortSignal }): Promise<ObjectInfo | null>
-  /** null on 404. range is inclusive [start, end]. */
-  get(key: string, o?: { range?: [number, number]; signal?: AbortSignal }): Promise<Uint8Array | null>
+  /** null on 404. range is inclusive [start, end]. Body capped: the range length, else maxBytes (default GET_MAX), §4.4. */
+  get(key: string, o?: { range?: [number, number]; signal?: AbortSignal; maxBytes?: number }): Promise<Uint8Array | null>
   put(key: string, body: Uint8Array, o?: { ifNoneMatch?: boolean; signal?: AbortSignal }): Promise<void>  // 412 -> BackendError('precondition')
   delete(key: string, o?: { signal?: AbortSignal }): Promise<void>        // 404 counts as success; callers delete own keys only (§3.2)
   /** Resumable upload of any size. Persists progress through onState; pass the last state back to resume. */
@@ -490,7 +567,7 @@ export class BackendError extends Error { code: BackendErrorCode; status?: numbe
 - URLs are path-style (`endpoint/bucket/key`) unless `pathStyle: false`, which is the AWS default.
   Keys are encoded per path segment.
 - `list` is `ListObjectsV2` with `prefix`, `start-after`, `continuation-token` and `max-keys`. The XML is
-  parsed with a small regex parser that decodes entities, not `DOMParser`, so it also runs in Node tests.
+  parsed with a small linear `indexOf` scanner that decodes entities, not `DOMParser` (so it also runs in Node tests) and not regexes (quadratic on crafted input); bodies are size-capped (§4.4).
 - `upload`:
   - `src.size ≤ 16 MiB`: a single PUT.
   - Otherwise multipart. Part size is 8 encrypted chunks = 8 MiB + 224 B; part 1 also carries the 16-byte
@@ -791,26 +868,38 @@ Pull, step by step:
 1. LIST `heads/`.
 2. For each device `d ≠ me` with `head > cursor[d]`, GET `log/d/(cursor+1..head)` with up to 4 in
    parallel, then apply them in order.
-3. A batch whose `v` or epoch is unknown stops that device's stream with `newerFormat`, and the cursor
-   stays put.
-4. A decrypt failure stops that stream with `corrupt`. It is never skipped, because skipping would let
-   devices diverge.
+3. Heads count only for devices with a decryptable device record (a missing or bad record is negatively
+   cached for 10 min; at most 4 lookups per pull). Each stream applies at most 2000 batches per pull.
+4. **Per-stream errors** hold back only that device's stream, with its cursor where it was: `corrupt`,
+   `newerFormat`, `oldFormat` (§4.4), apply errors and gaps no snapshot covers. A batch is never skipped,
+   because skipping would let devices diverge. Held-back streams retry after 30 s, 2 min, 10 min, then
+   hourly, and are shown in `status.streams` / `status.warning`. Only storage errors (other than
+   not-found), local quota and a closed database fail the whole pull.
+5. An undecryptable object planted at this device's own next `log/` key is overwritten.
 
 ### 10.2 Blob transfers (`blobs.ts`)
 
 **Upload:**
 
-1. HEAD `blobs/<name>`. If it exists with the expected `ciphertextSize`, the blob is done.
-2. Otherwise `backend.upload` with a `ByteSource` that encrypts the needed chunks on demand from
-   `BlobRecord.data.slice(...)`, so memory stays bounded. Resumable through `TransferRow.upload`.
+1. HEAD `blobs/<name>`. If it exists with the expected `ciphertextSize` **and** (with range GETs) its first
+   28 bytes equal ours (header: version, epoch, size; then chunk 0's content-derived nonce), the blob is
+   done. This catches v1 leftovers and stale objects for one tiny GET. It isn't a proof and doesn't need
+   to be: confidentiality never depends on it (nonces derive from content, so honest devices never put
+   two plaintexts under one key and nonce), and every download verifies the hash, so a bad object that
+   passes is caught by readers. A key holder can always upload garbage; a bucket writer can always delete.
+2. Otherwise verify the local data's SHA-256 against the hash (streamed above 32 MiB) and refuse to upload
+   on a mismatch (`corrupt`; e.g. a legacy row with a wrong hash). Then `backend.upload` with a `ByteSource`
+   that encrypts the needed chunks on demand from `BlobRecord.data.slice(...)`, so memory stays bounded.
+   Resumable through `TransferRow.upload`.
 3. When done, add the hash to the next batch's `blobsReady`.
 
 **Download:**
 
 - Fetch range GETs of 4 chunks, decrypt, and store each chunk in `syncChunks`. `doneChunks` records
   progress, so a download resumes at chunk granularity.
-- When complete, assemble `new Blob(parts, { type: mime })`, verify it (§4.2), `db.blobs.put({ id: hash, hash, mime, size, data })`,
-  and delete the chunks.
+- When complete, assemble `new Blob(parts, { type: mime })`, verify its size and SHA-256 at every size
+  (§4.2), then `db.blobs.put({ id: hash, hash, mime, size, data })` and delete the chunks. On a mismatch the
+  chunks are deleted, nothing is stored, and the row fails with `corrupt` (retried after an hour).
 - A 404 sets the row to `waiting`. It is retried when a batch's `blobsReady` contains the hash, or at the
   latest every 10 min.
 
@@ -820,9 +909,12 @@ Pull, step by step:
 2. Then songs by `lastPlayedAt`, newest first.
 3. Then smaller files first.
 
-**Before downloading:** call `navigator.storage.estimate()`. If the free space is less than the bytes
-still needed plus 200 MB, stop with `localQuota`. A `QuotaExceededError` gives the same error. Enabling
-sync calls `navigator.storage.persist()`.
+**Local space:** checked per blob, from its real size: once the first chunks have decrypted (so the
+container header and its size are authentic), `navigator.storage.estimate()` must show the bytes still
+needed for that blob plus 200 MB free; otherwise that blob fails with `localQuota` (retried with backoff)
+and other, smaller downloads carry on. Sizes claimed in remote ops (capped at 4 GiB each,
+`BLOB_CLAIM_MAX`) are only used for priority and progress, so inflated claims can't block downloads. A
+`QuotaExceededError` gives the same error. Enabling sync calls `navigator.storage.persist()`.
 
 **Hooks:**
 
@@ -905,7 +997,9 @@ export function joinSong(local: Song, remote: Song): Song
 "Stop syncing on this device":
 
 1. Push pending changes (best effort, 10 s timeout).
-2. PUT `devices/<me>` with `retired: true`, and delete `heads/<me>/*`.
+2. PUT `devices/<me>` with `retired: true` (skipped when `meta` is gone: a deleted or reset library). Its
+   `heads/`, `log/` and `snap/` objects stay: a device that joins later still needs this stream until a
+   snapshot covers it, and §3.2's retired-device rule prunes them then.
 3. Clear all `sync*` tables and the capture flag. Library rows stay; the library becomes a normal local
    one.
 4. If downloads are incomplete, warn first: "*N* files haven't downloaded yet and will be missing on this
@@ -918,7 +1012,8 @@ export function joinSong(local: Song, remote: Song): Song
   deliberately. Afterwards, other devices get `libraryGone` (meta 404 plus empty heads), stop, and keep
   their local data.
 - **"Reset sync"** is delete followed by enable with a new secret. This is the key-rotation path, used
-  after a lost device; the remaining devices then pair again.
+  after a lost device; the remaining devices then pair again. It is also the only way forward for a
+  library that still holds v1-format objects (`oldFormat`, §4.4).
 
 ### 10.6 Constants
 
@@ -938,6 +1033,11 @@ export function joinSong(local: Song, remote: Song): Song
 | `ELEMENT_TOMB_TTL` | 180 days |
 | `DIRTY_DEFER_MAX` | 24 h |
 | `CLOCK_AHEAD_WARN` | 5 min |
+| `CLOCK_AHEAD_MAX` | 24 h (refused by `receive`; snapshot `t` / `hlcMax` limit) |
+| `CLOCK_AHEAD_STALL` | 30 d (ops further ahead are dropped) |
+| `BLOB_CLAIM_MAX` | 4 GiB per claimed file size |
+| `GET_MAX` | 64 MiB + 64 KiB (default `get` body cap) |
+| `LIST_MAX_KEYS` | 250,000 keys per listed prefix |
 | `MULTIPART_STALE` | 6 days |
 
 ---
@@ -1097,7 +1197,7 @@ Randomised tests use a small seeded PRNG; don't add a dependency.
 | Package | Must test |
 | --- | --- |
 | WP1 | **HLC:** monotonic; same-ms counter; overflow; `receive`; string order equals tuple order; ahead warning. **Merge:** for random delta sets, `mergeDelta` is commutative, associative and idempotent (property test, 1,000 seeds). **Every row in the §5 tables:** concurrent edits of different fields both survive; same field resolves by HLC; set add/remove; list order rule (append without `o`, reorder with `o`, new unknown elements appended by `born`); flat reset; PN counter sums and decrements; max/min; alive and undelete; unknown fields preserved. `project`→`materialize` round-trips for real `Song`/`Setlist`/`PageAnnotations` fixtures. `rebase`. `planJoin`/`joinSong` cases. Layer `current` stays local. |
-| WP2 | **Golden vectors:** a fixed secret gives fixed `libraryId`, `roomId` and `blobName`, so a refactor can't silently move every library. Envelope round-trip; wrong AAD, epoch or version fails. **Chunked container** at sizes 0, 1, CHUNK−1, CHUNK, CHUNK+1, 3·CHUNK+5: round-trip; range-resume decrypt from chunk k; deterministic blob ciphertext is byte-identical across runs; a flipped bit, a reordered chunk or a dropped last chunk all fail. Codec NDJSON streaming. Pairing round-trip, garbage input, size ≤ 400 chars for a typical S3 config. **`backendContract(make)` suite**, run against memory: list order, prefix, `startAfter` and pagination; get/head 404 is null; range get; conditional put 412; delete idempotent; `upload` resume after an injected failure at every part. S3 XML parser and error mapping from recorded responses. Relay tests in `server/relay-test.mjs`. |
+| WP2 | **Golden vectors:** a fixed secret gives fixed `libraryId`, `roomId` and `blobName`, so a refactor can't silently move every library. Envelope round-trip; wrong AAD fails; any flipped byte, version and epoch included, is `corrupt`; authentic v1 objects are `oldFormat`. Key separation and the nonce derivation checked against node:crypto; a pinned v2 ciphertext; two different files under one claimed hash get different nonces. Downloads of every size reject a hash mismatch. Snapshot header and batch op validation. `get` body caps, linear XML parsing (4 MB < 1 s), bounded `listAll`. **Chunked container** at sizes 0, 1, CHUNK−1, CHUNK, CHUNK+1, 3·CHUNK+5: round-trip; range-resume decrypt from chunk k; deterministic blob ciphertext is byte-identical across runs; a flipped bit, a reordered chunk or a dropped last chunk all fail. Codec NDJSON streaming. Pairing round-trip, garbage input, size ≤ 400 chars for a typical S3 config. **`backendContract(make)` suite**, run against memory: list order, prefix, `startAfter` and pagination; get/head 404 is null; range get; conditional put 412; delete idempotent; `upload` resume after an injected failure at every part. S3 XML parser and error mapping from recorded responses. Relay tests in `server/relay-test.mjs`. |
 | WP3 | **Middleware captures every API path:** put, bulkPut, add, `table.update`, `db.table('songs').update`, `Collection.modify`, `delete`, `bulkDelete`, `where().anyOf().delete()`, `clear()`, multi-table transactions, the kv allow-list, and that nothing is captured when the flag is off or the transaction is remote. **Two devices in one process** (two `OpenStandDB` instances, one shared `MemoryBackend`): create, edit, delete propagate; concurrent field edits; annotation add on A while B erases another item; erase propagates; setlist concurrent append and reorder; play counts sum; blob arrives after the song (`useBlobState` goes waiting → downloading → local); upload and download resume after injected failures; third device bootstraps from a snapshot; log pruning followed by gap recovery; stale-device catch-up; join in each mode (`merge` dedupe); replace-restore propagates; prune guard (annotations applied before their song survive `collectGarbage`); annotation store three-way flush and rebased undo; `SongEditor`-style rebase doesn't revert remote edits. Engine uses injectable timers. |
 | WP4 | testing-library: wizard validation, pairing paste parsing and errors, error banners per code, indicator states driven by a mocked `useLibSync`. Manual check in the preview browser (light/dark, phone/tablet widths, keyboard). |
 
@@ -1161,3 +1261,7 @@ must pass `backendContract` unchanged.
 2. **Remote blob GC:** automatic, with the 30-day grace window and the weekly repair pass (§3.2).
 3. **Layer visibility:** synced. Only the *current* layer stays per device.
 4. **Joining with a non-empty library:** defaults to a separate new library. Merge is an explicit option.
+5. **Wire format v2 without migration** (security review, 2026-10-24): v1 objects are refused with
+   `oldFormat` and the user resets sync (§4.4).
+6. **`@noble/hashes`** is approved (lazy-loaded) for streaming SHA-256.
+7. **No padding:** sizes, counts and timing stay visible to the storage provider, documented in §2.

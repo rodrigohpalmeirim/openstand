@@ -78,3 +78,41 @@ export function mergeLine(p: JoinPreview): string {
   if (!p.matches) return `${plural(added, 'song')} from this device will be added to the synced library.`
   return `${p.matches.toLocaleString('en-US')} of your songs ${p.matches === 1 ? 'is' : 'are'} already in the synced library and will be combined; ${added.toLocaleString('en-US')} will be added.`
 }
+
+/** Where a pairing code sends this library, for the join preview (so a joiner can spot a code that isn't theirs). */
+export interface JoinTarget {
+  /** Storage endpoint host (or the backend kind for non-S3 backends). */
+  storage: string
+  /** `bucket/prefix`, when the backend has one. */
+  bucket?: string
+  /** Relay host for instant updates; undefined = polling only. */
+  relay?: string
+  /** Endpoint uses plain `http:` to something other than this machine. */
+  insecure: boolean
+}
+
+const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]'])
+
+function hostOf(url: string, fallbackScheme: string): URL | null {
+  try {
+    return new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(url) ? url : `${fallbackScheme}://${url}`)
+  } catch {
+    return null
+  }
+}
+
+export function joinTarget(p: PairingPayload, here: { host: string } | undefined = typeof location === 'undefined' ? undefined : location): JoinTarget {
+  let relay: string | undefined
+  const r = p.r?.trim()
+  if (r) relay = r.startsWith('/') ? (here ? `${here.host} (this site)` : 'this site') : (hostOf(r, 'wss')?.host ?? r)
+  const b = p.b
+  if (b.kind !== 's3') return { storage: b.kind, relay, insecure: false }
+  const u = hostOf(b.endpoint, 'https')
+  const host = u?.host || b.endpoint || 'unknown'
+  return {
+    storage: b.pathStyle || !u ? host : `${b.bucket}.${host}`,
+    bucket: `${b.bucket}/${b.prefix}`,
+    relay,
+    insecure: u?.protocol === 'http:' && !LOCAL_HOSTS.has(u.hostname),
+  }
+}

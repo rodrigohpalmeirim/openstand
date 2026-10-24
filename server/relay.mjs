@@ -12,7 +12,8 @@
  * Run:   node server/relay.mjs                 (listens on 0.0.0.0:8787)
  *        PORT=9000 HOST=127.0.0.1 node server/relay.mjs
  * Env:   PORT, HOST, MAX_MESSAGE (bytes, default 262144), MAX_ROOM (clients per room, default 64),
- *        ALLOWED_ORIGINS (comma-separated list; empty = any origin)
+ *        ALLOWED_ORIGINS (comma-separated list of OpenStand sites; empty = any origin). Library rooms
+ *        always require an Origin header (browsers send one), so set this to the site(s) you use.
  * Then in OpenStand: Settings › Devices & sync › Relay address = <this machine's IP>:8787.
  * Health check: GET http://HOST:PORT/ returns a JSON summary.
  *
@@ -222,9 +223,13 @@ export function createRelay({
     if (String(req.headers.upgrade).toLowerCase() !== 'websocket' || !key) return reject(400, 'Bad Request')
     if (req.headers['sec-websocket-version'] !== '13') return reject(426, 'Upgrade Required')
     const origin = req.headers.origin
-    if (allowedOrigins.length && origin && !allowedOrigins.includes(origin)) return reject(403, 'Forbidden')
     const url = new URL(req.url ?? '/', 'http://relay')
     const libMatch = LIB_PATH.exec(url.pathname)
+    // Browsers always send Origin on WebSocket upgrades. Library rooms require it (and an allowed one when
+    // ALLOWED_ORIGINS is set); perf rooms keep accepting origin-less clients as before.
+    if (!origin) {
+      if (libMatch) return reject(403, 'Forbidden')
+    } else if (allowedOrigins.length && !allowedOrigins.includes(origin)) return reject(403, 'Forbidden')
     let room, kind
     if (libMatch) {
       room = `lib:${libMatch[1]}`
@@ -236,6 +241,8 @@ export function createRelay({
       kind = 'perf'
     }
     const set = rooms.get(room) ?? new Set()
+    // Someone who knows a room id can fill its slots. Accepted: lib room ids derive from the library secret,
+    // and a client that can't connect still syncs by polling storage; it only loses instant notices.
     if (set.size >= limits[kind].maxRoom) return reject(503, 'Room Full')
     const accept = createHash('sha1').update(key + GUID).digest('base64')
     socket.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`)

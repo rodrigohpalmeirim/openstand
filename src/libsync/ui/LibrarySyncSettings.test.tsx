@@ -128,4 +128,13 @@ describe('SyncIndicator', () => {
     expect(screen.getByRole('button', { name: 'Sync now' })).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Open settings' })).toBeTruthy()
   })
+  it('a held-back device stream is a calm warning, not "Sync stopped"', () => {
+    const w = { code: 'unknown' as const, message: 'Changes from “iPad” can’t be read right now. Other devices keep syncing.', at: NOW }
+    set(on({ streams: { b: w }, warning: w, error: w }))
+    render(<LibrarySyncSettings />)
+    expect(screen.getByText(w.message)).toBeTruthy()
+    expect(screen.getByText(/keeps retrying in the background/)).toBeTruthy()
+    expect(screen.queryByText('Sync stopped')).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull()
+  })
 })

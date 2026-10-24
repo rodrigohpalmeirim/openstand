@@ -20,9 +20,13 @@ after(() => {
   relay.server.close()
 })
 
-function open(room, path = '/') {
+const APP = 'https://openstand.test'
+
+/** Node's WebSocket sends no Origin unless told to; browsers always send one. */
+function open(room, path = '/', { origin, at = base } = {}) {
   return new Promise((resolve, reject) => {
-    const ws = new WebSocket(room === null ? `${base}${path}` : `${base}${path}?room=${encodeURIComponent(room)}`)
+    const url = room === null ? `${at}${path}` : `${at}${path}?room=${encodeURIComponent(room)}`
+    const ws = new WebSocket(url, origin ? { headers: { origin } } : undefined)
     ws.inbox = []
     ws.waiters = []
     ws.onmessage = (e) => {
@@ -129,14 +133,14 @@ test('answers plain HTTP with a health summary', async () => {
 // --- library-sync rooms (docs/SYNC.md §9) ------------------------------------------------------
 
 const LIB_ID = 'abcdefghijklmnopqrstuvwxyz'
-const openLib = (id = LIB_ID, prefix = '/lib/') => open(null, `${prefix}${id}`)
+const openLib = (id = LIB_ID, prefix = '/lib/') => open(null, `${prefix}${id}`, { origin: APP })
 
 /** Status line of a raw upgrade request (the WebSocket client hides rejected handshakes). */
-async function upgradeStatus(path) {
-  const sock = connect(relay.server.address().port, '127.0.0.1')
+async function upgradeStatus(path, { origin = APP, port = relay.server.address().port } = {}) {
+  const sock = connect(port, '127.0.0.1')
   await new Promise((r) => sock.once('connect', r))
   sock.write(
-    `GET ${path} HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n` +
+    `GET ${path} HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n${origin ? `Origin: ${origin}\r\n` : ''}` +
       'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n',
   )
   const head = await new Promise((r) => sock.once('data', (d) => r(d.toString())))
@@ -146,7 +150,7 @@ async function upgradeStatus(path) {
 
 test('lib rooms: /lib/<id> and /relay/lib/<id> are the same room; a ?room param is ignored', async () => {
   const a = await openLib()
-  const b = await open('other', `/relay/lib/${LIB_ID}`)
+  const b = await open('other', `/relay/lib/${LIB_ID}`, { origin: APP })
   a.send('{"v":1,"n":"x"}')
   assert.equal(await next(b), '{"v":1,"n":"x"}')
   assert.ok(relay.rooms.has(`lib:${LIB_ID}`))
@@ -227,4 +231,30 @@ test('{"ping":1} gets {"pong":1} back and is not forwarded (both room kinds)', a
 test('health JSON advertises lib support', async () => {
   const res = await fetch(`http://127.0.0.1:${relay.server.address().port}/`)
   assert.deepEqual((await res.json()).features, ['lib'])
+})
+
+test('origin: lib rooms require an Origin header; perf rooms still accept clients without one', async () => {
+  assert.equal(await upgradeStatus(`/lib/${LIB_ID}`, { origin: null }), 403)
+  assert.equal(await upgradeStatus(`/relay/lib/${LIB_ID}`, { origin: null }), 403)
+  assert.equal(await upgradeStatus(`/lib/${LIB_ID}`, { origin: 'https://anything.example' }), 101)
+  assert.equal(await upgradeStatus('/?room=band', { origin: null }), 101)
+  await assert.rejects(open(null, `/lib/${LIB_ID}`))
+})
+
+test('origin: with ALLOWED_ORIGINS set, only listed origins get in (both room kinds)', async () => {
+  const r = createRelay({ allowedOrigins: [APP], heartbeatMs: 10_000, log: null })
+  await new Promise((done) => r.server.listen(0, '127.0.0.1', done))
+  const port = r.server.address().port
+  try {
+    assert.equal(await upgradeStatus(`/lib/${LIB_ID}`, { port }), 101)
+    assert.equal(await upgradeStatus(`/lib/${LIB_ID}`, { port, origin: 'https://evil.example' }), 403)
+    assert.equal(await upgradeStatus(`/lib/${LIB_ID}`, { port, origin: null }), 403)
+    assert.equal(await upgradeStatus('/?room=band', { port, origin: 'https://evil.example' }), 403)
+    assert.equal(await upgradeStatus('/?room=band', { port, origin: null }), 101)
+    const a = await open(null, `/lib/${LIB_ID}`, { origin: APP, at: `ws://127.0.0.1:${port}` })
+    a.close()
+  } finally {
+    r.closeAll()
+    r.server.close()
+  }
 })

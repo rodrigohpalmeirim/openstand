@@ -97,4 +97,22 @@ describe('JoinFlow', () => {
     expect(await screen.findByText('This device is out of space (needs 2.0 GB more).')).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Join' })).toBeTruthy()
   })
+  it('shows where the code points, warns the joiner, and warns harder for merge and plain http', async () => {
+    const http: PairingPayload = {
+      ...payload,
+      b: { kind: 's3', provider: 'minio', endpoint: 'http://files.example.net:9000', region: 'us-east-1', bucket: 'music', prefix: 'openstand/', accessKeyId: 'a', secretAccessKey: 'b', pathStyle: true },
+      r: 'wss://relay.example.org/relay',
+    }
+    vi.mocked(api.parsePairingCode).mockResolvedValue(http)
+    vi.mocked(api.previewJoin).mockResolvedValue({ remoteSongs: 5, remoteBytes: 0, localSongs: 2, matches: 0, suggested: 'newLibrary' })
+    render(<JoinFlow open onClose={() => {}} />)
+    paste('OSJ1.abc')
+    expect(await screen.findByText('files.example.net:9000')).toBeTruthy()
+    expect(screen.getByText('music/openstand/')).toBeTruthy()
+    expect(screen.getByText('relay.example.org')).toBeTruthy()
+    expect(screen.getByText('This storage uses an unencrypted http:// address.')).toBeTruthy()
+    expect(screen.getByText('Only join codes from your own devices. Joining sends your library to the storage in this code.')).toBeTruthy()
+    fireEvent.click(screen.getByRole('radio', { name: /Merge with/ }))
+    expect(screen.getByText(/Merging uploads every song, file and annotation in “My Library”/)).toBeTruthy()
+  })
 })

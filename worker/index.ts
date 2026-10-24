@@ -25,11 +25,25 @@ const LIMITS: Record<RoomKind, { maxMessage: number; maxRoom: number; perSecond:
 
 const LIB = /^\/relay\/lib\/([a-z2-7]{26})$/
 
+// The PWA's own security headers (CSP etc.) come from public/_headers, which Workers assets applies to every
+// asset response; this Worker only answers /relay (run_worker_first), whose responses are JSON or 101s.
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), {
     status,
-    headers: { 'content-type': 'application/json', 'access-control-allow-origin': '*', 'cache-control': 'no-store' },
+    headers: {
+      'content-type': 'application/json',
+      'access-control-allow-origin': '*',
+      'cache-control': 'no-store',
+      'x-content-type-options': 'nosniff',
+      'referrer-policy': 'no-referrer',
+    },
   })
+
+/** Per-socket flood window, kept in the socket attachment so it survives the room hibernating. */
+interface FloodWindow {
+  start: number
+  count: number
+}
 
 const encoder = new TextEncoder()
 
@@ -47,11 +61,15 @@ export default {
 
     if (request.headers.get('upgrade')?.toLowerCase() !== 'websocket') return json({ service: 'openstand-relay', features: ['lib'] })
 
+    const lib = url.pathname.match(LIB)
     const allowed = env.ALLOWED_ORIGINS.split(',').map((s) => s.trim()).filter(Boolean)
     const origin = request.headers.get('origin')
-    if (allowed.length && origin && origin !== url.origin && !allowed.includes(origin)) return new Response('Forbidden', { status: 403 })
+    // Browsers always send Origin on WebSocket upgrades. Library rooms require it (and an allowed one);
+    // perf rooms keep accepting origin-less clients as before.
+    if (!origin) {
+      if (lib) return new Response('Forbidden', { status: 403 })
+    } else if (allowed.length && origin !== url.origin && !allowed.includes(origin)) return new Response('Forbidden', { status: 403 })
 
-    const lib = url.pathname.match(LIB)
     let name: string
     let kind: RoomKind
     if (lib) {
@@ -71,9 +89,6 @@ export default {
 } satisfies ExportedHandler<Env>
 
 export class RelayRoom extends DurableObject<Env> {
-  /** Per-socket flood window. In memory only: it resets when the room hibernates, which is fine. */
-  private windows = new WeakMap<WebSocket, { start: number; count: number }>()
-
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env)
     this.ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair('{"ping":1}', '{"pong":1}'))
@@ -81,9 +96,12 @@ export class RelayRoom extends DurableObject<Env> {
 
   async fetch(request: Request): Promise<Response> {
     const kind: RoomKind = request.headers.get('x-room-kind') === 'lib' ? 'lib' : 'perf'
+    // Someone who knows a room id can fill its slots. Accepted: the id is derived from the library secret,
+    // and a client that can't connect still syncs by polling storage; it only loses instant notices.
     if (this.ctx.getWebSockets().length >= LIMITS[kind].maxRoom) return new Response('Room Full', { status: 503 })
     const { 0: client, 1: server } = new WebSocketPair()
     this.ctx.acceptWebSocket(server, [kind])
+    server.serializeAttachment({ start: 0, count: 0 } satisfies FloodWindow)
     return new Response(null, { status: 101, webSocket: client })
   }
 
@@ -92,9 +110,10 @@ export class RelayRoom extends DurableObject<Env> {
     const limits = LIMITS[this.ctx.getTags(ws)[0] === 'lib' ? 'lib' : 'perf']
     if (tooBig(message, limits.maxMessage)) return ws.close(1009, 'Message too big')
     const now = Date.now()
-    let w = this.windows.get(ws)
-    if (!w || now - w.start > 1000) this.windows.set(ws, (w = { start: now, count: 0 }))
-    if (++w.count > limits.perSecond) return
+    const prev = ws.deserializeAttachment() as FloodWindow | null
+    const w: FloodWindow = !prev || now - prev.start > 1000 ? { start: now, count: 1 } : { start: prev.start, count: prev.count + 1 }
+    ws.serializeAttachment(w)
+    if (w.count > limits.perSecond) return
     for (const peer of this.ctx.getWebSockets()) {
       if (peer === ws) continue
       try {

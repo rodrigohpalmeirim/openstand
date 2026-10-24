@@ -1,7 +1,7 @@
 // @vitest-environment node
 import 'fake-indexeddb/auto'
 import { beforeEach, describe, expect, it } from 'vitest'
-import { db, putBlob, setKV, uid, updateSong } from '../db/db'
+import { db, putBlob, setKV, sha256, uid, updateSong } from '../db/db'
 import { emptySong, type PageAnnotations, type Setlist, type Song } from '../db/schema'
 import { importPackageArchive, openArchive, restoreArchive, writeArchive } from './archive'
 import { MemorySink } from './zip'
@@ -138,5 +138,47 @@ describe('song packages', () => {
     const imported = (await db.setlists.where('name').equals('Jazz').toArray()).find((s) => s.id !== sl.id)!
     expect(imported.entries[0].songId).toBe(b.id)
     expect((await db.annotations.where('songId').equals(a.id).first())?.items[0]).toMatchObject({ text: 'pkg note' })
+  })
+})
+
+describe('archive blob hashes are recomputed, never trusted', () => {
+  /** A song whose blob row lies about its hash (as a crafted archive would). */
+  async function lyingSong(title: string, content: string, claimed: string, id: string) {
+    await db.blobs.put({ id, hash: claimed, mime: 'application/pdf', size: content.length, data: new Blob([content]) })
+    const song = emptySong({ id: uid(), title })
+    song.files.push({ id: uid(), name: 'x.pdf', kind: 'pdf', blobId: id, pageCount: 1, size: content.length })
+    await db.songs.put(song)
+    return song
+  }
+
+  it('re-keys content under its real SHA-256, for legacy and hash-shaped ids', async () => {
+    const claimed = 'ab'.repeat(32)
+    const s1 = await lyingSong('Legacy id', '%PDF-one', claimed, 'legacy-uuid')
+    const s2 = await lyingSong('Hash-shaped id', '%PDF-two', 'cd'.repeat(32), 'cd'.repeat(32))
+    const { blob } = await archive('backup')
+    await wipe()
+    await restoreArchive(await openArchive(blob, 'backup'), { mode: 'replace' })
+    for (const [s, content] of [[s1, '%PDF-one'], [s2, '%PDF-two']] as const) {
+      const blobId = (await db.songs.get(s.id))!.files[0].blobId
+      const real = await sha256(bytes(content))
+      expect(blobId).toBe(real)
+      expect(await db.blobs.get(real)).toMatchObject({ id: real, hash: real })
+    }
+    expect(await db.blobs.where('hash').anyOf(claimed, 'cd'.repeat(32)).count()).toBe(0)
+  })
+
+  it('does not de-duplicate against a local file by the claimed hash', async () => {
+    const local = await addSong('Local', '%PDF-local')
+    const localRow = (await db.blobs.get(local.files[0].blobId))!
+    const s = await lyingSong('Impostor', '%PDF-impostor', localRow.hash, 'legacy-2')
+    const { blob } = await archive('package', { songIds: [s.id], settings: null })
+    await db.songs.delete(s.id)
+    await db.blobs.delete('legacy-2')
+    await importPackageArchive(await openArchive(blob), { onConflict: 'copy' })
+    const copy = (await db.songs.where('title').equals('Impostor').first())!
+    const row = (await db.blobs.get(copy.files[0].blobId))!
+    expect(await row.data.text()).toBe('%PDF-impostor')
+    expect(row.hash).toBe(await sha256(bytes('%PDF-impostor')))
+    expect(await (await db.blobs.get(localRow.id))!.data.text()).toBe('%PDF-local')
   })
 })

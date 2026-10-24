@@ -5,7 +5,8 @@
  *   blobs/<id>     – raw file contents, stored uncompressed, one entry per blob
  * Blobs are streamed one at a time on export, and come back as slices of the picked file on import.
  */
-import { collectGarbage, db, putBlob, uid } from '../db/db'
+import { collectGarbage, db, uid } from '../db/db'
+import { sha256Blob } from '../libsync/crypto'
 import type { BlobRecord, KV, PageAnnotations, Setlist, Song } from '../db/schema'
 import { ZipReader, ZipWriter, type ZipSink } from './zip'
 
@@ -177,8 +178,11 @@ export async function openArchive(file: Blob, expect?: ArchiveKind): Promise<Ope
 }
 
 /**
- * Bring the archive's blobs into the DB. Blob ids are random and contents immutable, so an existing
- * id is the same file; an existing hash is de-duplicated. Returns old id -> local id.
+ * Bring the archive's blobs into the DB. Blob ids are random or content hashes, and contents immutable, so
+ * an existing id is the same file. Otherwise the content's SHA-256 is computed (streamed for large files):
+ * the archive's `hash` and hash-shaped ids are claims, never trusted, because library sync names and
+ * encrypts files by hash. New rows are keyed by the computed hash; an existing hash is de-duplicated.
+ * Returns old id -> local id.
  */
 async function importBlobs(a: OpenedArchive, needed: Set<string>, report: OnProgress, signal?: AbortSignal): Promise<Map<string, string>> {
   const map = new Map<string, string>()
@@ -193,17 +197,15 @@ async function importBlobs(a: OpenedArchive, needed: Set<string>, report: OnProg
     else if (!a.zip.has(name)) {
       /* missing in archive: leave unmapped, file shows as missing */
     } else {
-      const sameHash = m.hash ? await db.blobs.where('hash').equals(m.hash).first() : undefined
-      if (sameHash) map.set(m.id, sameHash.id)
+      const data = await a.zip.blob(name, m.mime)
+      const hash = await sha256Blob(data)
+      if (m.hash && m.hash !== hash) console.warn(`[archive] ${name}: content hash differs from the archive's claim; using the real one`)
+      const same = (await db.blobs.get(hash)) ?? (await db.blobs.where('hash').equals(hash).first())
+      if (same) map.set(m.id, same.id)
       else {
-        const data = await a.zip.blob(name, m.mime)
-        if (m.hash) {
-          const rec: BlobRecord = { id: m.id, hash: m.hash, mime: m.mime, size: data.size, data }
-          await db.blobs.put(rec)
-          map.set(m.id, m.id)
-        } else {
-          map.set(m.id, (await putBlob(await data.arrayBuffer(), m.mime)).id)
-        }
+        const rec: BlobRecord = { id: hash, hash, mime: m.mime, size: data.size, data }
+        await db.blobs.put(rec)
+        map.set(m.id, hash)
       }
     }
     bytes += m.size

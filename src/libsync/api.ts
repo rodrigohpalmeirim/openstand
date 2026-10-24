@@ -64,7 +64,15 @@ export interface LibSyncStatus {
   initial?: { kind: 'upload' | 'join'; step: string; done: number; total: number }
   relay: 'off' | 'connecting' | 'open' | 'error'
   devices: (DeviceRecord & { self: boolean })[]
+  /**
+   * Fatal when `phase` is `error`. For compatibility a non-fatal `warning` is also mirrored here while the
+   * phase isn't `error`; the UI tells them apart by the phase (see `ui/format.ts` `syncProblem`).
+   */
   error?: LibSyncError
+  /** Non-fatal: a device's changes are held back for now, or its clock is ahead. Sync carries on and retries. */
+  warning?: LibSyncError
+  /** Device streams held back (not fatal), by device id. */
+  streams?: Record<string, LibSyncError>
 }
 
 export type BlobStateKind = 'local' | 'queued' | 'downloading' | 'waiting' | 'offline' | 'missing'

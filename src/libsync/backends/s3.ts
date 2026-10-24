@@ -1,8 +1,8 @@
 /**
  * S3-compatible `StorageBackend` (docs/SYNC.md §7.1): AWS, Cloudflare R2, Backblaze B2, MinIO.
  *
- * SigV4 signing is aws4fetch (`retries: 0`; retrying is the engine's job). XML is parsed with a tiny regex
- * parser, so this also runs in Node tests. Large uploads are multipart and resumable through the persisted
+ * SigV4 signing is aws4fetch (`retries: 0`; retrying is the engine's job). XML is parsed with a tiny linear
+ * `indexOf` scanner, so this also runs in Node tests. Every response body is read with a byte cap. Large uploads are multipart and resumable through the persisted
  * `UploadState` (resume asks the server with `ListParts`, so a part that landed before a crash isn't sent
  * again). Clock skew is corrected once per request from the server's time.
  */
@@ -10,6 +10,7 @@ import { AwsClient } from 'aws4fetch'
 import { SINGLE_PUT_MAX } from '../model'
 import {
   BackendError,
+  GET_MAX,
   type BackendCaps,
   type BackendCheck,
   type BackendCheckStep,
@@ -28,6 +29,7 @@ import {
   partCount,
   partRange,
   resumableSession,
+  tooLarge,
   type MultipartSession,
   type PartLayout,
 } from './util'
@@ -52,18 +54,61 @@ export function xmlEscape(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 }
 
-const tagRe = (tag: string) => new RegExp(`<${tag}(?:\\s[^>]*)?>([\\s\\S]*?)</${tag}>`, 'g')
+const isTagEnd = (c: number) => c === 62 /* > */ || c === 47 /* / */ || c === 32 || c === 9 || c === 10 || c === 13
+
+/**
+ * The next `<tag …>` or `<tag …/>` at or after `from`. Linear: each `indexOf` starts past the previous
+ * match, and a missing `>` ends the scan.
+ */
+function openTag(xml: string, tag: string, from: number): { start: number; end: number; empty: boolean } | null {
+  const needle = '<' + tag
+  for (let i = xml.indexOf(needle, from); i >= 0; i = xml.indexOf(needle, i + needle.length)) {
+    if (!isTagEnd(xml.charCodeAt(i + needle.length))) continue
+    const gt = xml.indexOf('>', i + needle.length)
+    if (gt < 0) return null
+    return { start: i, end: gt + 1, empty: xml.charCodeAt(gt - 1) === 47 }
+  }
+  return null
+}
+
+/** Calls `fn(inner)` for each `<tag>…</tag>` (first closing tag wins, like a lazy regex) until it returns false. */
+function scanBlocks(xml: string, tag: string, fn: (inner: string | null) => boolean): void {
+  const close = '</' + tag + '>'
+  let pos = 0
+  for (;;) {
+    const o = openTag(xml, tag, pos)
+    if (!o) return
+    if (o.empty) {
+      if (!fn(null)) return
+      pos = o.end
+      continue
+    }
+    const c = xml.indexOf(close, o.end)
+    // No closing tag after this one means none after any later one either: stop.
+    if (c < 0) return
+    if (!fn(xml.slice(o.end, c))) return
+    pos = c + close.length
+  }
+}
 
 /** Decoded text of the first `<tag>` (`undefined` if absent; `''` for `<tag/>`). */
 export function xmlText(xml: string, tag: string): string | undefined {
-  const m = tagRe(tag).exec(xml)
-  if (m) return xmlDecode(m[1])
-  return new RegExp(`<${tag}(?:\\s[^>]*)?/>`).test(xml) ? '' : undefined
+  let out: string | undefined
+  scanBlocks(xml, tag, (inner) => {
+    out = inner === null ? '' : xmlDecode(inner)
+    return false
+  })
+  return out
 }
 
-/** Raw inner XML of every `<tag>` block. */
+/** Raw inner XML of every `<tag>…</tag>` block (self-closing `<tag/>` is skipped). */
 export function xmlBlocks(xml: string, tag: string): string[] {
-  return [...xml.matchAll(tagRe(tag))].map((m) => m[1])
+  const out: string[] = []
+  scanBlocks(xml, tag, (inner) => {
+    if (inner !== null) out.push(inner)
+    return true
+  })
+  return out
 }
 
 export interface ListObjectsResult {
@@ -161,6 +206,59 @@ export function serverTime(body: string, headers?: Headers): number | null {
   const d = headers?.get('date')
   const fromHeader = d ? Date.parse(d) : NaN
   return Number.isFinite(fromHeader) ? fromHeader : null
+}
+
+// ---------------------------------------------------------------------------------------------
+// Bounded bodies
+// ---------------------------------------------------------------------------------------------
+
+/** XML answers (LIST pages of ≤ 1000 keys are a few hundred KiB). */
+export const XML_MAX = 8 * 1024 * 1024
+/** Error bodies are only parsed for their code and message. */
+const ERROR_BODY_MAX = 64 * 1024
+
+/**
+ * Reads at most `max` bytes of a response body. `Content-Length` above `max` is refused before reading;
+ * otherwise the stream is cancelled as soon as it passes `max`. Then `onOver` decides: throw, or (with
+ * `truncate`) keep the first `max` bytes.
+ */
+export async function readBody(res: Response, max: number, onOver: (() => Error) | 'truncate'): Promise<Uint8Array> {
+  const cl = res.headers.get('content-length')
+  if (onOver !== 'truncate' && cl !== null && /^\d+$/.test(cl.trim()) && Number(cl) > max) {
+    await res.body?.cancel().catch(() => {})
+    throw onOver()
+  }
+  if (!res.body) return new Uint8Array(0)
+  const reader = res.body.getReader()
+  const parts: Uint8Array[] = []
+  let n = 0
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    if (n + value.length > max) {
+      await reader.cancel().catch(() => {})
+      if (onOver !== 'truncate') throw onOver()
+      parts.push(value.subarray(0, max - n))
+      n = max
+      break
+    }
+    parts.push(value)
+    n += value.length
+  }
+  if (parts.length === 1) return parts[0]
+  const out = new Uint8Array(n)
+  let o = 0
+  for (const p of parts) {
+    out.set(p, o)
+    o += p.length
+  }
+  return out
+}
+
+const dec = new TextDecoder()
+
+async function readXml(res: Response): Promise<string> {
+  return dec.decode(await readBody(res, XML_MAX, () => new BackendError('unknown', `The storage sent an XML answer larger than ${XML_MAX} bytes`, { providerCode: 'TooLarge' })))
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -286,7 +384,7 @@ export class S3Backend implements StorageBackend {
         throw await this.fetchFailure(e, o.signal)
       }
       if (res.ok || o.expect?.includes(res.status)) return res
-      const text = method === 'HEAD' ? '' : await res.text().catch(() => '')
+      const text = method === 'HEAD' ? '' : await readBody(res, ERROR_BODY_MAX, 'truncate').then((b) => dec.decode(b), () => '')
       const err = s3Error(res.status, text, res.headers)
       if (err.code === 'clock' && attempt === 0) {
         const t = serverTime(text, res.headers)
@@ -330,7 +428,7 @@ export class S3Backend implements StorageBackend {
         'start-after': o.cursor === undefined && o.startAfter ? this.prefix + o.startAfter : undefined,
       },
     })
-    const r = parseListObjects(await res.text())
+    const r = parseListObjects(await readXml(res))
     const items = r.items
       .filter((i) => i.key.startsWith(this.prefix + prefix))
       .map((i) => ({ ...i, key: this.stripPrefix(i.key) }))
@@ -352,22 +450,31 @@ export class S3Backend implements StorageBackend {
     if (res.status === 400 || res.status === 403) {
       // HEAD errors carry no body, so the code (auth? clock skew?) is unknown. A 1-byte GET reveals it
       // (and corrects skew); then HEAD once more.
-      await this.send('GET', key, { signal: o.signal, headers: { range: 'bytes=0-0' }, expect: [404, 416] })
+      const probe = await this.send('GET', key, { signal: o.signal, headers: { range: 'bytes=0-0' }, expect: [404, 416] })
+      await probe.body?.cancel().catch(() => {})
       res = await this.send('HEAD', key, { signal: o.signal, expect: [404] })
     }
     return res.status === 404 ? null : this.info(key, res)
   }
 
-  async get(key: string, o: { range?: [number, number]; signal?: AbortSignal } = {}): Promise<Uint8Array | null> {
+  async get(key: string, o: { range?: [number, number]; signal?: AbortSignal; maxBytes?: number } = {}): Promise<Uint8Array | null> {
     const r = o.range
     if (r && !(Number.isInteger(r[0]) && Number.isInteger(r[1]) && 0 <= r[0] && r[0] <= r[1]))
       throw new BackendError('unknown', 'bad range')
     const res = await this.send('GET', key, { signal: o.signal, headers: r ? { range: `bytes=${r[0]}-${r[1]}` } : undefined, expect: [404, 416] })
-    if (res.status === 404) return null
-    if (res.status === 416) return new Uint8Array(0)
-    const data = new Uint8Array(await res.arrayBuffer())
-    // A server that ignores Range answers 200 with the whole object.
-    return r && res.status === 200 ? data.slice(r[0], r[1] + 1) : data
+    if (res.status === 404 || res.status === 416) {
+      await res.body?.cancel().catch(() => {})
+      return res.status === 404 ? null : new Uint8Array(0)
+    }
+    if (!r) {
+      const max = o.maxBytes ?? GET_MAX
+      return readBody(res, max, () => tooLarge(key, max, 'TooLarge', res.status))
+    }
+    // At most the range's length. A server that ignores Range answers 200 with the whole object: fine
+    // when that fits in the range (a small object), aborted otherwise rather than downloaded.
+    const len = r[1] - r[0] + 1
+    const data = await readBody(res, len, () => tooLarge(key, len, res.status === 200 ? 'RangeIgnored' : 'TooLarge', res.status))
+    return res.status === 200 ? data.slice(r[0], r[1] + 1) : data
   }
 
   async put(key: string, body: Uint8Array, o: { ifNoneMatch?: boolean; signal?: AbortSignal } = {}): Promise<void> {
@@ -398,7 +505,7 @@ export class S3Backend implements StorageBackend {
 
   private async createMultipart(key: string, signal?: AbortSignal): Promise<string> {
     const res = await this.send('POST', key, { query: { uploads: '' }, headers: { 'content-type': 'application/octet-stream' }, signal })
-    const id = xmlText(await res.text(), 'UploadId')
+    const id = xmlText(await readXml(res), 'UploadId')
     if (!id) throw new BackendError('unknown', 'CreateMultipartUpload returned no UploadId')
     return id
   }
@@ -408,7 +515,7 @@ export class S3Backend implements StorageBackend {
     let marker: string | undefined
     for (;;) {
       const res = await this.send('GET', key, { query: { uploadId, 'part-number-marker': marker }, signal })
-      const r = parseListParts(await res.text())
+      const r = parseListParts(await readXml(res))
       for (const p of r.parts) out.set(p.n, { etag: p.etag, size: p.size })
       if (!r.truncated || !r.next || r.next === marker) return out
       marker = r.next
@@ -434,8 +541,8 @@ export class S3Backend implements StorageBackend {
       signal,
     })
     // S3 can answer 200 and still fail: the error is in the body.
-    const text = await res.text()
-    if (/<Error>/.test(text)) throw s3Error(res.status === 200 ? 500 : res.status, text, res.headers)
+    const text = await readXml(res)
+    if (text.includes('<Error>')) throw s3Error(res.status === 200 ? 500 : res.status, text, res.headers)
   }
 
   async abortUpload(state: UploadState, o: { signal?: AbortSignal } = {}): Promise<void> {
@@ -572,7 +679,7 @@ export class S3Backend implements StorageBackend {
     }
     try {
       const res = await this.send('GET', key, { headers: { range: 'bytes=0-0' } })
-      const data = new Uint8Array(await res.arrayBuffer())
+      const data = await readBody(res, 1024, 'truncate')
       this.caps.rangeGet = res.status === 206 && data.length === 1
       if (this.caps.rangeGet) ok('range')
       else {

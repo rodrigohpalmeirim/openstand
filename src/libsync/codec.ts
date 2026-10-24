@@ -26,7 +26,8 @@ import {
   type EncryptedSource,
   type LibraryKeys,
 } from './crypto'
-import { CHUNK, RANGE, type Batch, type DeviceRecord, type MetaRecord, type RecordDelta, type SnapshotHeader } from './model'
+import { isDeviceId, isHlc } from './hlc'
+import { CHUNK, CLOCK_AHEAD_MAX, RANGE, type Batch, type DeviceRecord, type MetaRecord, type RecordDelta, type SnapshotHeader } from './model'
 
 // ---------------------------------------------------------------------------------------------
 // gzip
@@ -93,6 +94,81 @@ function checkV(o: unknown, what: string): asserts o is Record<string, unknown> 
 }
 
 // ---------------------------------------------------------------------------------------------
+// Record validation (batch ops and snapshot lines): shapes and HLCs only, values stay opaque
+// ---------------------------------------------------------------------------------------------
+
+const SHA256_HEX = /^[0-9a-f]{64}$/
+const isTuple = (v: unknown, n: number): v is unknown[] => Array.isArray(v) && v.length === n
+const isNum = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v)
+
+/** Map keys that would reach an object's prototype when assigned with `o[k] = v`. */
+function checkKeys(o: Record<string, unknown>, what: string) {
+  if (Object.prototype.hasOwnProperty.call(o, '__proto__')) throw new FormatError('corrupt', `${what}: forbidden key __proto__`)
+}
+
+/**
+ * Throws `corrupt` unless `d` is a well-formed `RecordDelta`: string `c`/`id`, every register's HLC valid,
+ * register tuples of the right length, numeric max/min and counters, no `__proto__` keys. Unknown
+ * top-level properties are ignored (forward compatible); field names and values are not interpreted.
+ */
+export function checkRecordDelta(d: unknown, what = 'record'): asserts d is RecordDelta {
+  const bad = (why: string): never => {
+    throw new FormatError('corrupt', `${what}: ${why}`)
+  }
+  if (!isObj(d) || typeof d.c !== 'string' || typeof d.id !== 'string') bad('malformed')
+  const r = d as Record<string, unknown>
+  if (r.a !== undefined && !(isTuple(r.a, 2) && isHlc(r.a[0]) && typeof r.a[1] === 'boolean')) bad('bad alive register')
+  if (r.f !== undefined) {
+    if (!isObj(r.f)) bad('bad fields')
+    const f = r.f as Record<string, unknown>
+    checkKeys(f, what)
+    for (const k in f) {
+      const v = f[k]
+      if (!Array.isArray(v) || (v.length !== 1 && v.length !== 2) || !isHlc(v[0])) bad(`bad register ${k}`)
+    }
+  }
+  if (r.m !== undefined) {
+    if (!isObj(r.m)) bad('bad max/min registers')
+    const m = r.m as Record<string, unknown>
+    checkKeys(m, what)
+    for (const k in m) if (!isNum(m[k])) bad(`bad max/min register ${k}`)
+  }
+  if (r.l !== undefined) {
+    if (!isObj(r.l)) bad('bad lists')
+    const l = r.l as Record<string, unknown>
+    checkKeys(l, what)
+    for (const k in l) {
+      const ld = l[k]
+      if (!isObj(ld)) bad(`bad list ${k}`)
+      const { o, e } = ld as { o?: unknown; e?: unknown }
+      if (o !== undefined && !(isTuple(o, 2) && isHlc(o[0]) && Array.isArray(o[1]) && o[1].every((x) => typeof x === 'string'))) bad(`bad order of ${k}`)
+      if (e !== undefined) {
+        if (!isObj(e)) bad(`bad elements of ${k}`)
+        checkKeys(e as Record<string, unknown>, what)
+        for (const ek in e as Record<string, unknown>) {
+          const v = (e as Record<string, unknown>)[ek]
+          if (!(isTuple(v, 3) && isHlc(v[0]) && isHlc(v[2]))) bad(`bad element ${k}.${ek}`)
+        }
+      }
+    }
+  }
+  if (r.n !== undefined) {
+    if (!isObj(r.n)) bad('bad counters')
+    const n = r.n as Record<string, unknown>
+    checkKeys(n, what)
+    for (const k in n) {
+      const per = n[k]
+      if (!isObj(per)) bad(`bad counter ${k}`)
+      checkKeys(per as Record<string, unknown>, what)
+      for (const dk in per as Record<string, unknown>) {
+        const v = (per as Record<string, unknown>)[dk]
+        if (!(isTuple(v, 2) && isNum(v[0]) && isNum(v[1]) && v[0] >= 0 && v[1] >= 0)) bad(`bad counter ${k}.${dk}`)
+      }
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
 // Envelopes
 // ---------------------------------------------------------------------------------------------
 
@@ -101,14 +177,17 @@ export async function encodeBatch(keys: LibraryKeys, batch: Batch): Promise<Uint
   return seal(keys, { kind: 'batch', deviceId: batch.d, seq: batch.s }, await gzip(utf8(JSON.stringify(batch))))
 }
 
-/** Opens a `log/<deviceId>/<seq>` object. Throws `FormatError` (`corrupt` / `newerFormat`). */
+/**
+ * Opens a `log/<deviceId>/<seq>` object. Throws `FormatError` (`corrupt` / `newerFormat` / `oldFormat`).
+ * `hlcMax` and every op are validated (`checkRecordDelta`); a bad one makes the whole batch `corrupt`.
+ */
 export async function decodeBatch(keys: LibraryKeys, bytes: Uint8Array, at: { deviceId: string; seq: number }): Promise<Batch> {
   const b = parseJson(await gunzip(await open(keys, { kind: 'batch', deviceId: at.deviceId, seq: at.seq }, bytes)))
   checkV(b, 'batch')
   if (b.d !== at.deviceId || b.s !== at.seq) throw new FormatError('corrupt', 'batch device/seq mismatch')
-  if (typeof b.t !== 'number' || typeof b.hlcMax !== 'string' || !Array.isArray(b.ops) || !b.ops.every(isObj))
-    throw new FormatError('corrupt', 'malformed batch')
-  if (b.blobsReady !== undefined && !(Array.isArray(b.blobsReady) && b.blobsReady.every((x) => typeof x === 'string')))
+  if (!isNum(b.t) || !isHlc(b.hlcMax) || !Array.isArray(b.ops)) throw new FormatError('corrupt', 'malformed batch')
+  b.ops.forEach((op, i) => checkRecordDelta(op, `batch op ${i}`))
+  if (b.blobsReady !== undefined && !(Array.isArray(b.blobsReady) && b.blobsReady.every((x) => typeof x === 'string' && SHA256_HEX.test(x))))
     throw new FormatError('corrupt', 'malformed blobsReady')
   return b as unknown as Batch
 }
@@ -222,41 +301,100 @@ function toStream(src: ByteStreamInput): ReadableStream<Uint8Array> {
   })
 }
 
-function checkSnapshotHeader(h: unknown, ctx?: { deviceId: string; n: number }): SnapshotHeader {
-  checkV(h, 'snapshot')
-  if (
-    h.kind !== 'snapshot' ||
-    typeof h.d !== 'string' ||
-    typeof h.n !== 'number' ||
-    typeof h.t !== 'number' ||
-    typeof h.records !== 'number' ||
-    typeof h.hlcMax !== 'string' ||
-    !isObj(h.vector) ||
-    !isObj(h.horizon)
-  )
-    throw new FormatError('corrupt', 'malformed snapshot header')
-  if (ctx && (h.d !== ctx.deviceId || h.n !== ctx.n)) throw new FormatError('corrupt', 'snapshot device/n mismatch')
-  return h as unknown as SnapshotHeader
+/** How far a snapshot's `t` may be ahead of the reader's clock: the HLC's `CLOCK_AHEAD_MAX` (24 h). */
+export const SNAPSHOT_MAX_SKEW = CLOCK_AHEAD_MAX
+/** Upper bound for `records` in a snapshot header. */
+export const SNAPSHOT_MAX_RECORDS = 50_000_000
+/** Upper bound for the number of devices in a snapshot `vector`. */
+const SNAPSHOT_MAX_DEVICES = 100_000
+/** A snapshot NDJSON line longer than this (UTF-16 units) is `corrupt` (one op may be 16 MiB of JSON). */
+export const MAX_SNAPSHOT_LINE = MAX_ENVELOPE_PLAINTEXT
+
+export interface SnapshotReadOptions {
+  /**
+   * The reader's wall clock (ms). When given, a header whose `t` is more than `SNAPSHOT_MAX_SKEW` ahead
+   * of it is `corrupt`. The engine passes its own clock so tests with a fake clock stay consistent.
+   */
+  now?: number
 }
 
-/** Splits a text stream into lines (without the `\n`). */
-async function* splitLines(text: ReadableStream<string>): AsyncGenerator<string> {
+/**
+ * Strict header check (§3.1). Returns a fresh object holding only the known fields: `d` a deviceId, `n` ≥ 1,
+ * `t` a time not in the future (see `SnapshotReadOptions.now`), `records` a bounded safe integer, `hlcMax`
+ * an HLC, `vector` deviceId → non-negative safe integer, `horizon` times not after `t`.
+ */
+function checkSnapshotHeader(h: unknown, ctx?: { deviceId: string; n: number }, o: SnapshotReadOptions = {}): SnapshotHeader {
+  checkV(h, 'snapshot')
+  const bad = (why: string): never => {
+    throw new FormatError('corrupt', `malformed snapshot header: ${why}`)
+  }
+  if (h.kind !== 'snapshot') bad('kind')
+  if (!isDeviceId(h.d)) bad('d')
+  if (!Number.isSafeInteger(h.n) || (h.n as number) < 1) bad('n')
+  if (!isNum(h.t) || h.t < 0) bad('t')
+  const t = h.t as number
+  if (o.now !== undefined && t > o.now + SNAPSHOT_MAX_SKEW) bad('t is in the future')
+  if (!Number.isSafeInteger(h.records) || (h.records as number) < 0 || (h.records as number) > SNAPSHOT_MAX_RECORDS) bad('records')
+  if (!isHlc(h.hlcMax)) bad('hlcMax')
+  if (!isObj(h.vector)) bad('vector')
+  const src = h.vector as Record<string, unknown>
+  const ids = Object.keys(src)
+  if (ids.length > SNAPSHOT_MAX_DEVICES) bad('vector too large')
+  const vector: Record<string, number> = {}
+  for (const id of ids) {
+    const seq = src[id]
+    if (!isDeviceId(id) || !Number.isSafeInteger(seq) || (seq as number) < 0) bad('vector entry')
+    vector[id] = seq as number
+  }
+  if (!isObj(h.horizon)) bad('horizon')
+  const { deadFields, elementTombs } = h.horizon as Record<string, unknown>
+  if (!isNum(deadFields) || !isNum(elementTombs) || deadFields > t || elementTombs > t) bad('horizon')
+  if (ctx && (h.d !== ctx.deviceId || h.n !== ctx.n)) throw new FormatError('corrupt', 'snapshot device/n mismatch')
+  return {
+    v: 1,
+    kind: 'snapshot',
+    d: h.d as string,
+    n: h.n as number,
+    t,
+    vector,
+    records: h.records as number,
+    hlcMax: h.hlcMax as string,
+    horizon: { deadFields: deadFields as number, elementTombs: elementTombs as number },
+  }
+}
+
+/**
+ * Splits a text stream into lines (without the `\n`). Linear in the input, and a line longer than `max`
+ * is `corrupt` (bounded memory against a stream without newlines).
+ */
+export async function* splitLines(text: ReadableStream<string>, max = MAX_SNAPSHOT_LINE): AsyncGenerator<string> {
   const reader = text.getReader()
-  let rest = ''
+  let parts: string[] = []
+  let partLen = 0
+  const tooLong = () => new FormatError('corrupt', `snapshot line longer than ${max} characters`)
   try {
     for (;;) {
       const { done, value } = await reader.read()
       if (done) break
-      rest += value
-      let nl: number
-      while ((nl = rest.indexOf('\n')) >= 0) {
-        yield rest.slice(0, nl)
-        rest = rest.slice(nl + 1)
+      let start = 0
+      for (let nl = value.indexOf('\n'); nl >= 0; nl = value.indexOf('\n', start)) {
+        if (partLen + (nl - start) > max) throw tooLong()
+        const tail = value.slice(start, nl)
+        const line = parts.length ? parts.join('') + tail : tail
+        parts = []
+        partLen = 0
+        start = nl + 1
+        yield line
+      }
+      if (start < value.length) {
+        partLen += value.length - start
+        if (partLen > max) throw tooLong()
+        parts.push(value.slice(start))
       }
     }
-    if (rest) yield rest
+    if (partLen) yield parts.join('')
   } finally {
-    reader.releaseLock()
+    reader.cancel().catch(() => {})
   }
 }
 
@@ -278,6 +416,7 @@ export async function readSnapshot(
   keys: LibraryKeys,
   ctx: { deviceId: string; n: number },
   source: ByteStreamInput,
+  o: SnapshotReadOptions = {},
 ): Promise<SnapshotReader> {
   const cctx: ContainerContext = { kind: 'snap', deviceId: ctx.deviceId, n: ctx.n }
   const text = toStream(source)
@@ -287,7 +426,7 @@ export async function readSnapshot(
   const lines = splitLines(text)
   const first = await lines.next().catch(corruptOn)
   if (first.done) throw new FormatError('corrupt', 'empty snapshot')
-  const header = checkSnapshotHeader(parseJson(utf8(first.value)), ctx)
+  const header = checkSnapshotHeader(parseJson(utf8(first.value)), ctx, o)
   async function* records(): AsyncGenerator<RecordDelta, void, undefined> {
     let n = 0
     try {
@@ -296,9 +435,9 @@ export async function readSnapshot(
         if (r.done) break
         if (!r.value) continue
         const d = parseJson(utf8(r.value))
-        if (!isObj(d) || typeof d.c !== 'string' || typeof d.id !== 'string') throw new FormatError('corrupt', 'malformed snapshot record')
-        n++
-        yield d as unknown as RecordDelta
+        checkRecordDelta(d, 'snapshot record')
+        if (++n > header.records) throw new FormatError('corrupt', `snapshot has more records than its header says (${header.records})`)
+        yield d
       }
     } finally {
       await lines.return(undefined)
@@ -317,6 +456,7 @@ export async function readSnapshotHeader(
   keys: LibraryKeys,
   ctx: { deviceId: string; n: number },
   bytes: Uint8Array,
+  o: SnapshotReadOptions = {},
 ): Promise<SnapshotHeader> {
   const h = parseContainerHeader(bytes)
   const len0 = Math.min(h.size, 2 ** h.log2Chunk) + CHUNK_OVERHEAD
@@ -334,7 +474,7 @@ export async function readSnapshotHeader(
       const { done, value } = await reader.read()
       if (value) text += dec.decode(value, { stream: true })
       const nl = text.indexOf('\n')
-      if (nl >= 0) return checkSnapshotHeader(parseJson(utf8(text.slice(0, nl))), ctx)
+      if (nl >= 0) return checkSnapshotHeader(parseJson(utf8(text.slice(0, nl))), ctx, o)
       if (done || text.length > 1024 * 1024) throw new FormatError('corrupt', 'snapshot header line not found')
     }
   } catch (e) {
@@ -345,15 +485,18 @@ export async function readSnapshotHeader(
   }
 }
 
+/** Largest object `objectStream` accepts in one GET when the backend can't do ranges. */
+export const OBJECT_STREAM_MAX = 1024 * 1024 * 1024
+
 /**
  * Streams an object through range GETs of `RANGE` chunks (4 MiB) at a time, so a large snapshot is never
- * whole in memory. Falls back to one GET when the backend can't do ranges. Errors with
- * `BackendError('notFound')` if the object is missing.
+ * whole in memory. Falls back to one GET (of at most `maxBytes`) when the backend can't do ranges. Errors
+ * with `BackendError('notFound')` if the object is missing.
  */
 export function objectStream(
   backend: StorageBackend,
   key: string,
-  o: { signal?: AbortSignal; rangeBytes?: number } = {},
+  o: { signal?: AbortSignal; rangeBytes?: number; maxBytes?: number } = {},
 ): ReadableStream<Uint8Array> {
   const step = o.rangeBytes ?? RANGE * (CHUNK + CHUNK_OVERHEAD)
   let pos = 0
@@ -362,7 +505,7 @@ export function objectStream(
     async pull(c) {
       if (done) return c.close()
       const range: [number, number] | undefined = backend.caps.rangeGet ? [pos, pos + step - 1] : undefined
-      const data = await backend.get(key, { range, signal: o.signal })
+      const data = await backend.get(key, { range, signal: o.signal, maxBytes: o.maxBytes ?? OBJECT_STREAM_MAX })
       if (data === null) throw new BackendError('notFound', `${key} not found`, { status: 404 })
       pos += data.length
       if (!range || data.length < step) done = true

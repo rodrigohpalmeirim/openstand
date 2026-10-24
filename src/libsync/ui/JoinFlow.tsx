@@ -1,5 +1,5 @@
 /** "Join from another device" (§10.3, §12.2): scan or paste → preview → mode → progress. */
-import { Check, Library, Loader2, Merge } from 'lucide-react'
+import { Check, Library, Loader2, Merge, ShieldAlert } from 'lucide-react'
 import { useEffect, useReducer, useRef, type ReactNode } from 'react'
 import { useLibSync } from '../api'
 import type { JoinMode } from '../model'
@@ -7,7 +7,7 @@ import { useLibraries } from '../../library/browse/libraries'
 import { Button, Dialog, cx } from '../../ui/primitives'
 import { joinSync, leaveSync, parsePairingCode, previewJoin } from './client'
 import { active, downloadLine } from './format'
-import { initialJoin, joinErrorText, joinReducer, mergeLine, previewLine } from './joinState'
+import { initialJoin, joinErrorText, joinReducer, joinTarget, mergeLine, previewLine, type JoinTarget } from './joinState'
 import { PairScanner } from './PairScanner'
 import { Bar, Note } from './parts'
 
@@ -22,6 +22,23 @@ function ModeOption({ value, current, onPick, icon, title, children }: { value: 
         <span className="block text-muted">{children}</span>
       </span>
     </label>
+  )
+}
+
+/** Where the code points: shown before joining so a code from someone else's storage stands out. */
+function TargetBox({ t }: { t: JoinTarget }) {
+  const row = (label: string, value: string) => (
+    <>
+      <dt className="text-muted">{label}</dt>
+      <dd className="min-w-0 break-all font-medium">{value}</dd>
+    </>
+  )
+  return (
+    <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-1 rounded-xl border border-line px-4 py-3 text-sm" aria-label="Where this code syncs to">
+      {row('Storage', t.storage)}
+      {t.bucket && row('Bucket', t.bucket)}
+      {row('Instant updates', t.relay ?? 'Off (checks every few minutes)')}
+    </dl>
   )
 }
 
@@ -78,6 +95,7 @@ export function JoinFlow({ open, onClose, rejoin }: { open: boolean; onClose: ()
   const name = s.payload?.n
   const lines = s.preview && previewLine(s.preview, name)
   const simple = s.preview?.suggested === 'here' && !rejoin
+  const target = s.payload && joinTarget(s.payload)
 
   const footer =
     s.step === 'preview' ? (
@@ -131,6 +149,15 @@ export function JoinFlow({ open, onClose, rejoin }: { open: boolean; onClose: ()
               <div className="font-medium">{lines.remote}</div>
               <div className="text-muted">{lines.local}</div>
             </div>
+            {target && <TargetBox t={target} />}
+            {target?.insecure && (
+              <Note tone="danger">
+                <p className="font-medium">This storage uses an unencrypted http:// address.</p>
+                <p className="mt-0.5 text-muted">
+                  Anyone on the network between you and {target.storage} can watch and tamper with sync traffic. Your files stay encrypted, but only continue if this is storage on your own network.
+                </p>
+              </Note>
+            )}
             {s.error && <Note tone="danger">{s.error}</Note>}
             {simple ? (
               <p className="text-sm text-muted">
@@ -158,6 +185,19 @@ export function JoinFlow({ open, onClose, rejoin }: { open: boolean; onClose: ()
                   {mergeLine(s.preview)}
                 </ModeOption>
               </fieldset>
+            )}
+            {s.mode === 'merge' ? (
+              <Note tone="danger">
+                <p className="font-medium">Only join codes from your own devices.</p>
+                <p className="mt-0.5">
+                  Merging uploads every song, file and annotation in “{libName}” to the storage in this code. Whoever controls that storage and code can read all of it.
+                </p>
+              </Note>
+            ) : (
+              <p className="flex items-start gap-2 text-sm text-muted">
+                <ShieldAlert className="mt-0.5 size-4 shrink-0 text-warn" />
+                <span>Only join codes from your own devices. Joining sends your library to the storage in this code.</span>
+              </p>
             )}
           </>
         )}

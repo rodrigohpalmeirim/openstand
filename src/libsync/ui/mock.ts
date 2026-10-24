@@ -1,13 +1,15 @@
 /**
  * Dev only: `?libsyncMock=<phase>` drives the library-sync UI without storage (loaded by api.ts in dev).
  *
- * Phases: off, starting, join, idle, syncing, pending, offline, paused, error (= error-auth), and
+ * Phases: off, starting, join, idle, syncing, pending, offline, paused, warning (one device's changes held
+ * back, non-fatal), warning-streams (two devices), error (= error-auth), and
  * error-<code> for every `LibSyncErrorCode` (error-cors, error-quota, error-localQuota, error-clock,
  * error-clockAhead, error-wrongSecret, error-libraryGone, error-newerFormat, error-rejoin, error-corrupt, …).
  * Actions are faked too, so the wizard, join flow and buttons can be walked through. In the wizard, a bucket
- * name containing "cors" or an access key containing "bad" makes the connection test fail.
+ * name containing "cors" or an access key containing "bad" makes the connection test fail. In the join flow, a
+ * code containing "gone" fails and one containing "insecure" points at plain-http storage.
  */
-import { LibSyncFailure, offStatus, useLibSync, type BlobState, type LibSyncErrorCode, type LibSyncStatus } from '../api'
+import { LibSyncFailure, offStatus, useLibSync, type BlobState, type LibSyncError, type LibSyncErrorCode, type LibSyncStatus } from '../api'
 import type { BackendCheck, S3Config } from '../backends/types'
 import { BackendError } from '../backends/types'
 import { PairingError, type PairingPayload } from '../model'
@@ -73,6 +75,17 @@ function on(over: Partial<LibSyncStatus> = {}): LibSyncStatus {
 const tp = (files: number, doneFiles: number, bytes: number, doneBytes: number) => ({ files, doneFiles, bytes, doneBytes })
 
 function statusFor(phase: string): LibSyncStatus {
+  if (phase.startsWith('warning')) {
+    // Held-back device streams (non-fatal), published like service.ts does (also mirrored into `error`).
+    const ipad: LibSyncErrorCode = 'unknown'
+    const streams: Record<string, LibSyncError> = {
+      [DEVICES[1].id]: { code: ipad, message: 'Changes from “iPad” can’t be read right now. Other devices keep syncing.', detail: 'b2c3d4e5f6071829/42: bad tag', at: now - MIN },
+    }
+    if (phase === 'warning-streams')
+      streams[DEVICES[2].id] = { code: 'newerFormat', message: '“Pixel 8” uses a newer OpenStand. Update this one to get its changes.', at: now - MIN }
+    const first = Object.values(streams)[0]
+    return on({ streams, warning: first, error: first })
+  }
   if (phase.startsWith('error')) {
     const code = (phase.split('-')[1] || 'auth') as LibSyncErrorCode
     const warn = code === 'clockAhead'
@@ -181,6 +194,8 @@ export function applyLibSyncMock(phase: string) {
       await wait(150)
       if (!/OSJ1\.[A-Za-z0-9_-]{8,}/.test(text)) throw new PairingError(/OSJ[2-9]\./.test(text) ? 'version' : 'format')
       if (text.includes('gone')) throw new LibSyncFailure('libraryGone')
+      // A code pointing at plain-http storage on someone else's network, to see the joiner's warning.
+      if (text.includes('insecure')) return { ...PAYLOAD, b: { ...BACKEND, provider: 'minio', endpoint: 'http://192.168.1.20:9000' }, r: 'wss://relay.example.org/relay' }
       return PAYLOAD
     },
     previewJoin: async () => {

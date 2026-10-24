@@ -1,4 +1,22 @@
-# Cache rules for Cloudflare (Workers static assets / Pages). Ignored by other hosts.
+# Headers for Cloudflare (Workers static assets / Pages). Ignored by other hosts.
+#
+# Content-Security-Policy, by source:
+# - script-src: the app bundle; 'wasm-unsafe-eval' for pdf.js decoders and MediaPipe; MediaPipe's wasm loader
+#   script comes from jsDelivr (src/faces/faceGestures.ts WASM_BASE).
+# - connect-src: library sync talks to the user's own S3 endpoint (any https origin, or http://localhost /
+#   127.0.0.1 for MinIO), relays (wss:, or ws://localhost), the MediaPipe model (storage.googleapis.com) and
+#   the abcjs soundfont (paulrosen.github.io).
+# - img-src https: for ChordPro {image: https://…}; media-src https: for audio tracks linked by URL.
+# - frame-src blob: for printing (the PDF is printed from a blob: iframe).
+# - style-src 'unsafe-inline': React style props are fine without it, but abcjs sets style attributes and
+#   injects <style> elements, as do parts of the app (measured: 21 violations without it).
+/*
+  Content-Security-Policy: default-src 'self'; script-src 'self' 'wasm-unsafe-eval' https://cdn.jsdelivr.net/npm/@mediapipe/; worker-src 'self' blob:; connect-src 'self' https: wss: http://localhost:* http://127.0.0.1:* ws://localhost:* ws://127.0.0.1:* data: blob:; img-src 'self' data: blob: https:; media-src 'self' data: blob: https:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; frame-src 'self' blob:; manifest-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'
+  X-Content-Type-Options: nosniff
+  X-Frame-Options: DENY
+  Referrer-Policy: no-referrer
+  Permissions-Policy: camera=(self), microphone=(), midi=(self), fullscreen=(self), screen-wake-lock=(self), geolocation=(), payment=(), usb=()
+
 /assets/*
   Cache-Control: public, max-age=31536000, immutable
 /sw.js

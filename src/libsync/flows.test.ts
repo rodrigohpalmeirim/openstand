@@ -179,18 +179,42 @@ describe('leave and delete', () => {
     const B = w.db('B')
     const eB = await joinDevice(w, B, A)
     const me = eB.config.deviceId
+    const lib = eA.core.keys.libraryId
+    const myHeads = () => [...w.backend().objects().keys()].filter((k) => k.startsWith(headsPrefix(lib, me)))
+    const headsBefore = myHeads()
     await leave(B, eB, w.opts())
     expect(await getConfig(B)).toBeUndefined()
     expect(isCaptureOn(B.name)).toBe(false)
     expect(await B.songs.count()).toBe(1)
-    const lib = eA.core.keys.libraryId
-    expect([...w.backend().objects().keys()].filter((k) => k.startsWith(headsPrefix(lib, me)))).toEqual([])
+    // Its stream stays readable for devices that join later (pruned once a snapshot covers it, §3.2).
+    expect(myHeads()).toEqual(headsBefore)
     const devices = await eA.refreshDevices()
     expect(devices.find((d) => d.id === me)?.retired).toBe(true)
     expect(w.backend().objects().has(deviceKey(lib, me))).toBe(true)
     // Local edits after leaving are not captured.
     await B.table('songs').update('s1', { title: 'local only' })
     expect(await B.syncDirty.count()).toBe(0)
+  })
+
+  it('a device that joins after another left still gets the leaver’s published changes', async () => {
+    // Found in the two-device browser e2e: B deleted a song, A applied it, B left; a device joining later
+    // bootstrapped from A's older snapshot and never saw B's stream, so the deleted song came back there only.
+    const w = world()
+    const A = w.db('A')
+    await addSong(A, 's1', 'Keep')
+    await addSong(A, 's2', 'Deleted on B')
+    const eA = await enableDevice(w, A)
+    const B = w.db('B')
+    const eB = await joinDevice(w, B, A)
+    await B.songs.delete('s2')
+    await converge(eA, eB)
+    expect((await A.songs.toArray()).map((s) => s.id)).toEqual(['s1'])
+    await leave(B, eB, w.opts())
+    const C = w.db('C')
+    const eC = await joinDevice(w, C, A)
+    await converge(eA, eC)
+    expect((await C.songs.toArray()).map((s) => s.id)).toEqual(['s1'])
+    expect(await view(C)).toEqual(await view(A))
   })
 
   it('deleting synced data makes other devices stop with libraryGone', async () => {
@@ -205,6 +229,9 @@ describe('leave and delete', () => {
     await expect(eB.sync()).rejects.toBeInstanceOf(SyncError)
     expect(eB.status.error?.code).toBe('libraryGone')
     expect(await B.songs.count()).toBe(1)
+    // Stopping sync on B afterwards (the banner's action) writes nothing back into the deleted library.
+    await leave(B, eB, w.opts())
+    expect([...w.backend().objects().keys()]).toEqual([])
   })
 })
 

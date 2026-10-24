@@ -118,11 +118,61 @@ export function errorText(e: Pick<LibSyncError, 'code' | 'message' | 'detail'>):
   return { ...base, actionLabel: base.action && ACTION_LABEL[base.action] }
 }
 
+/** Non-fatal wording per code: the engine's own sentence (with the device name) wins when it has one. */
+const WARNING: Partial<Record<LibSyncErrorCode, { message: string; action?: ErrorAction }>> = {
+  unknown: { message: 'Some changes from another device couldn’t be applied yet.' },
+  newerFormat: { message: 'Another device uses a newer OpenStand. Update this one to get its changes.', action: 'reload' },
+  rejoin: { message: 'Changes from another device were written by an older OpenStand.' },
+  corrupt: { message: 'Some changes from another device couldn’t be applied yet.' },
+  clockAhead: { message: FIXED.clockAhead.message },
+}
+
+export interface SyncWarning {
+  /** One line per held-back device (or the single warning). */
+  lines: string[]
+  /** Calm follow-up: what happens next. */
+  note?: string
+  action?: ErrorAction
+  actionLabel?: string
+}
+
+/**
+ * Splits the status into a fatal error (sync stopped: `phase` is `error`) and a non-fatal warning (a device's
+ * changes held back, a clock ahead: sync carries on). The service mirrors warnings into `error` too, so the
+ * phase decides. `network` is neither (it shows as offline).
+ */
+export function syncProblem(s: LibSyncStatus): { error?: LibSyncError; warning?: SyncWarning } {
+  if (s.phase === 'error') return { error: s.error }
+  const streams = Object.values(s.streams ?? {})
+  const list = streams.length ? streams : [s.warning ?? s.error].filter((e): e is LibSyncError => !!e && e.code !== 'network')
+  if (!list.length) return {}
+  const lines = [...new Set(list.map((e) => sentence(e) ?? WARNING[e.code]?.message ?? WARNING.unknown!.message))]
+  const retrying = list.some((e) => e.code !== 'clockAhead' && e.code !== 'newerFormat')
+  const action = list.map((e) => WARNING[e.code]?.action).find(Boolean)
+  return {
+    warning: {
+      lines,
+      note: retrying ? 'OpenStand keeps retrying in the background.' : undefined,
+      action,
+      actionLabel: action && ACTION_LABEL[action],
+    },
+  }
+}
+
 export type IndicatorIcon = 'cloud' | 'upload' | 'download' | 'off' | 'alert' | 'sync'
 
-/** What the sidebar indicator shows. `progress` (0..1) draws the ring. */
-export function indicatorState(s: LibSyncStatus): { icon: IndicatorIcon; label: string; progress?: number; dot?: boolean } {
-  if (s.phase === 'error' || (s.error && !FIXED[s.error.code]?.warning)) return { icon: 'alert', label: `Library sync: ${phaseLine({ ...s, phase: 'error' })}`, dot: true }
+/**
+ * What the sidebar indicator shows. `progress` (0..1) draws the ring; `dot` is the red error dot, `warn` a
+ * softer amber one for non-fatal warnings.
+ */
+export function indicatorState(s: LibSyncStatus): { icon: IndicatorIcon; label: string; progress?: number; dot?: boolean; warn?: boolean } {
+  if (s.phase === 'error') return { icon: 'alert', label: `Library sync: ${phaseLine(s)}`, dot: true }
+  const w = syncProblem(s).warning
+  const st = activityState(s)
+  return w ? { ...st, label: `${st.label} · ${w.lines[0]}`, warn: true } : st
+}
+
+function activityState(s: LibSyncStatus): { icon: IndicatorIcon; label: string; progress?: number } {
   if (s.phase === 'offline') return { icon: 'off', label: 'Library sync: offline' }
   if (s.phase === 'paused') return { icon: 'off', label: 'Library sync: paused' }
   if (s.initial) return { icon: s.initial.kind === 'join' ? 'download' : 'upload', label: `Library sync: ${phaseLine(s)}`, progress: s.initial.total ? s.initial.done / s.initial.total : undefined }

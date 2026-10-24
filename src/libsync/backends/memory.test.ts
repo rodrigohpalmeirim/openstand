@@ -4,6 +4,7 @@ import { backendContract } from './contract.test-helper'
 import { createBackend } from './index'
 import { MemoryBackend } from './memory'
 import { BackendError } from './types'
+import { listAll } from './util'
 
 let n = 0
 backendContract('memory', () => new MemoryBackend(`contract-${n++}`, { caps: { maxSmallPut: 1000 }, partSize: 300, maxPage: 4 }))
@@ -108,5 +109,25 @@ describe('createBackend', () => {
     expect(s3.kind).toBe('s3')
     expect(s3.label).toBe('Cloudflare R2 · b/openstand')
     expect(() => createBackend({ kind: 'dropbox', root: '/Apps/OpenStand' })).toThrow(BackendError)
+  })
+})
+
+describe('listAll (bounded)', () => {
+  it('collects every page, and stops with a clear error past maxKeys or on a looping cursor', async () => {
+    const b = new MemoryBackend(`listall-${Date.now()}`, { maxPage: 3 })
+    for (let i = 0; i < 10; i++) await b.put(`p/${i}`, new Uint8Array(1))
+    expect((await listAll(b, 'p/')).map((o) => o.key)).toEqual(Array.from({ length: 10 }, (_, i) => `p/${i}`))
+    await expect(listAll(b, 'p/', { maxKeys: 9 })).rejects.toMatchObject({ code: 'unknown', providerCode: 'TooManyKeys' })
+    const looping = { ...b, caps: b.caps, list: async () => ({ items: [{ key: 'p/x', size: 1 }], cursor: 'same' }) } as unknown as MemoryBackend
+    await expect(listAll(looping, 'p/')).rejects.toMatchObject({ providerCode: 'ListLoop' })
+  })
+
+  it('get caps bodies like S3: maxBytes without a range, the range length with one', async () => {
+    const b = new MemoryBackend(`cap-${Date.now()}`, { caps: { rangeGet: false } })
+    await b.put('k', new Uint8Array(100))
+    expect((await b.get('k', { maxBytes: 100 }))!.length).toBe(100)
+    await expect(b.get('k', { maxBytes: 99 })).rejects.toMatchObject({ providerCode: 'TooLarge' })
+    expect((await b.get('k', { range: [0, 199] }))!.length).toBe(100)
+    await expect(b.get('k', { range: [0, 9] })).rejects.toMatchObject({ providerCode: 'RangeIgnored' })
   })
 })

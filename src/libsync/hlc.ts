@@ -5,7 +5,7 @@
  * string comparison is the tuple order (wall, counter, device): causal where causality exists, and an
  * arbitrary but total order otherwise.
  */
-import { CLOCK_AHEAD_WARN, type Hlc, type HlcClock } from './model'
+import { CLOCK_AHEAD_MAX, CLOCK_AHEAD_WARN, type Hlc, type HlcClock } from './model'
 
 export type { Hlc, HlcClock } from './model'
 
@@ -40,26 +40,42 @@ export const maxHlc = (a: Hlc, b: Hlc): Hlc => (a > b ? a : b)
 export interface ClockOptions {
   /**
    * Called when `receive` sees a remote wall more than CLOCK_AHEAD_WARN ahead of local time (the engine
-   * raises the `clockAhead` warning naming that device). The clock still advances, so causality holds.
+   * raises the `clockAhead` warning naming that device). Up to CLOCK_AHEAD_MAX ahead the clock still
+   * advances, so causality holds; beyond that the timestamp is refused (`receive` returns false).
    */
   onAhead?: (device: string, aheadMs: number) => void
 }
 
+/**
+ * `receive` refuses (returns false, clock untouched) malformed timestamps and walls more than
+ * CLOCK_AHEAD_MAX ahead of local time: one bad remote value must not drag every device's clock into the
+ * future for good. New values are computed before any state changes, and the counter saturates at the
+ * format's maximum instead of throwing, so the clock can never be left half-updated or unusable.
+ */
 export function createClock(deviceId: string, last?: Hlc, wall: () => number = Date.now, opts: ClockOptions = {}): HlcClock {
   if (!isDeviceId(deviceId)) throw new TypeError(`deviceId must be 16 lowercase hex chars: ${deviceId}`)
-  let l = last && isHlc(last) ? parseHlc(last) : { wall: 0, counter: 0 }
-  let lastHlc: Hlc = last && isHlc(last) ? formatHlc(l.wall, l.counter, deviceId) : HLC_ZERO
+  const physical = (w: number | undefined) => Math.min(WALL_MAX, Math.max(0, Math.floor(Number.isFinite(w) ? w! : wall())))
+  // A persisted value far in the future (poisoned before this guard existed) would stamp every local edit
+  // with it, and other devices refuse those: start from physical time instead.
+  const restored = last && isHlc(last) ? parseHlc(last) : undefined
+  const keep = !!restored && restored.wall - physical(undefined) <= CLOCK_AHEAD_MAX
+  let l = keep ? { wall: restored.wall, counter: restored.counter } : { wall: 0, counter: 0 }
+  let lastHlc: Hlc = keep ? formatHlc(l.wall, l.counter, deviceId) : HLC_ZERO
 
   const set = (w: number, c: number) => {
     if (c > COUNTER_MAX) {
       w += 1
       c = 0
     }
+    if (w > WALL_MAX) {
+      w = WALL_MAX
+      c = COUNTER_MAX
+    }
+    const next = formatHlc(w, c, deviceId)
     l = { wall: w, counter: c }
-    lastHlc = formatHlc(w, c, deviceId)
-    return lastHlc
+    lastHlc = next
+    return next
   }
-  const physical = (w: number | undefined) => Math.max(0, Math.floor(w ?? wall()))
 
   return {
     now(w?: number) {
@@ -67,17 +83,24 @@ export function createClock(deviceId: string, last?: Hlc, wall: () => number = D
       return pt > l.wall ? set(pt, 0) : set(l.wall, l.counter + 1)
     },
     receive(remote: Hlc, w?: number) {
+      if (!isHlc(remote)) return false
       const r = parseHlc(remote)
       const pt = physical(w)
-      if (r.wall - pt > CLOCK_AHEAD_WARN) opts.onAhead?.(r.device, r.wall - pt)
+      const ahead = r.wall - pt
+      if (ahead > CLOCK_AHEAD_WARN) opts.onAhead?.(r.device, ahead)
+      if (ahead > CLOCK_AHEAD_MAX) return false
       const m = Math.max(l.wall, r.wall, pt)
       if (m === l.wall && m === r.wall) set(m, Math.max(l.counter, r.counter) + 1)
       else if (m === l.wall) set(m, l.counter + 1)
       else if (m === r.wall) set(m, r.counter + 1)
       else set(m, 0)
+      return true
     },
     get last() {
       return lastHlc
     },
   }
 }
+
+/** How far (ms) a timestamp's wall is ahead of `now`; ≤ 0 when it isn't. Malformed → Infinity. */
+export const hlcAhead = (h: unknown, now: number): number => (isHlc(h) ? hlcWall(h) - now : Infinity)

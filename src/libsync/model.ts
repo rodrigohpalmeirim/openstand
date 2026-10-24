@@ -185,8 +185,11 @@ export class PairingError extends Error {
 export interface HlcClock {
   /** max(last.wall, wall); the counter increments within the same ms, and on overflow wall goes up by 1. */
   now(wall?: number): Hlc
-  /** Standard HLC receive. A remote wall > CLOCK_AHEAD_WARN ahead still advances the clock (and warns). */
-  receive(remote: Hlc, wall?: number): void
+  /**
+   * Standard HLC receive. A remote wall > CLOCK_AHEAD_WARN ahead still advances the clock (and warns); one
+   * more than CLOCK_AHEAD_MAX ahead, or a malformed value, is refused: returns false, clock untouched.
+   */
+  receive(remote: Hlc, wall?: number): boolean
   /** Persisted with every batch build and every apply (`syncState.clock`). */
   readonly last: Hlc
 }
@@ -323,8 +326,8 @@ export interface SyncStateValues {
   seq: { next: number }
   /** deviceId -> last merged seq. */
   cursors: Record<string, number>
-  /** Last time fully caught up. */
-  lastSync: { at: number; hlc: Hlc }
+  /** Last time fully caught up; `seq` = own last pushed seq then (older states lack it). */
+  lastSync: { at: number; hlc: Hlc; seq?: number }
   /** Cached snapshot headers by storage key. */
   snapshots: Record<string, SnapshotHeader>
   /** Cached `devices/*`. */
@@ -370,4 +373,10 @@ export const DEAD_FIELDS_TTL = 30 * DAY
 export const ELEMENT_TOMB_TTL = 180 * DAY
 export const DIRTY_DEFER_MAX = DAY
 export const CLOCK_AHEAD_WARN = 5 * 60 * 1000
+/** Remote timestamps further ahead than this never advance the clock; ops carrying them wait (or are dropped). */
+export const CLOCK_AHEAD_MAX = DAY
+/** A batch with ops ahead by more than CLOCK_AHEAD_MAX but at most this waits for time to catch up; beyond it they are dropped. */
+export const CLOCK_AHEAD_STALL = 30 * DAY
+/** Wire `size` claims above this are treated as unknown (0): a lying peer can't fake an out-of-space error. */
+export const BLOB_CLAIM_MAX = 4 * 1024 * MiB
 export const MULTIPART_STALE = 6 * DAY

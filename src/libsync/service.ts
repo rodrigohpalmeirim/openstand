@@ -60,6 +60,8 @@ function publish(s: EngineStatus | null, configured: boolean) {
         relay: s.relay,
         devices: s.devices,
         error: s.error ?? (s.warning && s.phase !== 'error' ? s.warning : undefined),
+        warning: s.phase !== 'error' ? s.warning : undefined,
+        streams: s.streams,
       }
     : { ...offStatus(), configured, phase: configured ? 'starting' : 'off', initial }
   useLibSync.setState(next, true)

@@ -24,7 +24,7 @@ import { useLibraries } from '../../library/browse/libraries'
 import { useNav } from '../../state/nav'
 import { Button, Dialog, Input, confirmDialog, cx, toast } from '../../ui/primitives'
 import { checkBackend, currentPayload, deleteRemoteData, enableSync, leaveSync, repair, setPaused, syncNow, updateBackend } from './client'
-import { active, downloadLine, errorText, fraction, phaseLine, plural, timeAgo, uploadLine, type ErrorAction } from './format'
+import { active, downloadLine, errorText, fraction, phaseLine, plural, syncProblem, timeAgo, uploadLine, type ErrorAction } from './format'
 import { JoinFlow } from './JoinFlow'
 import { PairingQr } from './PairingQr'
 import { Bar, Block, Note, SwitchRow } from './parts'
@@ -102,8 +102,33 @@ function OffView({ open }: { open: (m: Modal) => void }) {
 
 /* ------------------------------------------------------------- Status */
 
+/** Non-fatal: a device's changes are held back or its clock is ahead. Calm, amber, sync carries on. */
+function WarningBanner({ s, onAction }: { s: LibSyncStatus; onAction: (a: ErrorAction) => void }) {
+  const w = syncProblem(s).warning
+  if (!w) return null
+  return (
+    <Note
+      tone="warn"
+      action={
+        w.action ? (
+          <Button size="sm" variant="secondary" onClick={() => onAction(w.action!)}>
+            {w.actionLabel}
+          </Button>
+        ) : undefined
+      }
+    >
+      {w.lines.map((l) => (
+        <p key={l} className="font-medium">
+          {l}
+        </p>
+      ))}
+      {w.note && <p className="mt-0.5 text-xs text-muted">{w.note}</p>}
+    </Note>
+  )
+}
+
 function ErrorBanner({ s, onAction, providerConsole }: { s: LibSyncStatus; onAction: (a: ErrorAction) => void; providerConsole?: string }) {
-  if (!s.error || s.error.code === 'network') return null
+  if (s.phase !== 'error' || !s.error || s.error.code === 'network') return null
   const t = errorText(s.error)
   const action =
     t.action === 'openProvider' ? (
@@ -133,7 +158,8 @@ function StatusCard({ s }: { s: LibSyncStatus }) {
     return () => clearInterval(t)
   }, [])
   const Icon = s.phase === 'offline' || s.phase === 'paused' ? CloudOff : s.phase === 'error' ? TriangleAlert : Cloud
-  const dot = s.phase === 'idle' ? 'bg-ok' : s.phase === 'error' ? 'bg-danger' : s.phase === 'offline' || s.phase === 'paused' ? 'bg-faint' : 'bg-warn animate-pulse'
+  const warned = !!syncProblem(s).warning
+  const dot = s.phase === 'idle' ? (warned ? 'bg-warn' : 'bg-ok') : s.phase === 'error' ? 'bg-danger' : s.phase === 'offline' || s.phase === 'paused' ? 'bg-faint' : 'bg-warn animate-pulse'
   const missing = s.offlineReady.total - s.offlineReady.have
   return (
     <div className="grid gap-3 rounded-xl border border-line bg-surface-2 px-4 py-3" role="status" aria-live="polite">
@@ -287,27 +313,33 @@ function CorsDialog({ onClose }: { onClose: () => void }) {
   )
 }
 
-/** Delete / reset: confirmed by typing the library name (§10.5). */
-function TypeToConfirm({ what, s, onClose }: { what: 'delete' | 'reset'; s: LibSyncStatus; onClose: () => void }) {
-  const name = useLibraries((l) => l.list.find((x) => x.id === l.active)?.name ?? 'My Library')
-  const { config, relay } = useStorageConfig(what === 'reset')
+const useLibraryName = () => useLibraries((l) => l.list.find((x) => x.id === l.active)?.name ?? 'My Library')
+const sameName = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase()
+
+function TypeName({ name, value, onChange, onEnter, autoFocus }: { name: string; value: string; onChange: (v: string) => void; onEnter: () => void; autoFocus?: boolean }) {
+  const id = useId()
+  return (
+    <>
+      <label htmlFor={id} className="text-muted">
+        Type <b className="text-fg">{name}</b> to confirm.
+      </label>
+      <Input id={id} value={value} onChange={(e) => onChange(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && onEnter()} autoFocus={autoFocus} autoComplete="off" />
+    </>
+  )
+}
+
+/** Delete synced data: confirmed by typing the library name (§10.5). */
+function DeleteDialog({ s, onClose }: { s: LibSyncStatus; onClose: () => void }) {
+  const name = useLibraryName()
   const [typed, setTyped] = useState('')
   const [busy, setBusy] = useState(false)
-  const id = useId()
-  const okName = typed.trim().toLowerCase() === name.trim().toLowerCase()
+  const okName = sameName(typed, name)
   const run = async () => {
     if (!okName || busy) return
     setBusy(true)
     try {
-      if (what === 'reset') {
-        if (!config) throw new Error('Couldn’t read the storage settings. Try again.')
-        await deleteRemoteData()
-        await enableSync({ backend: config, relay })
-        toast('Sync was reset. Pair your other devices again.', 'ok')
-      } else {
-        await deleteRemoteData()
-        toast('Synced data deleted from storage', 'ok')
-      }
+      await deleteRemoteData()
+      toast('Synced data deleted from storage', 'ok')
       onClose()
     } catch (e) {
       fail(e)
@@ -320,33 +352,162 @@ function TypeToConfirm({ what, s, onClose }: { what: 'delete' | 'reset'; s: LibS
       open
       size="sm"
       onClose={() => !busy && onClose()}
-      title={what === 'delete' ? 'Delete synced data from storage?' : 'Reset sync?'}
+      title="Delete synced data from storage?"
       footer={
         <>
           <Button variant="ghost" onClick={onClose} disabled={busy}>
             Cancel
           </Button>
-          <Button variant="danger" onClick={run} disabled={!okName || busy || (what === 'reset' && !config)}>
+          <Button variant="danger" onClick={run} disabled={!okName || busy}>
             {busy && <Loader2 className="size-4 animate-spin" />}
-            {what === 'delete' ? 'Delete synced data' : 'Reset sync'}
+            Delete synced data
           </Button>
         </>
       }
     >
       <div className="grid gap-3 px-5 py-4 text-sm">
-        {what === 'delete' ? (
+        <p className="text-muted">
+          This deletes the synced copy of “{name}” from {s.backendLabel ?? 'your storage'}, for every device. Each device keeps its own copy of the library but stops syncing.
+        </p>
+        <TypeName name={name} value={typed} onChange={setTyped} onEnter={() => void run()} autoFocus />
+      </div>
+    </Dialog>
+  )
+}
+
+/**
+ * Reset sync (§10.5): a new library secret (so a lost device or leaked code can't read or change anything
+ * synced afterwards) and, optionally, new storage keys. The bucket keys are the user's to rotate at the
+ * provider; we only offer to switch to new ones in the same step.
+ */
+function ResetDialog({ s, onClose }: { s: LibSyncStatus; onClose: () => void }) {
+  const name = useLibraryName()
+  const { config, relay, loading } = useStorageConfig(true)
+  const [typed, setTyped] = useState('')
+  const [rotate, setRotate] = useState(false)
+  const [form, setForm] = useState<S3Form | null>(null)
+  const [showErrors, setShowErrors] = useState(false)
+  const [check, setCheck] = useState<Awaited<ReturnType<typeof checkBackend>>>()
+  const [keyError, setKeyError] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+  /** The replaced access key id, once a reset with new keys is done (to revoke at the provider). */
+  const [rotated, setRotated] = useState<string | null>(null)
+  const p = config ? preset(config.provider) : null
+  const f = form ?? (config ? { ...formFromConfig(config), accessKeyId: '', secretAccessKey: '' } : null)
+  const errors = rotate && f && showErrors ? validateForm(f) : {}
+  const okName = sameName(typed, name)
+  const storage = p?.name ?? 'your storage provider'
+
+  const run = async () => {
+    if (!okName || busy || !config) return
+    let backend: S3Config = config
+    if (rotate) {
+      if (!f || Object.keys(validateForm(f)).length) return setShowErrors(true)
+      backend = toConfig(f)
+      if (backend.accessKeyId === config.accessKeyId) return setKeyError('That’s the access key in use now. Create a new key first, then enter it here.')
+    }
+    setKeyError(null)
+    setCheck(undefined)
+    setBusy(true)
+    try {
+      if (rotate) {
+        const c = await checkBackend(backend)
+        if (!c.ok) return setCheck(c)
+        // Proves the new keys reach this library and saves them, so the reset below runs with them.
+        await updateBackend(backend)
+      }
+      await deleteRemoteData()
+      await enableSync({ backend, relay })
+      if (rotate) setRotated(config.accessKeyId)
+      else {
+        toast('Sync was reset. Pair your other devices again.', 'ok')
+        onClose()
+      }
+    } catch (e) {
+      fail(e)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const consoleLink = p?.console && (
+    <a href={p.console} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-accent hover:underline">
+      Open the {p.name} console <ExternalLink className="size-3.5" />
+    </a>
+  )
+
+  if (rotated)
+    return (
+      <Dialog
+        open
+        onClose={onClose}
+        title="Sync was reset"
+        footer={
+          <Button variant="primary" onClick={onClose}>
+            Done
+          </Button>
+        }
+      >
+        <div className="grid gap-3 px-5 py-4 text-sm">
+          <Note tone="ok">New encryption key and new storage keys are in use. Pair your other devices again with the new code.</Note>
+          <p className="font-medium">Last step: revoke the old storage key</p>
+          <p className="text-muted">Until you do, a lost device or leaked code can still use the old key to delete or fill up your bucket.</p>
           <p className="text-muted">
-            This deletes the synced copy of “{name}” from {s.backendLabel ?? 'your storage'}, for every device. Each device keeps its own copy of the library but stops syncing.
+            At {storage}, delete or deactivate the access key <code className="break-all rounded bg-surface-2 px-1 font-mono text-xs text-fg">{rotated}</code>.
           </p>
-        ) : (
-          <p className="text-muted">
-            Use this after losing a device or sharing the pairing code by mistake. The synced data is deleted, new keys are created and this library is uploaded again. Every other device has to pair again with the new code.
-          </p>
+          {consoleLink}
+        </div>
+      </Dialog>
+    )
+
+  return (
+    <Dialog
+      open
+      onClose={() => !busy && onClose()}
+      title="Reset sync?"
+      footer={
+        <>
+          <Button variant="ghost" onClick={onClose} disabled={busy}>
+            Cancel
+          </Button>
+          <Button variant="danger" onClick={run} disabled={!okName || busy || !config}>
+            {busy && <Loader2 className="size-4 animate-spin" />}
+            {rotate ? 'Test keys and reset' : 'Reset sync'}
+          </Button>
+        </>
+      }
+    >
+      <div className="grid gap-3 px-5 py-4 text-sm">
+        <p className="text-muted">
+          Use this after losing a device or sharing the pairing code by mistake. Reset makes a new encryption key and a new synced library: the synced copy in{' '}
+          {s.backendLabel ?? 'your storage'} is deleted and “{name}” is uploaded again with the new key. Every other device stops syncing until you pair it again with the new code.
+        </p>
+        <p className="text-muted">After that, the lost device or old code can’t read or change anything you sync.</p>
+        <Note tone="warn">
+          <p className="font-medium">Reset doesn’t change your storage keys.</p>
+          <p className="mt-0.5 text-muted">A lost device or leaked code still has them, so it can delete or fill up your bucket until you revoke them at {storage}.</p>
+        </Note>
+        {config ? (
+          <SwitchRow label="Also switch to new storage keys" hint="Recommended when a device or code may be in someone else’s hands." checked={rotate} onChange={setRotate} disabled={busy} />
+        ) : loading ? (
+          <Loader2 className="mx-auto size-5 animate-spin text-muted" />
+        ) : null}
+        {rotate && f && (
+          <div className="grid gap-3 rounded-xl border border-line p-3">
+            <ol className="grid list-decimal gap-1 pl-5 text-muted">
+              <li>Create a new access key at {storage}, limited to this bucket.</li>
+              <li>Enter it below. The reset tests it, then uses it.</li>
+              <li>After the reset, revoke the old key at {storage}.</li>
+            </ol>
+            {p && <p className="text-xs text-muted">{p.rotate}</p>}
+            {consoleLink}
+            <S3Fields form={f} errors={errors} keysOnly onField={(field, value) => setForm({ ...f, [field]: value })} />
+            {keyError && <Note tone="danger">{keyError}</Note>}
+            {check && <CheckList check={check} checking={false} />}
+            {check && !check.ok && <Note tone="danger">{checkFailureText(check)}</Note>}
+          </div>
         )}
-        <label htmlFor={id} className="text-muted">
-          Type <b className="text-fg">{name}</b> to confirm.
-        </label>
-        <Input id={id} value={typed} onChange={(e) => setTyped(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && void run()} autoFocus autoComplete="off" />
+        <TypeName name={name} value={typed} onChange={setTyped} onEnter={() => void run()} />
       </div>
     </Dialog>
   )
@@ -410,7 +571,8 @@ export function LibrarySyncSettings() {
       {modal?.kind === 'join' && <JoinFlow open onClose={close} rejoin={modal.rejoin} />}
       {modal?.kind === 'keys' && <KeysDialog onClose={close} />}
       {modal?.kind === 'cors' && <CorsDialog onClose={close} />}
-      {modal?.kind === 'confirm' && <TypeToConfirm what={modal.what} s={s} onClose={close} />}
+      {modal?.kind === 'confirm' && modal.what === 'delete' && <DeleteDialog s={s} onClose={close} />}
+      {modal?.kind === 'confirm' && modal.what === 'reset' && <ResetDialog s={s} onClose={close} />}
       {modal?.kind === 'pair' && (
         <Dialog
           open
@@ -447,6 +609,7 @@ export function LibrarySyncSettings() {
       <div className="grid gap-8">
         <div className="grid gap-3">
           <ErrorBanner s={s} onAction={onAction} providerConsole={config ? preset(config.provider).console : undefined} />
+          <WarningBanner s={s} onAction={onAction} />
           <StatusCard s={s} />
           <div className="flex flex-wrap gap-2">
             <Button

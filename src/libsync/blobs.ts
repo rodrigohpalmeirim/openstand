@@ -2,17 +2,22 @@
  * Blob transfers (docs/SYNC.md §10.2): a persistent, resumable upload/download queue in `syncTransfers`.
  *
  * - Uploads encrypt chunks on demand from the stored `Blob` (memory stays bounded) and resume through the
- *   backend's `UploadState`. Blob ciphertext is deterministic, so a re-sent part is byte-identical.
+ *   backend's `UploadState`. Blob ciphertext is deterministic, so a re-sent part is byte-identical. The
+ *   local data is checked against its SHA-256 before anything is uploaded under that hash's name.
  * - Downloads fetch `RANGE` chunks per GET, decrypt them and keep them in `syncChunks`, so they resume at
- *   chunk granularity. A 404 parks the row as `waiting` until a batch announces the blob (`blobsReady`).
+ *   chunk granularity. Every finished download is checked against its SHA-256 (streamed for large files)
+ *   before it is stored. A 404 parks the row as `waiting` until a batch announces the blob (`blobsReady`).
  * - Priority: `prioritize` (+1000), then recently played songs, then smaller files.
+ * - Space is checked per blob from its authenticated container size, so inflated size claims in remote
+ *   ops can't block downloads; a blob that doesn't fit fails alone.
  */
 import type { OpenStandDB } from '../db/db'
 import type { BlobRecord, Song } from '../db/schema'
-import { BackendError, type StorageBackend } from './backends/types'
+import { BackendError, GET_MAX, type StorageBackend } from './backends/types'
 import {
   blobContext,
   blobSource,
+  bytesEqual,
   chunkByteRange,
   chunkCount,
   ciphertextSize,
@@ -20,9 +25,11 @@ import {
   encryptChunks,
   FormatError,
   HEADER_BYTES,
+  NONCE_BYTES,
   parseContainerHeader,
-  sha256Hex,
+  sha256Blob,
   type ContainerHeader,
+  type EncryptedSource,
   type LibraryKeys,
 } from './crypto'
 import { MULTIPART_STALE, RANGE, type TransferDir, type TransferRow } from './model'
@@ -30,7 +37,8 @@ import { blobKey } from './paths'
 
 export const SHA256 = /^[0-9a-f]{64}$/
 const WAIT_RETRY = 10 * 60_000
-const VERIFY_MAX = 32 * 1024 * 1024
+/** Header plus chunk 0's nonce: with content-derived nonces, a fingerprint of the version, size and chunk 0. */
+const FINGERPRINT = HEADER_BYTES + NONCE_BYTES
 const RESERVE = 200 * 1024 * 1024
 export const POOL = { down: 3, up: 2 } as const
 export const PRIORITY_BOOST = 1000
@@ -177,13 +185,6 @@ export class BlobQueue {
     this.kick()
   }
 
-  /** Bytes still to download, for the quota check. */
-  private async neededBytes() {
-    let n = 0
-    await this.db.syncTransfers.where('[dir+hash]').between(['down', ''], ['down', '￿']).each((r) => (n += r.size))
-    return n
-  }
-
   stats(rows: TransferRow[]): QueueStats {
     const s: QueueStats = {
       upload: { files: this.done.up.files, bytes: this.done.up.bytes, doneFiles: this.done.up.files, doneBytes: this.done.up.bytes },
@@ -229,13 +230,6 @@ export class BlobQueue {
       .sort((a, b) => b.priority - a.priority || a.size - b.size)
     let downs = [...this.active.keys()].filter((k) => k.startsWith('down')).length
     let ups = this.active.size - downs
-    if (runnable.some((r) => r.dir === 'down') && downs < POOL.down) {
-      const ok = await this.checkQuota().catch((e) => {
-        this.d.onError?.(e, runnable.find((r) => r.dir === 'down')!)
-        return false
-      })
-      if (!ok) for (let i = runnable.length - 1; i >= 0; i--) if (runnable[i].dir === 'down') runnable.splice(i, 1)
-    }
     for (const r of runnable) {
       if (r.dir === 'down' ? downs >= POOL.down : ups >= POOL.up) continue
       if (r.dir === 'down') downs++
@@ -249,13 +243,16 @@ export class BlobQueue {
     if (next < Infinity && !this.stopped) this.timer = (this.d.timers?.setTimeout ?? setTimeout)(() => this.kick(), Math.max(50, next - now))
   }
 
-  private async checkQuota(): Promise<boolean> {
+  /**
+   * Per-blob space check, from the blob's real size: called once its container header has authenticated
+   * (first decrypted chunk), never from sizes other devices claim. A blob that doesn't fit fails alone
+   * (`LocalQuotaError`, retried with backoff); smaller downloads carry on.
+   */
+  private async ensureSpace(remaining: number): Promise<void> {
     const est = typeof navigator !== 'undefined' ? await navigator.storage?.estimate?.().catch(() => undefined) : undefined
-    if (!est?.quota) return true
+    if (!est?.quota) return
     const free = est.quota - (est.usage ?? 0)
-    const need = await this.neededBytes()
-    if (free < need + RESERVE) throw new LocalQuotaError(need + RESERVE - free)
-    return true
+    if (free < remaining + RESERVE) throw new LocalQuotaError(remaining + RESERVE - free)
   }
 
   private run(r: TransferRow) {
@@ -309,10 +306,10 @@ export class BlobQueue {
       return
     }
     const { ctx, key } = await this.blobKeyOf(r.hash)
-    const expected = ciphertextSize(rec.size)
-    const info = await backend.head(key, { signal })
-    if (!info || info.size !== expected) {
-      const src = encryptChunks(keys, blobSource(rec.data), ctx)
+    const src = encryptChunks(keys, blobSource(rec.data), ctx)
+    if (!(await this.remoteMatches(key, src, signal))) {
+      // Never put other content under this hash's name (a legacy row with a wrong hash, say).
+      if ((await sha256Blob(rec.data)) !== r.hash) throw new FormatError('corrupt', 'the local file does not match its hash; not uploaded')
       const fresh = r.upload && r.upload.createdAt > this.d.now() - MULTIPART_STALE ? r.upload : undefined
       // Our own session that is too old to trust: abort it at the provider and start over.
       if (r.upload && !fresh) await backend.abortUpload?.(r.upload, { signal }).catch(() => {})
@@ -334,6 +331,17 @@ export class BlobQueue {
     await this.d.onUploaded?.(r.hash)
   }
 
+  /**
+   * Whether `blobs/<name>` already holds what we'd upload. The size must match, and (with range GETs) so
+   * must the first 28 bytes: header (format version, epoch, size) and chunk 0's content-derived nonce. That
+   * catches v1 leftovers and stale objects for one small GET. It isn't a full proof, and doesn't need to be:
+   * confidentiality never depends on it (nonces derive from content, so a skipped upload can't cause nonce
+   * reuse), and every download verifies the SHA-256, so a bad object is caught by readers.
+   */
+  private remoteMatches(key: string, src: EncryptedSource, signal: AbortSignal): Promise<boolean> {
+    return remoteBlobMatches(this.d.backend, key, src, signal)
+  }
+
   private async download(r: TransferRow, signal: AbortSignal) {
     const { db, backend, keys } = this.d
     if (await localBlob(db, r.hash)) {
@@ -348,7 +356,13 @@ export class BlobQueue {
     const { ctx, key } = await this.blobKeyOf(r.hash)
     let header: ContainerHeader
     let next = r.doneChunks ?? 0
+    let spaceChecked = false
     const store = async (first: number, parts: Uint8Array[]) => {
+      if (!spaceChecked && parts.length) {
+        // `parts` decrypted, so the header (in every chunk's AAD) and its size are authentic now.
+        spaceChecked = true
+        await this.ensureSpace(header.size - Math.min(header.size, first * 2 ** header.log2Chunk))
+      }
       await db.transaction('rw', db.syncChunks, db.syncTransfers, async () => {
         await db.syncChunks.bulkPut(parts.map((p, i) => ({ hash: r.hash, index: first + i, data: new Blob([p as Uint8Array<ArrayBuffer>]) })))
         await db.syncTransfers.update(rowKey(r), { doneChunks: first + parts.length })
@@ -359,7 +373,7 @@ export class BlobQueue {
     }
     const span = HEADER_BYTES + RANGE * (2 ** 20 + 28) - 1
     if (!backend.caps.rangeGet) {
-      const all = await backend.get(key, { signal })
+      const all = await backend.get(key, { signal, maxBytes: Math.max(GET_MAX, ciphertextSize(r.size)) })
       if (!all) return this.waiting(r)
       header = parseContainerHeader(all)
       if (all.length !== ciphertextSize(header.size, 2 ** header.log2Chunk)) throw new FormatError('corrupt', 'blob has the wrong length')
@@ -391,17 +405,16 @@ export class BlobQueue {
       await db.syncTransfers.update(rowKey(r), { doneChunks: 0 })
       throw new FormatError('corrupt', 'chunks missing after download')
     }
-    const data = new Blob(
-      rows.slice(0, n).map((c) => c.data),
-      { type: r.mime },
-    )
-    if (data.size !== header.size) throw new FormatError('corrupt', 'blob size mismatch')
-    if (data.size <= VERIFY_MAX && (await sha256Hex(data)) !== r.hash) {
+    const parts = rows.slice(0, n).map((c) => c.data)
+    const data = new Blob(parts, { type: r.mime })
+    // Every size is verified (streamed chunk by chunk above 32 MiB): GCM tags only prove a key holder wrote
+    // it, not that it is the file this hash names.
+    if (data.size !== header.size || (await sha256Blob(parts)) !== r.hash) {
       await db.transaction('rw', db.syncChunks, db.syncTransfers, async () => {
         await db.syncChunks.where('[hash+index]').between([r.hash, 0], [r.hash, Infinity]).delete()
         await db.syncTransfers.update(rowKey(r), { doneChunks: 0 })
       })
-      throw new FormatError('corrupt', 'blob hash mismatch')
+      throw new FormatError('corrupt', data.size !== header.size ? 'blob size mismatch' : 'blob hash mismatch')
     }
     await db.transaction('rw', db.blobs, db.syncChunks, db.syncTransfers, async () => {
       if (!(await db.blobs.where('hash').equals(r.hash).count())) await db.blobs.put({ id: r.hash, hash: r.hash, mime: r.mime, size: data.size, data })
@@ -416,6 +429,18 @@ export class BlobQueue {
   private async waiting(r: TransferRow) {
     await this.db.syncTransfers.update(rowKey(r), { state: 'waiting', nextAt: this.d.now() + WAIT_RETRY })
   }
+}
+
+/**
+ * Whether `key` already holds `src`: same size and (with range GETs) the same first 28 bytes (header and
+ * chunk 0's content-derived nonce). Shared by uploads and the repair pass (see `BlobQueue.remoteMatches`).
+ */
+export async function remoteBlobMatches(backend: StorageBackend, key: string, src: EncryptedSource, signal?: AbortSignal): Promise<boolean> {
+  const info = await backend.head(key, { signal })
+  if (!info || info.size !== src.size) return false
+  if (!backend.caps.rangeGet) return true
+  const remote = await backend.get(key, { range: [0, FINGERPRINT - 1], signal })
+  return !!remote && bytesEqual(remote, await src.read(0, Math.min(src.size, FINGERPRINT)))
 }
 
 /** Every content hash referenced by alive songs, with size and mime (repair, GC, offline-ready counts). */

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { offStatus, type LibSyncErrorCode, type LibSyncStatus } from '../api'
-import { downloadLine, errorText, fmtBytes, indicatorState, phaseLine, timeAgo, uploadLine } from './format'
+import { downloadLine, errorText, fmtBytes, indicatorState, phaseLine, syncProblem, timeAgo, uploadLine } from './format'
 
 const NOW = 1_800_000_000_000
 const on = (p: Partial<LibSyncStatus> = {}): LibSyncStatus => ({ ...offStatus(), configured: true, phase: 'idle', ...p })
@@ -62,5 +62,37 @@ describe('indicatorState', () => {
   it('errors get an alert with a dot; warnings do not', () => {
     expect(indicatorState(on({ phase: 'error', error: { code: 'auth', message: 'x', at: 0 } }))).toMatchObject({ icon: 'alert', dot: true })
     expect(indicatorState(on({ error: { code: 'clockAhead', message: 'x', at: 0 } })).icon).toBe('cloud')
+  })
+})
+
+describe('non-fatal stream warnings', () => {
+  const unknown = { code: 'unknown' as const, message: 'Changes from “iPad” can’t be read right now. Other devices keep syncing.', at: 0 }
+  const newer = { code: 'newerFormat' as const, message: '“Pixel 8” uses a newer OpenStand. Update this one to get its changes.', at: 0 }
+  // The service mirrors the warning into `error` while the phase isn't `error`.
+  const warned = on({ phase: 'idle', streams: { a: unknown, b: newer }, warning: unknown, error: unknown })
+
+  it('are warnings, not errors: no red dot, a softer amber one, normal icon', () => {
+    expect(syncProblem(warned).error).toBeUndefined()
+    const st = indicatorState(warned)
+    expect(st).toMatchObject({ icon: 'cloud', warn: true })
+    expect(st.dot).toBeFalsy()
+    expect(st.label).toContain('“iPad”')
+  })
+
+  it('use the engine’s device-specific sentences, one per device, with a retry note and an update action', () => {
+    expect(syncProblem(warned).warning).toEqual({
+      lines: [unknown.message, newer.message],
+      note: 'OpenStand keeps retrying in the background.',
+      action: 'reload',
+      actionLabel: 'Reload app',
+    })
+    expect(syncProblem(on({ warning: { code: 'unknown', message: 'unknown', at: 0 } })).warning?.lines).toEqual(['Some changes from another device couldn’t be applied yet.'])
+  })
+
+  it('a real fatal error still shows as an error', () => {
+    const fatal = on({ phase: 'error', error: { code: 'unknown', message: 'unknown', at: 0 }, streams: { a: unknown } })
+    expect(syncProblem(fatal)).toEqual({ error: fatal.error })
+    expect(indicatorState(fatal)).toMatchObject({ icon: 'alert', dot: true })
+    expect(syncProblem(on({ phase: 'offline', error: { code: 'network', message: 'x', at: 0 } }))).toEqual({})
   })
 })

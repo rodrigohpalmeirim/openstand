@@ -1,10 +1,10 @@
 /** Library-sync status icon for the sidebar (§12.2). Hidden when sync isn't set up. */
-import { Cloud, CloudAlert, CloudDownload, CloudOff, CloudUpload, Loader2, RefreshCw, Settings } from 'lucide-react'
+import { Cloud, CloudAlert, CloudDownload, CloudOff, CloudUpload, Loader2, RefreshCw, Settings, TriangleAlert } from 'lucide-react'
 import { useState } from 'react'
 import { useLibSync } from '../api'
 import { Button, Popover, cx } from '../../ui/primitives'
 import { syncNow } from './client'
-import { active, downloadLine, errorText, fraction, indicatorState, phaseLine, plural, uploadLine } from './format'
+import { active, downloadLine, fraction, indicatorState, phaseLine, plural, syncProblem, uploadLine } from './format'
 import { openLibSyncSettings } from './nav'
 import { Bar } from './parts'
 
@@ -30,7 +30,7 @@ export function SyncIndicator({ className }: { className?: string }) {
   if (!s.configured) return null
   const st = indicatorState(s)
   const Icon = ICONS[st.icon]
-  const err = s.error && errorText(s.error)
+  const { warning } = syncProblem(s)
   const canSync = s.phase !== 'paused' && s.phase !== 'offline' && s.phase !== 'starting'
 
   return (
@@ -48,6 +48,7 @@ export function SyncIndicator({ className }: { className?: string }) {
         {st.progress !== undefined && <Ring value={st.progress} />}
         <Icon className={cx('size-5', st.icon === 'alert' && 'text-danger', st.icon === 'sync' && 'animate-pulse')} />
         {st.dot && <span className="absolute right-2 top-2 size-2 rounded-full bg-danger ring-2 ring-surface" />}
+        {!st.dot && st.warn && <span className="absolute right-2 top-2 size-2 rounded-full bg-warn ring-2 ring-surface" />}
       </button>
       <Popover anchor={anchor} open={open} onClose={close} align="start" side="top" className="w-80 max-w-[calc(100vw-16px)]">
         <div role="dialog" aria-label="Library sync status" className="grid gap-3 p-3">
@@ -55,10 +56,21 @@ export function SyncIndicator({ className }: { className?: string }) {
             <Icon className={cx('mt-0.5 size-5 shrink-0', st.icon === 'alert' ? 'text-danger' : 'text-muted')} />
             <div className="min-w-0 text-sm">
               <div className="font-semibold">Library sync</div>
-              <div className={cx(err && !err.warning ? 'text-danger' : 'text-muted')}>{err && s.phase !== 'error' ? errorText(s.error!).message : phaseLine(s)}</div>
+              <div className={cx(s.phase === 'error' ? 'text-danger' : 'text-muted')}>{phaseLine(s)}</div>
               {s.backendLabel && <div className="truncate text-xs text-faint">{s.backendLabel}</div>}
             </div>
           </div>
+          {warning && (
+            <div className="flex items-start gap-2 rounded-lg border border-warn/30 bg-warn/10 px-2.5 py-2 text-xs">
+              <TriangleAlert className="mt-px size-3.5 shrink-0 text-warn" />
+              <div className="grid gap-0.5">
+                {warning.lines.map((l) => (
+                  <div key={l}>{l}</div>
+                ))}
+                {warning.note && <div className="text-muted">{warning.note}</div>}
+              </div>
+            </div>
+          )}
           {s.initial && <Bar value={s.initial.total ? s.initial.done / s.initial.total : undefined} label={`${s.initial.step} · ${s.initial.done.toLocaleString()} of ${s.initial.total.toLocaleString()}`} />}
           {!s.initial && active(s.upload) && <Bar value={fraction(s.upload)} label={uploadLine(s.upload)} />}
           {!s.initial && active(s.download) && <Bar value={fraction(s.download)} label={downloadLine(s.download)} />}

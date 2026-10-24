@@ -7,17 +7,19 @@
 import type { OpenStandDB } from '../db/db'
 import type { KV, PageAnnotations, Setlist, Song, SongLayers } from '../db/schema'
 import { createBackend } from './backends'
+import { listAll } from './backends/util'
 import { BackendError, type BackendConfig, type StorageBackend } from './backends/types'
+import { claimedSize } from './apply'
 import { SHA256 } from './blobs'
-import { decodeBatch, decodeMeta, encodeMeta, objectStream, readSnapshot } from './codec'
+import { decodeBatch, decodeDevice, decodeMeta, encodeMeta, objectStream, readSnapshot } from './codec'
 import { b64url, deriveLibraryKeys, FormatError, newDeviceId, newSecret, type LibraryKeys } from './crypto'
-import { Engine, bestSnapshot, SyncError, type EngineOptions } from './engine'
-import { kvShape, syncedKv } from './fields'
+import { Engine, rankSnapshots, SyncError, type EngineOptions } from './engine'
+import { kvShape, syncedKv, validateDelta } from './fields'
 import { HLC_ZERO } from './hlc'
 import { joinFileMap, joinLayers, joinPages, joinSong, planJoin, remapSetlist } from './joinPlan'
 import { materialize, mergeDelta } from './merge'
-import type { JoinCheckpoint, JoinMode, PairingPayload, RecordDelta, SyncConfig } from './model'
-import { headsPrefix, latestHeads, libraryPrefix, logKey, metaKey, parseKey, snapPrefix } from './paths'
+import type { DeviceRecord, JoinCheckpoint, JoinMode, PairingPayload, RecordDelta, SyncConfig } from './model'
+import { devicesPrefix, headsPrefix, latestHeads, libraryPrefix, logKey, logPrefix, metaKey, parseKey, snapPrefix } from './paths'
 import { allRecordKeys, clearSyncTables, deleteState, getConfig, getState, markDirty, putState, setCapture } from './state'
 
 export interface FlowOptions extends EngineOptions {
@@ -105,60 +107,91 @@ export async function openPairing(p: PairingPayload, o: FlowOptions = {}): Promi
     return { keys, backend, name: p.n || meta.name }
   } catch (e) {
     if (e instanceof FormatError && e.code === 'newerFormat') throw new SyncError('newerFormat')
+    if (e instanceof FormatError && e.code === 'oldFormat')
+      throw new SyncError('rejoin', 'That synced library was made by an older OpenStand. Reset sync on a device that has it, then pair again.')
     throw new SyncError('wrongSecret')
   }
 }
 
-/** Remote songs and setlists as they'd materialise: best snapshot plus the logs after it (preview only). */
-async function remoteLibrary(keys: LibraryKeys, backend: StorageBackend): Promise<{ songs: Song[]; setlists: Setlist[] }> {
+/** Batches the join preview reads at most (beyond the snapshot); it's an estimate, not a sync. */
+const PREVIEW_LOGS = 2000
+/** Snapshot headers the preview reads at most. */
+const PREVIEW_SNAPS = 16
+
+/**
+ * Remote songs and setlists as they'd materialise: best trusted snapshot plus the logs after it (preview
+ * only). Every loop is bounded by what a LIST shows, not by head values (anyone with bucket access can
+ * write heads), and anything unreadable is skipped.
+ */
+async function remoteLibrary(keys: LibraryKeys, backend: StorageBackend, now = Date.now()): Promise<{ songs: Song[]; setlists: Setlist[] }> {
   const lib = keys.libraryId
   const states = new Map<string, RecordDelta>()
   const add = (op: RecordDelta) => {
-    if (op.c !== 'song' && op.c !== 'setlist') return
+    if ((op.c !== 'song' && op.c !== 'setlist') || validateDelta(op)) return
     states.set(op.c + '/' + op.id, mergeDelta(states.get(op.c + '/' + op.id), op))
   }
-  const list = async (prefix: string) => {
-    const keys: string[] = []
-    let cursor: string | undefined
-    do {
-      const page = await backend.list(prefix, { cursor })
-      keys.push(...page.items.map((i) => i.key))
-      cursor = page.cursor
-    } while (cursor)
-    return keys
+  const list = async (prefix: string) => (await listAll(backend, prefix)).map((i) => i.key)
+  const devices = new Map<string, DeviceRecord>()
+  for (const k of await list(devicesPrefix(lib))) {
+    const p = parseKey(k)
+    if (p?.type !== 'device') continue
+    const b = await backend.get(k)
+    if (b) await decodeDevice(keys, b, p.deviceId).then((d) => void devices.set(d.id, d), () => {})
   }
+  const heads = Object.fromEntries(Object.entries(latestHeads(lib, await list(headsPrefix(lib)))).filter(([d]) => devices.has(d)))
   const { readSnapshotHeader } = await import('./codec')
   const { FIRST_CHUNK_RANGE } = await import('./crypto')
   const snaps: { key: string; deviceId: string; n: number; header: Awaited<ReturnType<typeof readSnapshotHeader>> }[] = []
-  for (const k of await list(snapPrefix(lib))) {
-    const p = parseKey(k)
-    if (p?.type !== 'snap') continue
+  const snapKeys = (await list(snapPrefix(lib)))
+    .map((k) => ({ k, p: parseKey(k) }))
+    .flatMap(({ k, p }) => (p?.type === 'snap' && devices.has(p.deviceId) ? [{ k, deviceId: p.deviceId, n: p.seq }] : []))
+    .sort((a, b) => b.n - a.n)
+    .slice(0, PREVIEW_SNAPS)
+  for (const { k, deviceId, n } of snapKeys) {
     const b = await backend.get(k, { range: FIRST_CHUNK_RANGE })
     if (!b) continue
     try {
-      snaps.push({ key: k, deviceId: p.deviceId, n: p.seq, header: await readSnapshotHeader(keys, { deviceId: p.deviceId, n: p.seq }, b) })
+      snaps.push({ key: k, deviceId, n, header: await readSnapshotHeader(keys, { deviceId, n }, b, { now }) })
     } catch {
       /* unreadable: skip */
     }
   }
-  const best = bestSnapshot(snaps)
-  const vector = best?.header.vector ?? {}
-  if (best) {
-    const r = await readSnapshot(keys, { deviceId: best.deviceId, n: best.n }, objectStream(backend, best.key))
-    for await (const op of r.records) add(op)
+  let vector: Record<string, number> = {}
+  for (const best of rankSnapshots(snaps, { heads, devices, now }).slice(0, 2)) {
+    try {
+      const r = await readSnapshot(keys, { deviceId: best.deviceId, n: best.n }, objectStream(backend, best.key), { now })
+      for await (const op of r.records) add(op)
+      vector = best.header.vector
+      break
+    } catch {
+      /* unreadable or truncated: what was read still counts; try the next one */
+    }
   }
-  const heads = latestHeads(lib, await list(headsPrefix(lib)))
-  for (const [d, head] of Object.entries(heads)) {
-    for (let s = (vector[d] ?? 0) + 1; s <= head; s++) {
-      const bytes = await backend.get(logKey(lib, d, s))
-      if (!bytes) continue
+  // Existing log entries after the snapshot, by LIST (never 1..head).
+  const pending: { d: string; s: number }[] = []
+  for (const k of await list(logPrefix(lib))) {
+    const p = parseKey(k)
+    if (p?.type === 'log' && Object.hasOwn(heads, p.deviceId) && p.seq > (vector[p.deviceId] ?? 0) && p.seq <= heads[p.deviceId]) pending.push({ d: p.deviceId, s: p.seq })
+  }
+  pending.sort((a, b) => a.d.localeCompare(b.d) || a.s - b.s)
+  for (const { d, s } of pending.slice(0, PREVIEW_LOGS)) {
+    const bytes = await backend.get(logKey(lib, d, s))
+    if (!bytes) continue
+    try {
       for (const op of (await decodeBatch(keys, bytes, { deviceId: d, seq: s })).ops) add(op)
+    } catch {
+      /* unreadable: skip (preview only) */
     }
   }
   const songs: Song[] = []
   const setlists: Setlist[] = []
   for (const st of states.values()) {
-    const row = materialize(st.c as 'song', st, null)
+    let row: ReturnType<typeof materialize>
+    try {
+      row = materialize(st.c as 'song', st, null)
+    } catch {
+      continue
+    }
     if (!row) continue
     if (st.c === 'song') songs.push(row as Song)
     else setlists.push(row as unknown as Setlist)
@@ -192,11 +225,11 @@ export interface JoinPreview {
 /** §10.3 step 2: what joining would bring, and the suggested mode. */
 export async function previewJoin(db: OpenStandDB, p: PairingPayload, o: FlowOptions = {}): Promise<JoinPreview> {
   const { keys, backend } = await openPairing(p, o)
-  const remote = await remoteLibrary(keys, backend)
+  const remote = await remoteLibrary(keys, backend, (o.now ?? Date.now)())
   const { songs } = await realLocalSongs(db, o)
   const plan = planJoin({ songs, setlists: await db.setlists.toArray() }, remote, await localHashOf(db))
   const sizes = new Map<string, number>()
-  for (const s of remote.songs) for (const f of s.files) sizes.set(f.blobId, f.size ?? 0)
+  for (const s of remote.songs) for (const f of s.files) sizes.set(f.blobId, claimedSize(f.size))
   return {
     remoteSongs: remote.songs.length,
     remoteBytes: [...sizes.values()].reduce((a, b) => a + b, 0),
@@ -358,9 +391,10 @@ export async function leave(db: OpenStandDB, engine?: Engine, o: FlowOptions = {
     await withTimeout(e.sync(), 10_000)
     e.stop()
     try {
-      await e.putDevice({ retired: true })
-      const { backend, keys, config } = e.core
-      for (const k of await e.listAll(headsPrefix(keys.libraryId, config.deviceId))) await backend.delete(k.key)
+      // Heads, logs and snapshots stay: devices that join later still need this stream until a snapshot
+      // covers it, and the retired-device pruning (§3.2) removes them then. A deleted or reset library gets
+      // no record: nothing would ever remove it.
+      if (await e.core.backend.head(metaKey(e.core.keys.libraryId))) await e.putDevice({ retired: true })
     } catch (err) {
       o.log?.('could not retire device', err)
     }

@@ -52,6 +52,9 @@ export interface ListPage {
   cursor?: string
 }
 
+/** Default body cap of `StorageBackend.get` without a range (an envelope is at most 64 MiB). */
+export const GET_MAX = 64 * 1024 * 1024 + 64 * 1024
+
 /** Random-access plaintext/ciphertext source for `upload`. */
 export interface ByteSource {
   size: number
@@ -96,8 +99,13 @@ export interface StorageBackend {
   list(prefix: string, o?: { startAfter?: string; cursor?: string; limit?: number; signal?: AbortSignal }): Promise<ListPage>
   /** null on 404. */
   head(key: string, o?: { signal?: AbortSignal }): Promise<ObjectInfo | null>
-  /** null on 404. `range` is inclusive `[start, end]`. */
-  get(key: string, o?: { range?: [number, number]; signal?: AbortSignal }): Promise<Uint8Array | null>
+  /**
+   * null on 404. `range` is inclusive `[start, end]`. Bodies are size-capped: with a `range`, at most the
+   * range's length; without one, `maxBytes` (default `GET_MAX`). A larger response is aborted, not read,
+   * and throws `BackendError('unknown')` with `providerCode` `TooLarge` (or `RangeIgnored` when a server
+   * answers a range request with more than the range). (`maxBytes` added with format v2.)
+   */
+  get(key: string, o?: { range?: [number, number]; signal?: AbortSignal; maxBytes?: number }): Promise<Uint8Array | null>
   /** `ifNoneMatch` sends `If-None-Match: *` (when `caps.conditionalPut`); a 412 throws `BackendError('precondition')`. */
   put(key: string, body: Uint8Array, o?: { ifNoneMatch?: boolean; signal?: AbortSignal }): Promise<void>
   /** 404 counts as success. Callers delete their own keys only (§3.2). */

@@ -43,6 +43,31 @@ function mockFetch(handler: Handler) {
 afterEach(() => S3Backend.resetClockSkew())
 
 describe('S3 XML', () => {
+  it('scans in linear time (adversarial and large inputs)', () => {
+    const t0 = performance.now()
+    // Unclosed open tags: quadratic for a lazy regex (400 KB took 4 s).
+    parseListObjects('<ListBucketResult>' + '<Contents>'.repeat(400_000) + '</ListBucketResult>')
+    parseListObjects('<ListBucketResult>' + '<Contents '.repeat(400_000))
+    parseListObjects('<Contents><Key>' + '<Key>'.repeat(800_000))
+    const real = '<ListBucketResult>' + '<Contents><Key>os1/abc/blobs/x</Key><Size>12</Size><ETag>&quot;e&quot;</ETag></Contents>'.repeat(50_000) + '</ListBucketResult>'
+    expect(real.length).toBeGreaterThan(4_000_000)
+    expect(parseListObjects(real).items.length).toBe(50_000)
+    expect(performance.now() - t0).toBeLessThan(1000)
+  })
+
+  it('handles attributes, self-closing and unclosed tags like the old parser', () => {
+    expect(xmlText('<A x="1">v</A>', 'A')).toBe('v')
+    expect(xmlText('<AB>no</AB><A>yes</A>', 'A')).toBe('yes')
+    expect(xmlText('<A/>', 'A')).toBe('')
+    expect(xmlText('<A />', 'A')).toBe('')
+    expect(xmlText('<A>open', 'A')).toBeUndefined()
+    expect(xmlText('<A', 'A')).toBeUndefined()
+    expect(parseListParts('<R><Part><PartNumber>1</PartNumber><ETag>e</ETag><Size>3</Size></Part><Part/><Part><PartNumber>2</PartNumber><ETag>f</ETag><Size>4</Size></Part></R>').parts).toEqual([
+      { n: 1, etag: 'e', size: 3 },
+      { n: 2, etag: 'f', size: 4 },
+    ])
+  })
+
   it('decodes entities', () => {
     expect(xmlDecode('a &amp; b &lt;c&gt; &quot;d&quot; &apos;e&apos; &#233; &#x1F3B5; &bogus;')).toBe(`a & b <c> "d" 'e' é 🎵 &bogus;`)
     expect(xmlText('<A><B/></A>', 'B')).toBe('')
@@ -145,7 +170,7 @@ describe('S3Backend requests', () => {
     expect(u.searchParams.get('max-keys')).toBe('5')
   })
 
-  it('maps 404 to null, 416 to empty, and slices when Range is ignored', async () => {
+  it('maps 404 to null, 416 to empty; an ignored Range is sliced only when the object fits', async () => {
     const m = mockFetch((req) => {
       const key = new URL(req.url).pathname
       if (key.endsWith('/missing')) return new Response(xmlErr('NoSuchKey'), { status: 404 })
@@ -155,8 +180,54 @@ describe('S3Backend requests', () => {
     const b = new S3Backend(cfg, { fetch: m.fetch })
     expect(await b.get('missing')).toBeNull()
     expect(await b.get('empty', { range: [0, 0] })).toEqual(new Uint8Array(0))
-    expect(await b.get('x', { range: [1, 2] })).toEqual(new Uint8Array([2, 3]))
-    expect(m.calls[2].headers.get('range')).toBe('bytes=1-2')
+    expect(await b.get('x', { range: [1, 5] })).toEqual(new Uint8Array([2, 3, 4, 5]))
+    expect(m.calls[2].headers.get('range')).toBe('bytes=1-5')
+    // The whole object is larger than the 2-byte range: aborted, not downloaded and sliced.
+    await expect(b.get('x', { range: [1, 2] })).rejects.toMatchObject({ code: 'unknown', providerCode: 'RangeIgnored' })
+  })
+
+  it('caps response bodies: Content-Length, streamed bytes, ignored ranges and maxBytes', async () => {
+    let pulled = 0
+    /** An endless body without Content-Length; counts what the client pulled. */
+    const endless = () =>
+      new ReadableStream<Uint8Array>({
+        pull(c) {
+          pulled += 65536
+          c.enqueue(new Uint8Array(65536))
+        },
+      })
+    const m = mockFetch((req) => {
+      const key = new URL(req.url).pathname
+      if (key.endsWith('/declared')) return new Response(new Uint8Array(10), { status: 200, headers: { 'content-length': String(2 ** 40) } })
+      if (key.endsWith('/small')) return new Response(new Uint8Array(1000), { status: 200 })
+      return new Response(endless(), { status: req.headers.get('range') ? 200 : 200 })
+    })
+    const b = new S3Backend(cfg, { fetch: m.fetch })
+    await expect(b.get('declared')).rejects.toMatchObject({ providerCode: 'TooLarge' })
+    await expect(b.get('endless', { maxBytes: 1_000_000 })).rejects.toMatchObject({ providerCode: 'TooLarge' })
+    expect(pulled).toBeLessThan(1_000_000 + 4 * 65536)
+    pulled = 0
+    // A server ignoring Range on a huge object: stops after about the requested length.
+    await expect(b.get('endless', { range: [0, 99_999] })).rejects.toMatchObject({ providerCode: 'RangeIgnored' })
+    expect(pulled).toBeLessThan(100_000 + 4 * 65536)
+    pulled = 0
+    // Without maxBytes, the default cap applies (GET_MAX, 64 MiB + 64 KiB).
+    await expect(b.get('endless')).rejects.toMatchObject({ providerCode: 'TooLarge' })
+    expect(pulled).toBeLessThan(65 * 1024 * 1024 + 4 * 65536)
+    expect((await b.get('small', { maxBytes: 1000 }))!.length).toBe(1000)
+    await expect(b.get('small', { maxBytes: 999 })).rejects.toMatchObject({ providerCode: 'TooLarge' })
+  })
+
+  it('caps XML answers and error bodies', async () => {
+    const huge = '<ListBucketResult>' + '<Contents><Key>k</Key><Size>1</Size></Contents>'.repeat(200_000) + '</ListBucketResult>'
+    const m = mockFetch((req) => {
+      if (req.method === 'PUT') return new Response(xmlErr('AccessDenied', 'x'.repeat(10_000_000)), { status: 403 })
+      return new Response(huge, { status: 200 })
+    })
+    const b = new S3Backend(cfg, { fetch: m.fetch })
+    await expect(b.list('os1/')).rejects.toMatchObject({ providerCode: 'TooLarge' })
+    // A 10 MB error body is truncated, not read whole; the status still maps.
+    await expect(b.put('k', new Uint8Array(1))).rejects.toMatchObject({ code: 'forbidden' })
   })
 
   it('retries once with a corrected clock on RequestTimeTooSkewed', async () => {

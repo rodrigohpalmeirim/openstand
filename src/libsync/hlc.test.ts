@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { describe, expect, it, vi } from 'vitest'
-import { createClock, formatHlc, HLC_ZERO, hlcWall, isHlc, parseHlc } from './hlc'
-import { CLOCK_AHEAD_WARN } from './model'
+import { createClock, formatHlc, HLC_ZERO, hlcAhead, hlcWall, isHlc, parseHlc } from './hlc'
+import { CLOCK_AHEAD_MAX, CLOCK_AHEAD_WARN } from './model'
 import { rng } from './merge.test-helper'
 
 const A = '0123456789abcdef'
@@ -128,10 +128,50 @@ describe('clock', () => {
     expect(onAhead).toHaveBeenCalledTimes(1)
   })
 
-  it('receive with a malformed timestamp throws and leaves the clock untouched', () => {
+  it('receive refuses a malformed timestamp and leaves the clock untouched', () => {
     const c = createClock(A, undefined, () => T)
     const before = c.now()
-    expect(() => c.receive('nope')).toThrow()
+    expect(c.receive('nope')).toBe(false)
+    expect(c.receive(undefined as unknown as string)).toBe(false)
     expect(c.last).toBe(before)
+  })
+
+  it('refuses a remote more than CLOCK_AHEAD_MAX ahead (warns, clock untouched); accepts up to it', () => {
+    const onAhead = vi.fn()
+    const c = createClock(A, undefined, () => T, { onAhead })
+    const before = c.now()
+    const far = formatHlc(T + CLOCK_AHEAD_MAX + 1, 0, B)
+    expect(c.receive(far)).toBe(false)
+    expect(onAhead).toHaveBeenCalledWith(B, CLOCK_AHEAD_MAX + 1)
+    expect(c.last).toBe(before)
+    expect(c.receive(formatHlc(T + CLOCK_AHEAD_MAX, 0, B))).toBe(true)
+    expect(hlcWall(c.last)).toBe(T + CLOCK_AHEAD_MAX)
+  })
+
+  it('never throws or half-updates on the largest timestamps (review: ffff… overflow)', () => {
+    const c = createClock(A, undefined, () => T)
+    const before = c.now()
+    expect(c.receive('f'.repeat(16) + B)).toBe(false) // year ~10889: far ahead
+    expect(c.last).toBe(before)
+    expect(() => c.now()).not.toThrow()
+    // A clock really at the end of the format saturates instead of throwing.
+    const end = createClock(A, undefined, () => 0xffff_ffff_ffff)
+    for (let i = 0; i < 0x10010; i++) end.now()
+    expect(end.last).toBe('f'.repeat(16) + A)
+    expect(end.receive('f'.repeat(16) + B)).toBe(true)
+    expect(end.last).toBe('f'.repeat(16) + A)
+  })
+
+  it('ignores a persisted value far in the future (a clock poisoned before the guard)', () => {
+    const poisoned = formatHlc(T + 365 * 86_400_000, 3, A)
+    expect(createClock(A, poisoned, () => T).now()).toBe(formatHlc(T, 0, A))
+    const fine = formatHlc(T + 60_000, 3, A)
+    expect(createClock(A, fine, () => T).now()).toBe(formatHlc(T + 60_000, 4, A))
+  })
+
+  it('hlcAhead measures how far a timestamp is ahead (malformed: Infinity)', () => {
+    expect(hlcAhead(formatHlc(T + 5, 0, B), T)).toBe(5)
+    expect(hlcAhead(formatHlc(T - 5, 0, B), T)).toBe(-5)
+    expect(hlcAhead('nope', T)).toBe(Infinity)
   })
 })

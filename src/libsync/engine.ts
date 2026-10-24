@@ -12,21 +12,25 @@ import type { OpenStandDB } from '../db/db'
 import type { Song } from '../db/schema'
 import { createBackend } from './backends'
 import { BackendError, type ObjectInfo, type StorageBackend, type UploadState } from './backends/types'
-import { BlobQueue, localBlob, LocalQuotaError, queueDownload, queueUpload, referencedBlobs, songPriority } from './blobs'
-import { applyOps, capture, isPlainOutbox, mergeApplied, newApplied, OutboxWriter, plainBatch, projectCtx, syncTxTables, type Applied, type Core } from './apply'
+import { listAll as listAllBounded } from './backends/util'
+import { BlobQueue, localBlob, LocalQuotaError, queueDownload, queueUpload, referencedBlobs, remoteBlobMatches, songPriority } from './blobs'
+import { applyOps, capture, claimedSize, isPlainOutbox, mergeApplied, newApplied, opsAhead, OutboxWriter, plainBatch, projectCtx, syncTxTables, type Applied, type Core } from './apply'
 import { decodeBatch, decodeDevice, encodeBatch, encodeDevice, objectStream, readSnapshot, readSnapshotHeader, writeSnapshot } from './codec'
-import { blobName, bytesEqual, ciphertextSize, deriveLibraryKeys, FIRST_CHUNK_RANGE, FormatError, type LibraryKeys } from './crypto'
-import { createClock, HLC_ZERO, hlcWall } from './hlc'
+import { blobContext, blobName, blobSource, bytesEqual, deriveLibraryKeys, encryptChunks, FIRST_CHUNK_RANGE, FormatError, type LibraryKeys } from './crypto'
+import { createClock, HLC_ZERO, hlcAhead, hlcWall, isDeviceId } from './hlc'
 import { compact, dropStale, fromShadow, materialize, project, toShadow } from './merge'
 import {
   BLOB_GC_GRACE,
   BLOB_GC_INTERVAL,
   CAPTURE_DEBOUNCE,
+  CLOCK_AHEAD_MAX,
+  CLOCK_AHEAD_STALL,
   DEAD_FIELDS_TTL,
   ELEMENT_TOMB_TTL,
   LOG_RETENTION,
   POLL,
   SNAPSHOT_TRIGGER,
+  type Batch,
   type CollectionRows,
   type DeviceRecord,
   type MaintenanceState,
@@ -50,6 +54,17 @@ const RECONCILE_INTERVAL = DAY
 const DEVICE_REFRESH = DAY
 const MAX_BACKOFF = 5 * 60_000
 const NOTICE_DEBOUNCE = 300
+/** Batches one stream may apply per pull; the rest follow in the next round (scheduled at once). */
+const STREAM_BUDGET = 2000
+/** Retry delays for a stalled stream; the last one repeats (a stream that keeps failing is retried hourly). */
+const STALL_RETRY = [30_000, 2 * 60_000, 10 * 60_000, 60 * 60_000]
+/** Unknown device ids (heads without a readable device record) looked up per pull, and how long a miss is cached. */
+const DEVICE_CHECKS = 4
+const DEVICE_RECHECK = 10 * 60_000
+/** Snapshot headers fetched per device per listing (newest first). */
+const SNAP_HEADERS = 8
+/** Candidate snapshots tried before giving up on bootstrap or gap recovery. */
+const SNAP_TRIES = 3
 
 /** A sync failure with a `LibSyncErrorCode` (backend and format errors are mapped by `toSyncError`). */
 export class SyncError extends Error {
@@ -84,7 +99,12 @@ export function toSyncError(e: unknown, at = Date.now()): LibSyncError {
   if (e instanceof SyncError) {
     code = e.code
     detail = e.detail
-  } else if (e instanceof FormatError) code = e.code
+  } else if (e instanceof FormatError) {
+    // `oldFormat` (an authentic pre-v2 object) has no code of its own: the fix is the same as for
+    // `rejoin` (reset sync and join again).
+    code = e.code === 'corrupt' || e.code === 'newerFormat' ? e.code : 'rejoin'
+    detail = e.message
+  }
   // `detail` = bytes still needed (the UI formats "needs 1.2 GB more").
   else if (e instanceof LocalQuotaError) return { code: 'localQuota', message: e.message, detail: String(Math.ceil(e.needed)), at }
   else if (e instanceof BackendError) {
@@ -112,6 +132,44 @@ export function toSyncError(e: unknown, at = Date.now()): LibSyncError {
 
 /** Errors that stop sync until the user acts (no automatic retry loop). */
 const FATAL: LibSyncErrorCode[] = ['wrongSecret', 'libraryGone', 'newerFormat', 'corrupt', 'rejoin']
+
+/** `listAll` gave up on a flooded or looping listing (`backends/util.ts`). */
+const LIST_OVERFLOW = ['TooManyKeys', 'ListLoop']
+
+/**
+ * Errors about the whole sync (storage reachability, credentials, local disk), as opposed to one object
+ * or one device's stream. Everything else met while pulling a stream (unreadable or tampered objects, data
+ * we can't apply, a missing log no snapshot covers) only holds that stream back.
+ */
+function isGlobalError(e: unknown): boolean {
+  if (e instanceof BackendError) return e.code !== 'notFound' && !LIST_OVERFLOW.includes(e.providerCode ?? '')
+  if (e instanceof SyncError) return e.code !== 'corrupt'
+  if (e instanceof LocalQuotaError) return true
+  const name = (e as Error)?.name
+  return name === 'QuotaExceededError' || name === 'DatabaseClosedError' || name === 'MissingAPIError'
+}
+
+/** One device's stream can't go on at `seq` for now (§10.1 steps 3-4); the other streams carry on. */
+class StreamStall extends Error {
+  readonly seq: number
+  readonly cause: unknown
+  /** Earliest retry (clock-ahead stalls wait for this device's clock to catch up). */
+  readonly retryAt?: number
+  constructor(seq: number, cause: unknown, retryAt?: number) {
+    super((cause as Error)?.message ?? String(cause))
+    this.name = 'StreamStall'
+    this.seq = seq
+    this.cause = cause
+    this.retryAt = retryAt
+  }
+}
+
+interface Stall {
+  seq: number
+  attempts: number
+  retryAt: number
+  error: LibSyncError
+}
 
 export interface EngineEnv {
   visible(): boolean
@@ -147,8 +205,10 @@ export interface EngineStatus {
   relay: RelayState
   devices: (DeviceRecord & { self: boolean })[]
   error?: LibSyncError
-  /** Another device's clock is ahead (§6.1); shown, not fatal. */
+  /** Another device's clock is ahead (§6.1), or a device's changes can't be read for now; shown, not fatal. */
   warning?: LibSyncError
+  /** Devices whose stream is held back (unreadable entry, clock far ahead, …), by device id. Not fatal. */
+  streams?: Record<string, LibSyncError>
 }
 
 export interface EngineOptions {
@@ -172,11 +232,55 @@ interface SnapInfo {
   lastModified?: number
 }
 
-const sumVector = (v: Record<string, number>) => Object.values(v).reduce((a, b) => a + b, 0)
+/**
+ * Why a snapshot header can't be trusted against what storage shows, or null. Its vector may only name
+ * well-formed device ids and seqs, and may not claim more of a device than that device's observed head: a
+ * vector past the head would move cursors over data that exists and hide it for good. Snapshots written
+ * or stamped further ahead than CLOCK_AHEAD_MAX are refused too.
+ */
+export function snapshotProblem(h: SnapshotHeader, heads: Record<string, number>, now: number): string | null {
+  const v = h?.vector as unknown
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return 'malformed vector'
+  for (const [d, s] of Object.entries(v)) {
+    if (!isDeviceId(d)) return 'bad device id in vector'
+    if (typeof s !== 'number' || !Number.isSafeInteger(s) || s < 0) return `bad seq for ${d}`
+    if (Object.hasOwn(heads, d) && s > heads[d]) return `claims ${d} up to ${s}, past its head ${heads[d]}`
+  }
+  if (typeof h.t !== 'number' || !(h.t - now <= CLOCK_AHEAD_MAX)) return 'written in the future'
+  if (!(hlcAhead(h.hlcMax, now) <= CLOCK_AHEAD_MAX)) return 'stamped in the future'
+  const z = h.horizon as Partial<SnapshotHeader['horizon']> | undefined
+  if (!z || typeof z.elementTombs !== 'number' || typeof z.deadFields !== 'number') return 'malformed horizon'
+  return null
+}
 
-/** Largest Σvector, then the newest (§3.1). */
-export const bestSnapshot = <T extends { header: SnapshotHeader }>(snaps: T[]): T | undefined =>
-  [...snaps].sort((a, b) => sumVector(b.header.vector) - sumVector(a.header.vector) || b.header.t - a.header.t)[0]
+/** Σ of the vector entries storage vouches for (devices with an observed head, capped at it). */
+const coveredSum = (v: Record<string, number>, heads: Record<string, number>) =>
+  Object.entries(v).reduce((a, [d, s]) => a + (Object.hasOwn(heads, d) ? Math.min(s, heads[d]) : 0), 0)
+
+/**
+ * Snapshots fit to bootstrap or recover from, best first (§3.1 plus trust rules): consistent with the
+ * observed heads (`snapshotProblem`) and written by a device with a valid record; live authors before
+ * retired ones, then the largest Σvector (counting only entries storage vouches for), then the newest.
+ */
+export function rankSnapshots<T extends { deviceId: string; header: SnapshotHeader }>(
+  snaps: T[],
+  ctx: { heads: Record<string, number>; devices: ReadonlyMap<string, { retired?: boolean }>; now: number; log?: (msg: string) => void },
+): T[] {
+  const ok = snaps.filter((s) => {
+    const why = !ctx.devices.has(s.deviceId) ? 'author has no device record' : snapshotProblem(s.header, ctx.heads, ctx.now)
+    if (why) ctx.log?.(`ignoring snapshot ${s.deviceId}/${(s as { n?: number }).n ?? '?'}: ${why}`)
+    return !why
+  })
+  const rank = (s: T) => (ctx.devices.get(s.deviceId)?.retired ? 1 : 0)
+  return ok.sort(
+    (a, b) => rank(a) - rank(b) || coveredSum(b.header.vector, ctx.heads) - coveredSum(a.header.vector, ctx.heads) || b.header.t - a.header.t,
+  )
+}
+
+function fmtAhead(ms: number) {
+  if (ms >= 2 * DAY) return `${Math.round(ms / DAY).toLocaleString('en')} days`
+  return ms >= 3_600_000 ? `${Math.round(ms / 3_600_000)} h` : `${Math.round(ms / 60_000)} min`
+}
 
 export function platformName(): string {
   if (typeof navigator === 'undefined') return 'node'
@@ -205,7 +309,15 @@ export class Engine {
   private statusTimer?: ReturnType<typeof setTimeout>
   private dirtySub?: Subscription
   private relay?: NoticeChannel
-  private streamErrors = new Map<string, LibSyncError>()
+  /** Held-back device streams (in memory: a restart retries at once). */
+  private stalls = new Map<string, Stall>()
+  /** Device ids whose record was missing or unreadable -> when to look again. */
+  private deviceMiss = new Map<string, number>()
+  /** Snapshot keys whose header couldn't be read. */
+  private badSnaps = new Set<string>()
+  private aheadWarning?: LibSyncError
+  /** A stream hit its per-pull budget: pull again soon. */
+  private more = false
 
   private constructor(core: Core, o: EngineOptions) {
     this.core = core
@@ -240,7 +352,8 @@ export class Engine {
       onError: (e) => {
         const err = toSyncError(e, this.core.now())
         if (err.code === 'network') this.setStatus({ phase: 'offline' })
-        else if (err.code !== 'unknown' && err.code !== 'corrupt') this.setStatus({ phase: 'error', error: err })
+        // A bad object (tampered blob, unknown container version) is that blob's problem, never fatal.
+        else if (!(e instanceof FormatError) && err.code !== 'unknown' && err.code !== 'corrupt') this.setStatus({ phase: 'error', error: err })
         this.core.log?.('transfer failed', e)
       },
       onProgress: () => this.scheduleStatus(),
@@ -313,12 +426,24 @@ export class Engine {
     this.setStatus({ pendingChanges: pending, upload: stats.upload, download: stats.download, offlineReady: { have, total: refs.size }, devices, lastSyncAt: lastSync?.at, phase })
   }
 
+  private deviceName(device: string) {
+    return this.status.devices.find((d) => d.id === device)?.name ?? 'Another device'
+  }
+
   private clockAhead(device: string, ms: number) {
-    const name = this.status.devices.find((d) => d.id === device)?.name ?? 'Another device'
-    const h = ms >= 3_600_000 ? `${Math.round(ms / 3_600_000)} h` : `${Math.round(ms / 60_000)} min`
-    this.setStatus({
-      warning: { code: 'clockAhead', message: `“${name}” has its clock set ${h} ahead. Edits from it may win over newer ones.`, at: this.core.now() },
-    })
+    const message =
+      ms > CLOCK_AHEAD_MAX
+        ? `“${this.deviceName(device)}” has its clock set ${fmtAhead(ms)} ahead. Its changes will sync once its clock is right.`
+        : `“${this.deviceName(device)}” has its clock set ${fmtAhead(ms)} ahead. Edits from it may win over newer ones.`
+    if (this.aheadWarning?.message === message) return
+    this.aheadWarning = { code: 'clockAhead', message, at: this.core.now() }
+    if (!this.status.streams || !Object.keys(this.status.streams).length) this.setStatus({ warning: this.aheadWarning })
+  }
+
+  /** Publish held-back streams: the first one is the warning (a clock warning otherwise). */
+  private publishStreams() {
+    const streams = Object.fromEntries([...this.stalls].map(([d, s]) => [d, s.error]))
+    this.setStatus({ streams, warning: Object.values(streams)[0] ?? this.aheadWarning })
   }
 
   // -------------------------------------------------------------------------------------------
@@ -371,9 +496,15 @@ export class Engine {
         await backend.put(key, bytes, { ifNoneMatch: true })
       } catch (e) {
         if (!(e instanceof BackendError && e.code === 'precondition')) throw e
-        // Our own earlier attempt may have landed before a crash: identical bytes are fine.
+        // Our own earlier attempt may have landed before a crash: identical bytes are fine. Something that
+        // isn't a batch of ours at all was planted by someone without the key: overwrite it. Only a real
+        // batch of ours with other content means a clone (or restored state).
         const there = await backend.get(key)
-        if (!there || !bytesEqual(there, bytes)) throw new SyncError('rejoin', undefined, `log ${row.seq} exists with other content (cloned device?)`)
+        if (!there || !bytesEqual(there, bytes)) {
+          const ours = there ? await decodeBatch(keys, there, { deviceId: me, seq: row.seq }).then(() => true, () => false) : false
+          if (ours) throw new SyncError('rejoin', undefined, `log ${row.seq} exists with other content (cloned device?)`)
+          await backend.put(key, bytes)
+        }
       }
       await backend.put(headKey(lib, me, row.seq), new Uint8Array(0))
       if (row.seq > 1) await backend.delete(headKey(lib, me, row.seq - 1)).catch(() => {})
@@ -392,72 +523,190 @@ export class Engine {
   // Pull
   // -------------------------------------------------------------------------------------------
 
-  async listAll(prefix: string): Promise<ObjectInfo[]> {
-    const out: ObjectInfo[] = []
-    let cursor: string | undefined
-    do {
-      const page = await this.core.backend.list(prefix, { cursor })
-      out.push(...page.items)
-      cursor = page.cursor
-    } while (cursor)
-    return out
+  /**
+   * Every object under `prefix`, bounded (`backends/util.listAll`): a listing past LIST_MAX_KEYS or one that
+   * doesn't advance throws `BackendError('unknown')` (`TooManyKeys` / `ListLoop`). That fails the operation
+   * like any storage error (retried with backoff, never fatal); under one device's prefix it only holds
+   * back that device's stream.
+   */
+  listAll(prefix: string): Promise<ObjectInfo[]> {
+    return listAllBounded(this.core.backend, prefix)
   }
 
-  /** Each device's latest seq (one LIST, §3). */
+  /** Each device's latest seq (one LIST, §3). Unverified: anyone with bucket access can write heads. */
   async heads(): Promise<Record<string, number>> {
     const lib = this.core.keys.libraryId
     return latestHeads(lib, (await this.listAll(headsPrefix(lib))).map((i) => i.key))
+  }
+
+  /** Cached device records by id. */
+  private async knownDevices(): Promise<Map<string, DeviceRecord>> {
+    return new Map(((await getState(this.core.db, 'devices')) ?? []).map((d) => [d.id, d]))
+  }
+
+  /**
+   * Fetch and verify one device's record (it must decrypt under the library key); cached on success.
+   * Misses are remembered for DEVICE_RECHECK, so a fake head costs one GET now and then.
+   */
+  private async verifyDevice(d: string): Promise<DeviceRecord | null> {
+    const { backend, keys, db } = this.core
+    const now = this.core.now()
+    if ((this.deviceMiss.get(d) ?? 0) > now) return null
+    let rec: DeviceRecord | null = null
+    const bytes = await backend.get(deviceKey(keys.libraryId, d))
+    if (bytes) {
+      try {
+        rec = await decodeDevice(keys, bytes, d)
+      } catch (e) {
+        this.core.log?.(`unreadable device record ${d}`, e)
+      }
+    }
+    if (!rec) {
+      this.deviceMiss.set(d, now + DEVICE_RECHECK)
+      this.core.log?.(`ignoring heads of ${d}: no valid device record`)
+      return null
+    }
+    this.deviceMiss.delete(d)
+    const cached = (await getState(db, 'devices')) ?? []
+    await putState(db, 'devices', [...cached.filter((x) => x.id !== d), rec])
+    return rec
+  }
+
+  /**
+   * Heads of devices with a valid (decryptable) record, and our own. Heads of anything else are ignored:
+   * an empty object under `heads/` proves nothing. `added`: a device was verified just now.
+   */
+  private async trustedHeads(raw?: Record<string, number>): Promise<{ heads: Record<string, number>; added: boolean }> {
+    raw ??= await this.heads()
+    const me = this.config.deviceId
+    const known = await this.knownDevices()
+    const heads: Record<string, number> = {}
+    let checks = 0
+    let added = false
+    for (const [d, h] of Object.entries(raw)) {
+      if (d === me || known.has(d)) heads[d] = h
+      else if ((this.deviceMiss.get(d) ?? 0) <= this.core.now() && checks++ < DEVICE_CHECKS && (await this.verifyDevice(d))) {
+        heads[d] = h
+        added = true
+      }
+    }
+    return { heads, added }
   }
 
   pull() {
     return this.locked(() => this.pullInner())
   }
 
+  /**
+   * §10.1 pull. Each device's stream is independent: anything wrong with one device's objects (unreadable,
+   * tampered, unappliable, a gap no snapshot covers, a clock far ahead) holds back that stream only. It is
+   * reported in `status.streams`/`warning`, retried with backoff, and never stops the other streams, local
+   * capture or pushing. Only storage-wide failures (network, auth, …) fail the pull.
+   */
   private async pullInner(): Promise<Applied> {
     const { db, backend, keys, config } = this.core
     const lib = keys.libraryId
     const total = newApplied()
-    const heads = await this.heads()
-    if (!Object.keys(heads).length && !(await backend.head(metaKey(lib)))) throw new SyncError('libraryGone')
-    this.streamErrors.clear()
+    const raw = await this.heads()
+    if (!Object.keys(raw).length && !(await backend.head(metaKey(lib)))) throw new SyncError('libraryGone')
+    const { heads, added } = await this.trustedHeads(raw)
+    for (const d of this.stalls.keys()) if (!Object.hasOwn(heads, d)) this.stalls.delete(d)
+    this.more = false
     for (const [d, head] of Object.entries(heads)) {
       if (d === config.deviceId) continue
+      const stall = this.stalls.get(d)
+      if (stall) {
+        const cur = (await getState(db, 'cursors'))?.[d] ?? 0
+        if (cur >= stall.seq) this.stalls.delete(d)
+        else if (this.core.now() < stall.retryAt) continue
+      }
       try {
-        let cur = (await getState(db, 'cursors'))?.[d] ?? 0
-        while (cur < head) {
-          const seqs: number[] = []
-          for (let s = cur + 1; s <= Math.min(head, cur + FETCH_WINDOW); s++) seqs.push(s)
-          const bodies = await this.fetchLogs(d, seqs)
-          let gap = false
-          for (let i = 0; i < seqs.length; i++) {
-            const bytes = bodies[i]
-            if (!bytes) {
-              gap = true
-              mergeApplied(total, await this.recoverGap(d, seqs[i], head))
-              break
-            }
-            const batch = await decodeBatch(keys, bytes, { deviceId: d, seq: seqs[i] })
-            mergeApplied(total, await this.applyBatch(batch))
-          }
-          const next = (await getState(db, 'cursors'))?.[d] ?? 0
-          if (gap && next <= cur) throw new SyncError('corrupt', undefined, `log ${d}/${cur + 1} is missing and no snapshot covers it`)
-          cur = next
-        }
+        await this.pullStream(d, head, heads, total)
+        this.stalls.delete(d)
       } catch (e) {
-        if (!(e instanceof FormatError) && !(e instanceof SyncError && e.code === 'corrupt')) throw e
-        // A stream that can't be read stops (never skipped: devices would diverge); the others go on.
-        this.streamErrors.set(d, toSyncError(e, this.core.now()))
-        this.core.log?.(`stream ${d} stopped`, e)
+        if (!(e instanceof StreamStall)) throw e
+        this.stall(d, e)
       }
     }
-    // A device we haven't seen yet (or our own first batch): refresh the list now rather than at the next
-    // idle maintenance, so "Devices" isn't empty right after setting up or pairing.
-    const known = new Set(((await getState(db, 'devices')) ?? []).map((x) => x.id))
-    if (Object.keys(heads).some((d) => !known.has(d))) await this.refreshDevicesInner().catch((e) => this.core.log?.('devices refresh failed', e))
-    if (this.streamErrors.size) throw new SyncError([...this.streamErrors.values()][0].code)
+    this.publishStreams()
+    // A device we haven't seen yet: refresh the list now rather than at the next idle maintenance, so
+    // "Devices" isn't empty right after setting up or pairing.
+    if (added) await this.refreshDevicesInner().catch((e) => this.core.log?.('devices refresh failed', e))
     if (!(await db.syncDirty.count()) && !(await db.syncOutbox.count()))
-      await putState(db, 'lastSync', { at: this.core.now(), hlc: this.core.clock.last })
+      await putState(db, 'lastSync', { at: this.core.now(), hlc: this.core.clock.last, seq: (await getState(db, 'cursors'))?.[config.deviceId] ?? 0 })
     return total
+  }
+
+  private stall(d: string, e: StreamStall) {
+    const now = this.core.now()
+    const prev = this.stalls.get(d)
+    const attempts = prev?.seq === e.seq ? prev.attempts + 1 : 1
+    const retryAt = Math.max(now + STALL_RETRY[Math.min(attempts, STALL_RETRY.length) - 1], e.retryAt ?? 0)
+    const cause = toSyncError(e.cause, now)
+    const name = this.deviceName(d)
+    const error: LibSyncError =
+      cause.code === 'clockAhead'
+        ? cause
+        : cause.code === 'newerFormat'
+          ? { code: 'newerFormat', message: `“${name}” uses a newer OpenStand. Update this one to get its changes.`, detail: cause.detail, at: now }
+          : e.cause instanceof FormatError && e.cause.code === 'oldFormat'
+            ? { code: 'rejoin', message: `Changes from “${name}” were written by an older OpenStand. Reset sync to go on.`, detail: cause.detail, at: now }
+          : { code: 'unknown', message: `Changes from “${name}” can’t be read right now. Other devices keep syncing.`, detail: `${d}/${e.seq}: ${cause.detail ?? cause.message}`, at: now }
+    this.stalls.set(d, { seq: e.seq, attempts, retryAt, error })
+    this.core.log?.(`stream ${d} held at ${e.seq} (attempt ${attempts})`, e.cause)
+  }
+
+  /** Pull one device's stream up to `head` (at most STREAM_BUDGET batches). Throws `StreamStall`. */
+  private async pullStream(d: string, head: number, heads: Record<string, number>, total: Applied) {
+    const { db, keys } = this.core
+    let cur = (await getState(db, 'cursors'))?.[d] ?? 0
+    let at = cur + 1
+    let budget = STREAM_BUDGET
+    try {
+      while (cur < head && budget > 0) {
+        const seqs: number[] = []
+        for (let s = cur + 1; s <= Math.min(head, cur + FETCH_WINDOW, cur + budget); s++) seqs.push(s)
+        const bodies = await this.fetchLogs(d, seqs)
+        for (let i = 0; i < seqs.length; i++) {
+          at = seqs[i]
+          const bytes = bodies[i]
+          if (!bytes) {
+            mergeApplied(total, await this.recoverGap(d, at, head, heads))
+            break
+          }
+          let batch: Batch
+          try {
+            batch = await decodeBatch(keys, bytes, { deviceId: d, seq: at })
+          } catch (e) {
+            if (isGlobalError(e)) throw e
+            // Unreadable (tampered, truncated, a format we don't know): a snapshot covering it heals the
+            // stream; it is never skipped otherwise, or devices would diverge.
+            const healed = await this.applyCovering(d, at, heads)
+            if (!healed) throw new StreamStall(at, e)
+            mergeApplied(total, healed)
+            break
+          }
+          const now = this.core.now()
+          const ahead = opsAhead(batch.ops, now)
+          if (ahead > CLOCK_AHEAD_MAX && ahead <= CLOCK_AHEAD_STALL) {
+            // A clock somewhat ahead: wait until ours catches up rather than drop its edits. (Further
+            // ahead than that the ops are bogus: applyOps skips them and the stream goes on.)
+            const err = new SyncError('clockAhead', `“${this.deviceName(d)}” has its clock set ${fmtAhead(ahead)} ahead. Its changes will sync once its clock is right.`)
+            throw new StreamStall(at, err, now + ahead - CLOCK_AHEAD_MAX + 1000)
+          }
+          mergeApplied(total, await this.applyBatch(batch))
+          budget--
+        }
+        const next = (await getState(db, 'cursors'))?.[d] ?? 0
+        if (next <= cur) throw new StreamStall(cur + 1, new SyncError('corrupt', undefined, `log ${d}/${cur + 1} is missing and no snapshot covers it`))
+        cur = next
+        at = cur + 1
+      }
+    } catch (e) {
+      if (e instanceof StreamStall || isGlobalError(e)) throw e
+      throw new StreamStall(at, e)
+    }
+    if (cur < head) this.more = true
   }
 
   private async fetchLogs(d: string, seqs: number[]): Promise<(Uint8Array | null)[]> {
@@ -474,9 +723,9 @@ export class Engine {
     return out
   }
 
-  private async applyBatch(batch: { d: string; s: number; ops: RecordDelta[]; hlcMax: string; blobsReady?: string[] }): Promise<Applied> {
+  private async applyBatch(batch: Batch): Promise<Applied> {
     if (batch.ops.length) await this.hooks.beforeApply?.(batch.ops)
-    const a = await applyOps(this.core, batch.ops, { cursor: { device: batch.d, seq: batch.s }, hlcMax: batch.ops.length ? batch.hlcMax : undefined })
+    const a = await applyOps(this.core, batch.ops, { cursor: { device: batch.d, seq: batch.s } })
     if (batch.blobsReady?.length) await this.transfers.wake(batch.blobsReady)
     await this.afterApply(a)
     return a
@@ -489,43 +738,69 @@ export class Engine {
   }
 
   /** §3.2 gap recovery: the log we need was pruned; merge the snapshot that covers it. */
-  private async recoverGap(d: string, missing: number, head: number): Promise<Applied> {
+  private async recoverGap(d: string, missing: number, head: number, heads: Record<string, number>): Promise<Applied> {
     const lib = this.core.keys.libraryId
     const seqs = (await this.listAll(logPrefix(lib, d))).map((o) => parseKey(o.key)).flatMap((p) => (p?.type === 'log' ? [p.seq] : []))
     const lowest = seqs.filter((s) => s >= missing).reduce((m, s) => Math.min(m, s), head + 1)
-    const snap = bestSnapshot((await this.listSnapshots()).filter((s) => (s.header.vector[d] ?? 0) >= lowest - 1))
-    if (!snap) throw new SyncError('corrupt', undefined, `log ${d}/${missing} is missing and no snapshot covers it`)
-    return this.applySnapshot(snap)
+    const a = await this.applyCovering(d, lowest - 1, heads)
+    if (!a) throw new StreamStall(missing, new SyncError('corrupt', undefined, `log ${d}/${missing} is missing and no snapshot covers it`))
+    return a
+  }
+
+  /** Merge the best trusted snapshot with `vector[d] ≥ need` (trying a few); null when none works. */
+  private async applyCovering(d: string, need: number, heads: Record<string, number>): Promise<Applied | null> {
+    const ranked = rankSnapshots(await this.listSnapshots(), { heads, devices: await this.knownDevices(), now: this.core.now(), log: this.core.log })
+    for (const snap of ranked.filter((s) => (s.header.vector[d] ?? 0) >= need).slice(0, SNAP_TRIES)) {
+      try {
+        return await this.applySnapshot(snap, { heads })
+      } catch (e) {
+        if (isGlobalError(e)) throw e
+        this.core.log?.(`snapshot ${snap.key} failed`, e)
+      }
+    }
+    return null
   }
 
   // -------------------------------------------------------------------------------------------
   // Snapshots (§3.1)
   // -------------------------------------------------------------------------------------------
 
-  /** All snapshots in storage with their headers (cached in `syncState.snapshots`). */
+  /**
+   * Snapshots in storage with their headers (cached in `syncState.snapshots`). Only those of devices with
+   * a known record (and ours) are read, newest first and at most SNAP_HEADERS per device; unreadable
+   * headers are remembered and skipped.
+   */
   async listSnapshots(): Promise<SnapInfo[]> {
     const { db, keys, backend } = this.core
     const lib = keys.libraryId
+    const known = await this.knownDevices()
     const cache = { ...((await getState(db, 'snapshots')) ?? {}) }
     const out: SnapInfo[] = []
     const seen = new Set<string>()
-    for (const o of await this.listAll(snapPrefix(lib))) {
-      const p = parseKey(o.key)
-      if (p?.type !== 'snap') continue
+    const fetched = new Map<string, number>()
+    const listed = (await this.listAll(snapPrefix(lib)))
+      .map((o) => ({ o, p: parseKey(o.key) }))
+      .flatMap(({ o, p }) => (p?.type === 'snap' ? [{ o, deviceId: p.deviceId, n: p.seq }] : []))
+      .sort((a, b) => b.n - a.n)
+    for (const { o, deviceId, n } of listed) {
+      if (deviceId !== this.config.deviceId && !known.has(deviceId)) continue
       seen.add(o.key)
       let header = cache[o.key]
       if (!header) {
+        if (this.badSnaps.has(o.key) || (fetched.get(deviceId) ?? 0) >= SNAP_HEADERS) continue
+        fetched.set(deviceId, (fetched.get(deviceId) ?? 0) + 1)
         const bytes = await backend.get(o.key, { range: FIRST_CHUNK_RANGE })
         if (!bytes) continue
         try {
-          header = await readSnapshotHeader(keys, { deviceId: p.deviceId, n: p.seq }, bytes)
+          header = await readSnapshotHeader(keys, { deviceId, n }, bytes, { now: this.core.now() })
         } catch (e) {
+          this.badSnaps.add(o.key)
           this.core.log?.(`unreadable snapshot ${o.key}`, e)
           continue
         }
         cache[o.key] = header
       }
-      out.push({ key: o.key, deviceId: p.deviceId, n: p.seq, header, lastModified: o.lastModified })
+      out.push({ key: o.key, deviceId, n, header, lastModified: o.lastModified })
     }
     for (const k of Object.keys(cache)) if (!seen.has(k)) delete cache[k]
     await putState(db, 'snapshots', cache)
@@ -533,16 +808,29 @@ export class Engine {
   }
 
   /**
-   * Merge a whole snapshot (idempotent), then advance cursors to its vector. A device that was away
-   * longer than the snapshot's tombstone horizon drops what the network deleted meanwhile (§3.2).
+   * Merge a whole snapshot (idempotent), then advance cursors to its vector, clamped to the observed heads
+   * (entries for devices without a trusted head move nothing). A device that was away longer than the
+   * snapshot's tombstone horizon drops what the network deleted meanwhile (§3.2), but only when the
+   * snapshot provably covers everything this device has merged (else absence proves nothing).
    */
-  async applySnapshot(snap: SnapInfo, o: { onProgress?: (done: number, total: number) => void } = {}): Promise<Applied> {
+  async applySnapshot(snap: SnapInfo, o: { onProgress?: (done: number, total: number) => void; heads?: Record<string, number> } = {}): Promise<Applied> {
     const { db, keys, backend } = this.core
+    const now = this.core.now()
+    const heads = o.heads ?? (await this.trustedHeads()).heads
+    const problem = snapshotProblem(snap.header, heads, now)
+    if (problem) throw new SyncError('corrupt', undefined, `snapshot ${snap.key}: ${problem}`)
+    const vector = snap.header.vector
     const total = newApplied()
     const lastSync = await getState(db, 'lastSync')
-    const stale = !!lastSync && hlcWall(lastSync.hlc) < snap.header.horizon.elementTombs
+    const cursors = (await getState(db, 'cursors')) ?? {}
+    const me = this.config.deviceId
+    // Never trust a horizon beyond what the snapshot's own age (or ours) allows.
+    const horizon = Math.min(snap.header.horizon.elementTombs, snap.header.t - ELEMENT_TOMB_TTL, now - ELEMENT_TOMB_TTL)
+    const covers =
+      Object.entries(cursors).every(([d, s]) => d === me || (vector[d] ?? 0) >= s) && (vector[me] ?? 0) >= (lastSync?.seq ?? cursors[me] ?? 0)
+    const stale = !!lastSync && covers && hlcWall(lastSync.hlc) < horizon
     const seen = stale ? new Map<string, RecordDelta>() : null
-    const reader = await readSnapshot(keys, { deviceId: snap.deviceId, n: snap.n }, objectStream(backend, snap.key))
+    const reader = await readSnapshot(keys, { deviceId: snap.deviceId, n: snap.n }, objectStream(backend, snap.key), { now })
     let group: RecordDelta[] = []
     let done = 0
     const flush = async () => {
@@ -555,13 +843,15 @@ export class Engine {
       group = []
     }
     for await (const r of reader.records) {
-      seen?.set(r.id, r)
+      if (seen && typeof r?.id === 'string') seen.set(r.id, r)
       group.push(r)
       if (group.length >= APPLY_GROUP) await flush()
     }
     await flush()
     if (seen && lastSync) mergeApplied(total, await this.dropStale(seen, lastSync.hlc))
-    await applyOps(this.core, [], { cursors: snap.header.vector })
+    const moves: Record<string, number> = {}
+    for (const [d, s] of Object.entries(vector)) if (Object.hasOwn(heads, d)) moves[d] = Math.min(s, heads[d])
+    await applyOps(this.core, [], { cursors: moves })
     await this.afterApply(total)
     return total
   }
@@ -573,13 +863,14 @@ export class Engine {
     await db.transaction('rw', syncTxTables(db), async () => {
       markRemote(Dexie.currentTransaction)
       for (const shadow of await db.syncShadow.toArray()) {
-        if (!(shadow.c in TABLE_OF)) continue
+        if (!Object.hasOwn(TABLE_OF, shadow.c)) continue
         const c = shadow.c
         const table = db.table(TABLE_OF[c])
         const row = (await table.get(shadow.id)) as CollectionRows[typeof c] | undefined
         const pctx = await projectCtx(db, c === 'song' ? (row as Song | undefined) : undefined)
         const local = fromShadow(shadow, row ? project(c, row, pctx) : null)
-        const kept = dropStale(local, snap.get(shadow.id), lastSync)
+        const s = snap.get(shadow.id)
+        const kept = dropStale(local, s && s.c === c ? s : undefined, lastSync)
         if (kept === local) continue
         const next = kept ? materialize(c, kept, row ?? null) : null
         if (!next) {
@@ -595,13 +886,25 @@ export class Engine {
     return applied
   }
 
-  /** Bootstrap from the best snapshot, if any (join). Returns false when there is none. */
+  /**
+   * Bootstrap from the best trusted snapshot, if any (join). Returns false when there is none. A snapshot
+   * that fails to read is skipped for the next best (what it merged is genuine and stays).
+   */
   async bootstrap(o: { onProgress?: (done: number, total: number) => void } = {}): Promise<boolean> {
     return this.locked(async () => {
-      const best = bestSnapshot(await this.listSnapshots())
-      if (!best) return false
-      await this.applySnapshot(best, o)
-      return true
+      await this.refreshDevicesInner()
+      const { heads } = await this.trustedHeads()
+      const ranked = rankSnapshots(await this.listSnapshots(), { heads, devices: await this.knownDevices(), now: this.core.now(), log: this.core.log })
+      for (const snap of ranked.slice(0, SNAP_TRIES)) {
+        try {
+          await this.applySnapshot(snap, { ...o, heads })
+          return true
+        } catch (e) {
+          if (isGlobalError(e)) throw e
+          this.core.log?.(`bootstrap from ${snap.key} failed`, e)
+        }
+      }
+      return false
     })
   }
 
@@ -636,7 +939,7 @@ export class Engine {
           const shadows = await db.syncShadow.where('id').above(after).limit(APPLY_GROUP).toArray()
           const out: RecordDelta[] = []
           for (const s of shadows) {
-            if (!(s.c in TABLE_OF)) {
+            if (!Object.hasOwn(TABLE_OF, s.c)) {
               out.push(fromShadow(s, null))
               continue
             }
@@ -677,8 +980,8 @@ export class Engine {
   async snapshotDue(): Promise<boolean> {
     const m = await this.maintenanceState()
     const now = this.core.now()
-    const snaps = await this.listSnapshots()
-    const heads = await this.heads()
+    const { heads } = await this.trustedHeads()
+    const snaps = (await this.listSnapshots()).filter((s) => !snapshotProblem(s.header, heads, now))
     if (!snaps.length) return (heads[this.config.deviceId] ?? 0) > 0
     if (now - m.snapshotAt < SNAPSHOT_TRIGGER.minInterval) return false
     const newest = snaps.reduce((a, b) => (b.header.t > a.header.t ? b : a))
@@ -706,9 +1009,13 @@ export class Engine {
     const { backend, keys, config } = this.core
     const lib = keys.libraryId
     const now = this.core.now()
-    const snaps = await this.listSnapshots()
-    const old = snaps.filter((s) => now - s.header.t >= LOG_RETENTION.snapshotAge)
     const devices = await this.refreshDevicesInner()
+    const { heads } = await this.trustedHeads()
+    const snaps = await this.listSnapshots()
+    // Coverage only counts from snapshots that are consistent with storage (a lying vector would prune
+    // logs nothing else holds).
+    const trusted = new Set(rankSnapshots(snaps, { heads, devices: new Map(devices.map((d) => [d.id, d])), now }))
+    const old = snaps.filter((s) => trusted.has(s) && now - s.header.t >= LOG_RETENTION.snapshotAge)
     const retired = new Set(devices.filter((d) => d.retired && d.id !== config.deviceId).map((d) => d.id))
     let deleted = 0
     const del = async (key: string) => {
@@ -837,8 +1144,11 @@ export class Engine {
     for (const [hash, ref] of await referencedBlobs(db)) {
       const rec = await localBlob(db, hash)
       if (rec) {
-        const info = await backend.head(blobKey(keys.libraryId, await blobName(keys, hash)))
-        if (!info || info.size !== ciphertextSize(rec.size)) {
+        // Same check as the upload path: size and the 28-byte fingerprint (header + chunk 0's nonce), so a
+        // stale, v1 or planted object of the right size is replaced too.
+        const ctx = await blobContext(keys, hash)
+        const there = await remoteBlobMatches(backend, blobKey(keys.libraryId, ctx.name), encryptChunks(keys, blobSource(rec.data), ctx))
+        if (!there) {
           await db.syncTransfers.delete(['up', hash])
           await queueUpload(db, hash, rec.size, rec.mime)
           uploads++
@@ -846,7 +1156,7 @@ export class Engine {
       } else if (!(await db.syncTransfers.get(['down', hash]))) {
         const song = songs.find((s) => s.files.some((f) => f.blobId === ref.blobId) || s.audio.some((a) => a.blobId === ref.blobId))
         const file = song?.files.find((f) => f.blobId === ref.blobId)
-        await queueDownload(db, hash, file?.size ?? 0, 'application/octet-stream', prio.get(ref.blobId) ?? 0)
+        await queueDownload(db, hash, claimedSize(file?.size), 'application/octet-stream', prio.get(ref.blobId) ?? 0)
         downloads++
       }
     }
@@ -921,6 +1231,7 @@ export class Engine {
       this.setStatus({ phase: 'idle', error: undefined })
       this.transfers.kick()
       await this.refreshStatus()
+      if (this.more && this.started) this.runSoon(1000)
       return applied
     } catch (e) {
       const err = toSyncError(e, this.core.now())

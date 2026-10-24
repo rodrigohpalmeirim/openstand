@@ -21,6 +21,7 @@ import {
   decryptContainer,
   decryptStream,
   deriveLibraryKeys,
+  HASH_INLINE_MAX,
   encryptChunks,
   fromB64url,
   hexToBytes,
@@ -32,12 +33,14 @@ import {
   seal,
   sealAad,
   sealNotice,
+  sha256Blob,
   sha256Hex,
   utf8,
   type ContainerContext,
   type LibraryKeys,
 } from './crypto'
 import { CHUNK } from './model'
+import { pad10 } from './paths'
 
 /** Byte equality without vitest's element-by-element deep diff (slow for MiBs). */
 function same(a: Uint8Array, b: Uint8Array) {
@@ -67,6 +70,53 @@ async function encryptAll(keys: LibraryKeys, data: Uint8Array, ctx: ContainerCon
   const src = encryptChunks(keys, bytesSource(data), ctx)
   return src.read(0, src.size)
 }
+
+/** node:crypto, loaded by name so the app tsconfig (no Node types) still compiles this file. */
+type NodeCrypto = {
+  hkdfSync(d: string, ikm: Uint8Array, salt: Uint8Array, info: Uint8Array, n: number): ArrayBuffer
+  createHmac(d: string, key: Uint8Array): { update(b: Uint8Array): { digest(): Uint8Array } }
+  createDecipheriv(
+    alg: string,
+    key: Uint8Array,
+    iv: Uint8Array,
+  ): { setAAD(a: Uint8Array): void; setAuthTag(t: Uint8Array): void; update(b: Uint8Array): Uint8Array; final(): Uint8Array }
+}
+const nodeCrypto = () => import(/* @vite-ignore */ 'node:' + 'crypto') as Promise<NodeCrypto>
+
+/** A v1-format writer (the format before 2026-10-24), to check that v1 objects are recognised and refused. */
+async function v1Writer(secret: Uint8Array) {
+  const ikm = await crypto.subtle.importKey('raw', new Uint8Array(secret), 'HKDF', false, ['deriveKey'])
+  const key = await crypto.subtle.deriveKey(
+    { name: 'HKDF', hash: 'SHA-256', salt: utf8('openstand-sync-v1'), info: utf8('enc-key/0') },
+    ikm,
+    { name: 'AES-GCM', length: 256 },
+    false,
+    ['encrypt'],
+  )
+  const gcm = async (nonce: Uint8Array, aad: Uint8Array, pt: Uint8Array) =>
+    new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv: new Uint8Array(nonce), additionalData: new Uint8Array(aad) }, key, new Uint8Array(pt)))
+  return {
+    async seal(aad: string, pt: Uint8Array) {
+      const nonce = crypto.getRandomValues(new Uint8Array(12))
+      return concatBytes([Uint8Array.of(1, 0), nonce, await gcm(nonce, utf8(aad), pt)])
+    },
+    async container(ctxStr: string, data: Uint8Array, deterministic: boolean) {
+      const h = new Uint8Array(16)
+      h.set(utf8('OSC1'))
+      h.set([1, 0, 20, deterministic ? 1 : 0], 4)
+      new DataView(h.buffer).setBigUint64(8, BigInt(data.length))
+      const n = chunkCount(data.length)
+      const out: Uint8Array[] = [h]
+      for (let i = 0; i < n; i++) {
+        const nonce = crypto.getRandomValues(new Uint8Array(12))
+        out.push(nonce, await gcm(nonce, concatBytes([h, utf8(`|${ctxStr}|${i}|${i === n - 1 ? 1 : 0}`)]), data.subarray(i * CHUNK, (i + 1) * CHUNK)))
+      }
+      return concatBytes(out)
+    },
+  }
+}
+
+const formatCode = (p: Promise<unknown>) => p.then(() => 'ok', (e: unknown) => (e instanceof FormatError ? e.code : `not a FormatError: ${String(e)}`))
 
 const keysP = deriveLibraryKeys(SECRET)
 const otherKeysP = deriveLibraryKeys(new Uint8Array(32).fill(9))
@@ -110,12 +160,46 @@ describe('deriveLibraryKeys', () => {
     expect(await blobName(k, sha)).toBe(base32(nc.createHmac('sha256', h('blob-name', 32)).update(hexToBytes(sha)).digest()))
   })
 
+  it('v2 keys are separate HKDF outputs per purpose (checked with node:crypto)', async () => {
+    const nc = await nodeCrypto()
+    const k = await keysP
+    const h = (info: string) => new Uint8Array(nc.hkdfSync('sha256', SECRET, utf8('openstand-sync-v1'), utf8(info), 32))
+    const gcmOpen = (key: Uint8Array, nonce: Uint8Array, aad: Uint8Array, ctTag: Uint8Array) => {
+      const d = nc.createDecipheriv('aes-256-gcm', key, nonce)
+      d.setAAD(aad)
+      d.setAuthTag(ctTag.subarray(ctTag.length - 16))
+      return concatBytes([d.update(ctTag.subarray(0, ctTag.length - 16)), d.final()])
+    }
+    // Envelope: envKey = HKDF("v2/envelope/0"), aad = [version, epoch] || path.
+    const pt = utf8('{"x":1}')
+    const sealed = await seal(k, { kind: 'meta' }, pt)
+    same(gcmOpen(h('v2/envelope/0'), sealed.subarray(2, 14), concatBytes([Uint8Array.of(2, 0), utf8(`os1|meta|${k.libraryId}|`)]), sealed.subarray(14)), pt)
+    // Blob: blobKey = HKDF("v2/blob/0"); nonce = HMAC(HKDF("v2/blob-nonce/0"), u32be(|aad|) || aad || plaintext)[0..12].
+    const data = bytes(CHUNK + 10, 77)
+    const ctx = await blobContext(k, await sha256Hex(data))
+    const ct = await encryptAll(k, data, ctx)
+    const aad0 = concatBytes([ct.subarray(0, 16), utf8(`|blob|${ctx.name}|0|0`)])
+    const len = new Uint8Array(4)
+    new DataView(len.buffer).setUint32(0, aad0.length)
+    const nonce0 = nc.createHmac('sha256', h('v2/blob-nonce/0')).update(concatBytes([len, aad0, data.subarray(0, CHUNK)])).digest().subarray(0, 12)
+    same(ct.subarray(16, 28), nonce0)
+    same(gcmOpen(h('v2/blob/0'), nonce0, aad0, ct.subarray(28, 16 + CHUNK + 28)), data.subarray(0, CHUNK))
+    // Snapshot: snapKey = HKDF("v2/snapshot/0").
+    const sctx = { kind: 'snap', deviceId: '0123456789abcdef', n: 3 } as const
+    const sct = await encryptAll(k, utf8('snap'), sctx)
+    const saad = concatBytes([sct.subarray(0, 16), utf8(`|snap|${k.libraryId}|0123456789abcdef|${pad10(3)}|0|1`)])
+    same(gcmOpen(h('v2/snapshot/0'), sct.subarray(16, 28), saad, sct.subarray(28)), utf8('snap'))
+    // No key opens another purpose's ciphertext.
+    expect(() => gcmOpen(h('v2/envelope/0'), nonce0, aad0, ct.subarray(28, 16 + CHUNK + 28))).toThrow()
+    expect(() => gcmOpen(h('v2/blob/0'), sct.subarray(16, 28), saad, sct.subarray(28))).toThrow()
+    expect(() => gcmOpen(h('enc-key/0'), sealed.subarray(2, 14), concatBytes([Uint8Array.of(2, 0), utf8(`os1|meta|${k.libraryId}|`)]), sealed.subarray(14))).toThrow()
+  })
+
   it('accepts the base64url form, rejects other lengths, keys are non-extractable', async () => {
     const k = await deriveLibraryKeys(b64url(SECRET))
     expect(k.libraryId).toBe((await keysP).libraryId)
     expect(k.libraryId).toMatch(/^[a-z2-7]{26}$/)
-    expect(k.enc.get(0)!.extractable).toBe(false)
-    expect(k.name.extractable).toBe(false)
+    for (const key of [k.enc.get(0)!, k.blob.get(0)!, k.snap.get(0)!, k.nonce.get(0)!, k.name, k.v1]) expect(key.extractable).toBe(false)
     await expect(deriveLibraryKeys(new Uint8Array(31))).rejects.toThrow()
   })
 
@@ -134,7 +218,7 @@ describe('sealed envelope', () => {
     const k = await keysP
     const pt = utf8('{"hello":"world"}')
     const s = await seal(k, batch, pt)
-    expect(s[0]).toBe(1)
+    expect(s[0]).toBe(2)
     expect(s[1]).toBe(0)
     expect(s.length).toBe(2 + 12 + pt.length + 16)
     expect(await open(k, batch, s)).toEqual(pt)
@@ -143,26 +227,40 @@ describe('sealed envelope', () => {
     expect(sealAad(k, { kind: 'notice' })).toBe(`os1|notice|${k.roomId}`)
   })
 
-  it('fails with the wrong AAD (path), key, version or epoch, and on tampering', async () => {
+  it('fails with the wrong AAD (path) or key, and any flipped byte (version and epoch included) is corrupt', async () => {
     const k = await keysP
     const s = await seal(k, batch, utf8('x'))
-    const code = (p: Promise<unknown>) => p.then(() => 'ok', (e: FormatError) => e.code)
-    expect(await code(open(k, { ...batch, seq: 8 }, s))).toBe('corrupt')
-    expect(await code(open(k, { kind: 'batch', deviceId: 'fedcba9876543210', seq: 7 }, s))).toBe('corrupt')
-    expect(await code(open(k, { kind: 'device', deviceId: '0123456789abcdef' }, s))).toBe('corrupt')
-    expect(await code(open(await otherKeysP, batch, s))).toBe('corrupt')
-    for (let i = 2; i < s.length; i++) {
+    expect(await formatCode(open(k, { ...batch, seq: 8 }, s))).toBe('corrupt')
+    expect(await formatCode(open(k, { kind: 'batch', deviceId: 'fedcba9876543210', seq: 7 }, s))).toBe('corrupt')
+    expect(await formatCode(open(k, { kind: 'device', deviceId: '0123456789abcdef' }, s))).toBe('corrupt')
+    expect(await formatCode(open(await otherKeysP, batch, s))).toBe('corrupt')
+    for (let i = 0; i < s.length; i++) {
       const t = s.slice()
       t[i] ^= 1
-      expect(await code(open(k, batch, t))).toBe('corrupt')
+      expect(await formatCode(open(k, batch, t))).toBe('corrupt')
     }
-    const v2 = s.slice()
-    v2[0] = 2
-    expect(await code(open(k, batch, v2))).toBe('newerFormat')
-    const e1 = s.slice()
-    e1[1] = 1
-    expect(await code(open(k, batch, e1))).toBe('newerFormat')
-    expect(await code(open(k, batch, s.subarray(0, 20)))).toBe('corrupt')
+    // Unauthenticated version/epoch bytes never claim a format: not newerFormat, not oldFormat.
+    for (const [i, v] of [[0, 1], [0, 3], [0, 255], [1, 1], [1, 255]]) {
+      const t = s.slice()
+      t[i] = v
+      expect(await formatCode(open(k, batch, t))).toBe('corrupt')
+    }
+    expect(await formatCode(open(k, batch, s.subarray(0, 20)))).toBe('corrupt')
+  })
+
+  it('an authentic v1 envelope is oldFormat; a forged or foreign one is corrupt', async () => {
+    const k = await keysP
+    const v1 = await v1Writer(SECRET)
+    const old = await v1.seal(sealAad(k, batch), utf8('{"v":1}'))
+    expect(await formatCode(open(k, batch, old))).toBe('oldFormat')
+    // v1 still binds the path: elsewhere it doesn't authenticate.
+    expect(await formatCode(open(k, { ...batch, seq: 8 }, old))).toBe('corrupt')
+    const t = old.slice()
+    t[t.length - 1] ^= 1
+    expect(await formatCode(open(k, batch, t))).toBe('corrupt')
+    expect(await formatCode(open(await otherKeysP, batch, old))).toBe('corrupt')
+    const foreign = await (await v1Writer(new Uint8Array(32).fill(9))).seal(sealAad(k, batch), utf8('{}'))
+    expect(await formatCode(open(k, batch, foreign))).toBe('corrupt')
   })
 
   it('uses a fresh nonce every time', async () => {
@@ -213,7 +311,7 @@ describe('chunked container', () => {
         const ct = await encryptAll(k, data, ctx)
         expect(ct.length).toBe(ciphertextSize(size))
         const h = parseContainerHeader(ct)
-        expect([h.version, h.epoch, h.log2Chunk, h.flags, h.size]).toEqual([1, 0, 20, ctx.kind === 'blob' ? 1 : 0, size])
+        expect([h.version, h.epoch, h.log2Chunk, h.flags, h.size]).toEqual([2, 0, 20, ctx.kind === 'blob' ? 1 : 0, size])
         expect(new TextDecoder().decode(ct.subarray(0, 4))).toBe('OSC1')
         same(await decryptContainer(k, ctx, ct), data)
       }
@@ -272,7 +370,7 @@ describe('chunked container', () => {
     for (const pos of [0, 5, 8, 15, 16, 30, 16 + CHUNK + 27, ct.length - 1]) {
       const t = ct.slice()
       t[pos] ^= 0x10
-      expect(await fails(t)).toMatch(/corrupt|newerFormat/)
+      expect(await fails(t)).toBe('corrupt')
     }
     // swap chunks 0 and 1 (same length)
     const L = CHUNK + CHUNK_OVERHEAD
@@ -298,17 +396,44 @@ describe('chunked container', () => {
     expect(h.size).toBe(data.length)
   })
 
-  it('rejects unknown versions and epochs as newerFormat', async () => {
+  it('unknown version or epoch bytes are corrupt (unauthenticated), never newerFormat', async () => {
     const k = await keysP
     const ctx = { kind: 'snap', deviceId: '0123456789abcdef', n: 1 } as const
     const ct = await encryptAll(k, utf8('hi'), ctx)
-    const v = ct.slice()
-    v[4] = 2
-    expect(() => parseContainerHeader(v)).toThrow(expect.objectContaining({ code: 'newerFormat' }))
-    const e = ct.slice()
-    e[5] = 1
-    await expect(decryptContainer(k, ctx, e)).rejects.toMatchObject({ code: 'newerFormat' })
+    for (const [i, v] of [[4, 3], [4, 255], [4, 0], [4, 1], [5, 1], [5, 255]]) {
+      const t = ct.slice()
+      t[i] = v
+      expect(await formatCode(decryptContainer(k, ctx, t))).toBe('corrupt')
+    }
     expect(() => parseContainerHeader(utf8('NOPE0000000000000000'))).toThrow(expect.objectContaining({ code: 'corrupt' }))
+  })
+
+  it('authentic v1 containers (blob and snapshot) are oldFormat, in every read path', async () => {
+    const k = await keysP
+    const v1 = await v1Writer(SECRET)
+    const data = bytes(CHUNK + 300, 12)
+    const bctx = await blobContext(k, await sha256Hex(data))
+    const blob = await v1.container(`blob|${bctx.name}`, data, true)
+    expect(await formatCode(decryptContainer(k, bctx, blob))).toBe('oldFormat')
+    const h = parseContainerHeader(blob)
+    expect(h.version).toBe(1)
+    const [s, e] = chunkByteRange(h, 1)
+    expect(await formatCode(decryptChunk(k, h, bctx, 1, blob.subarray(s, e + 1)))).toBe('oldFormat')
+    const sctx = { kind: 'snap', deviceId: '0123456789abcdef', n: 2 } as const
+    const snap = await v1.container(`snap|${k.libraryId}|0123456789abcdef|${pad10(2)}`, utf8('{}'), false)
+    const rs = new ReadableStream<Uint8Array>({
+      start(c) {
+        c.enqueue(snap)
+        c.close()
+      },
+    })
+    expect(await formatCode(rs.pipeThrough(decryptStream(k, sctx)).getReader().read())).toBe('oldFormat')
+    // Moved, tampered or foreign v1 objects don't authenticate: corrupt.
+    expect(await formatCode(decryptContainer(k, { ...sctx, n: 3 }, snap))).toBe('corrupt')
+    const t = blob.slice()
+    t[40] ^= 1
+    expect(await formatCode(decryptContainer(k, bctx, t))).toBe('corrupt')
+    expect(await formatCode(decryptContainer(await otherKeysP, bctx, blob))).toBe('corrupt')
   })
 
   it('streams: any split of the input decrypts; truncation and trailing bytes fail', async () => {
@@ -363,5 +488,48 @@ describe('chunked container', () => {
     expect(Math.max(...reads.map(([s, e]) => e - s))).toBeLessThanOrEqual(CHUNK)
     expect(reads.length).toBe(chunkCount(data.length))
     same(await decryptContainer(k, ctx, concatBytes(parts)), data)
+  })
+
+  it('blob nonces derive from the content: a wrong claimed hash cannot cause nonce reuse', async () => {
+    // Regression: v1 derived nonces from the claimed SHA-256 only, so two different files filed under the
+    // same (wrong) hash shared nonces and c1 ^ c2 ^ p2 recovered p1.
+    const k = await keysP
+    const claimed = 'ab'.repeat(32)
+    const ctx = await blobContext(k, claimed)
+    const p1 = utf8('genuine score bytes ..............')
+    const p2 = utf8('attacker-known bytes, same length!')
+    expect(p1.length).toBe(p2.length)
+    const c1 = await encryptAll(k, p1, ctx)
+    const c2 = await encryptAll(k, p2, ctx)
+    expect(bytesEqual(c1.subarray(16, 28), c2.subarray(16, 28))).toBe(false)
+    const x = c1.subarray(28, 28 + p1.length).map((b, i) => b ^ c2[28 + i] ^ p2[i])
+    expect(bytesEqual(x, p1)).toBe(false)
+    // Identical content at the same position still gives identical bytes (resumable, idempotent uploads)…
+    same(await encryptAll(k, p1, ctx), c1)
+    // …and the same chunk content at another index, or in a file of another size, gets another nonce.
+    const twice = concatBytes([bytes(CHUNK, 3), bytes(CHUNK, 3)])
+    const ct2 = await encryptAll(k, twice, await blobContext(k, await sha256Hex(twice)))
+    expect(bytesEqual(ct2.subarray(16, 28), ct2.subarray(16 + CHUNK + 28, 16 + CHUNK + 40))).toBe(false)
+    const longer = concatBytes([p1, utf8('!')])
+    expect(bytesEqual((await encryptAll(k, longer, ctx)).subarray(16, 28), c1.subarray(16, 28))).toBe(false)
+  })
+
+  it('golden vector: v2 blob ciphertext is pinned', async () => {
+    const k = await keysP
+    const data = bytes(3000, 7)
+    const ct = await encryptAll(k, data, await blobContext(k, await sha256Hex(data)))
+    expect(await sha256Hex(ct)).toBe('ae9a0357acad8d41935e92ddaf728ac67354cdb9d32240b37307f3bd8f0caff1')
+  })
+})
+
+describe('sha256Blob', () => {
+  it('matches WebCrypto inline and streamed (above HASH_INLINE_MAX), for one Blob and for parts', async () => {
+    const small = bytes(100_000, 5)
+    expect(await sha256Blob(new Blob([small]))).toBe(await sha256Hex(small))
+    const big = bytes(HASH_INLINE_MAX + 12345, 6)
+    const want = await sha256Hex(big)
+    expect(await sha256Blob(new Blob([big]))).toBe(want)
+    const parts = [new Blob([big.subarray(0, CHUNK)]), new Blob([big.subarray(CHUNK, 5 * CHUNK + 7)]), new Blob([big.subarray(5 * CHUNK + 7)])]
+    expect(await sha256Blob(parts)).toBe(want)
   })
 })

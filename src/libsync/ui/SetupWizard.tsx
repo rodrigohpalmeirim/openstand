@@ -368,7 +368,9 @@ export function SetupWizard({ open, onClose }: { open: boolean; onClose: () => v
           <>
             <Note>
               <p>{p.hint}</p>
-              <p className="mt-1">Every device you pair uses these keys.</p>
+              <p className="mt-1">
+                Every device you pair uses these keys. Keys limited to this one bucket mean a lost device or a leaked pairing code can’t reach anything else in your account.
+              </p>
               {p.docs && (
                 <a className="mt-1 inline-flex items-center gap-1 text-accent hover:underline" href={p.docs.url} target="_blank" rel="noreferrer">
                   {p.docs.label} <ExternalLink className="size-3.5" />

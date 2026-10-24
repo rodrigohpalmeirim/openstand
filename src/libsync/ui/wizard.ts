@@ -14,8 +14,10 @@ export interface ProviderPreset {
   docs?: { label: string; url: string }
   /** Where the CORS rule goes. */
   corsWhere: string
-  /** Provider console, for "Your storage is full". */
+  /** Provider console, for "Your storage is full" and key rotation. */
   console?: string
+  /** How to replace the storage keys: create a new one, then revoke the old one. */
+  rotate: string
 }
 
 export const PROVIDERS: ProviderPreset[] = [
@@ -29,6 +31,7 @@ export const PROVIDERS: ProviderPreset[] = [
     docs: { label: 'R2 API tokens', url: 'https://developers.cloudflare.com/r2/api/tokens/' },
     corsWhere: 'In the Cloudflare dashboard open R2 → your bucket → Settings → CORS policy → Add CORS policy, and paste the rule.',
     console: 'https://dash.cloudflare.com/?to=/:account/r2/overview',
+    rotate: 'In the Cloudflare dashboard open R2 → Manage API tokens. Create a new token with “Object Read & Write” for this bucket only. After the reset, delete the old token there.',
   },
   {
     id: 'b2',
@@ -41,6 +44,7 @@ export const PROVIDERS: ProviderPreset[] = [
     docs: { label: 'B2 S3-compatible API', url: 'https://www.backblaze.com/docs/cloud-storage-s3-compatible-api' },
     corsWhere: 'Run this with the Backblaze command-line tool: b2 bucket update --cors-rules \'<rule>\' <bucket>. The web console can’t set the headers OpenStand needs.',
     console: 'https://secure.backblaze.com/b2_buckets.htm',
+    rotate: 'In the Backblaze console open Application Keys and add a new key restricted to this bucket. After the reset, delete the old key there.',
   },
   {
     id: 'aws',
@@ -53,6 +57,7 @@ export const PROVIDERS: ProviderPreset[] = [
     docs: { label: 'S3 CORS configuration', url: 'https://docs.aws.amazon.com/AmazonS3/latest/userguide/enabling-cors-examples.html' },
     corsWhere: 'In the AWS console open S3 → your bucket → Permissions → Cross-origin resource sharing (CORS) → Edit, and paste the rule.',
     console: 'https://console.aws.amazon.com/s3/',
+    rotate: 'In the AWS console open IAM → Users → the sync user → Security credentials and create a new access key. After the reset, deactivate and delete the old key there.',
   },
   {
     id: 'minio',
@@ -64,6 +69,7 @@ export const PROVIDERS: ProviderPreset[] = [
     hint: 'Use an access key whose policy only allows this bucket.',
     docs: { label: 'MinIO documentation', url: 'https://min.io/docs/minio/linux/index.html' },
     corsWhere: 'MinIO allows every site by default. If you set MINIO_API_CORS_ALLOW_ORIGIN, add this site to it. The rule below works with mc too.',
+    rotate: 'In the MinIO console open Access Keys (or use mc admin accesskey) and create a new key limited to this bucket. After the reset, delete the old key there.',
   },
   {
     id: 'other',
@@ -74,6 +80,7 @@ export const PROVIDERS: ProviderPreset[] = [
     pathStyle: true,
     hint: 'Any storage with an S3-compatible API. Use keys limited to this bucket if your provider allows it.',
     corsWhere: 'Paste the rule into your provider’s CORS settings for this bucket.',
+    rotate: 'In your provider’s console create a new access key, limited to this bucket if possible. After the reset, delete or disable the old key there.',
   },
 ]
 

@@ -7,6 +7,7 @@ import { ACTIONS, runAction, type ActionId } from '../viewer/actions'
 import { goToPageWhenReady, viewerApi } from '../viewer/api'
 import { player } from './audio/player'
 import { useTools, type PagePoint } from './store'
+import { openExternalUrl } from '../util/safeUrl'
 
 /**
  * After a jump, bring the target position into view when the page is taller than the screen
@@ -100,7 +101,8 @@ export async function runSmartButton(song: Song, b: SmartButton) {
       if (b.midi?.length) await sendCommands(b.midi, { bpm: song.metronome?.bpm })
       return
     case 'url':
-      if (b.url) window.open(/^[a-z][a-z0-9+.-]*:/i.test(b.url) ? b.url : `https://${b.url}`, '_blank', 'noopener')
+      // Synced/imported data: only http(s) may be opened (never javascript:, intent:, file:, app protocols).
+      if (b.url && !openExternalUrl(b.url)) toast('This button’s link isn’t a web address (http/https), so it wasn’t opened', 'error')
       return
   }
 }

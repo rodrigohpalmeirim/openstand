@@ -4,6 +4,7 @@ import { getBlob, putBlob, uid } from '../../db/db'
 import type { AudioTrack, Song } from '../../db/schema'
 import { stripExt } from '../../files/kinds'
 import { Button, cx, Empty, IconButton, Input, promptDialog, Toggle, toast } from '../../ui/primitives'
+import { safeExternalUrl } from '../../util/safeUrl'
 import type { SongPatch } from './FieldsTab'
 import { Section } from './Sheet'
 
@@ -86,7 +87,7 @@ export function AudioTab({ song, update }: { song: Song; update: (p: SongPatch) 
 
 function TrackCard({ track, onChange, onRemove }: { track: AudioTrack; onChange: (p: Partial<AudioTrack>) => void; onRemove: () => void }) {
   const audio = useRef<HTMLAudioElement>(null)
-  const [src, setSrc] = useState<string | undefined>(track.url)
+  const [src, setSrc] = useState<string | undefined>(() => safeExternalUrl(track.url) ?? undefined)
   const [playing, setPlaying] = useState(false)
   const [time, setTime] = useState(0)
   const [dur, setDur] = useState<number>(NaN)
@@ -94,7 +95,7 @@ function TrackCard({ track, onChange, onRemove }: { track: AudioTrack; onChange:
   const [error, setError] = useState(false)
 
   useEffect(() => {
-    if (!track.blobId) return setSrc(track.url)
+    if (!track.blobId) return setSrc(safeExternalUrl(track.url) ?? undefined)
     let url: string | undefined
     let alive = true
     getBlob(track.blobId).then(

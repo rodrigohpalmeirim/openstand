@@ -19,10 +19,12 @@ import { queueDownload, queueUpload, SHA256, songPriority } from './blobs'
 import type { LibraryKeys } from './crypto'
 import { isCollection, syncedKv, validateDelta } from './fields'
 import { canonicalJson } from './hash'
-import { maxHlc } from './hlc'
+import { hlcAhead, isDeviceId, maxHlc } from './hlc'
 import { captureRecord, deltaHlcMax, fromShadow, materialize, mergeDelta, project, toShadow, type MaterializeCtx, type ProjectCtx } from './merge'
 import {
   BATCH_MAX,
+  BLOB_CLAIM_MAX,
+  CLOCK_AHEAD_MAX,
   DIRTY_DEFER_MAX,
   type Batch,
   type Collection,
@@ -117,6 +119,9 @@ export async function projectCtx(db: OpenStandDB, song: Song | undefined): Promi
   }
 }
 
+/** A peer's claimed file size, or 0 (unknown) when it isn't a plausible one. */
+export const claimedSize = (n: unknown): number => (typeof n === 'number' && Number.isSafeInteger(n) && n >= 0 && n <= BLOB_CLAIM_MAX ? n : 0)
+
 /** Wire hashes of a delta's/state's `files` and `audio` elements. */
 function wireHashes(d: RecordDelta): { hash: string; size: number; mime: string }[] {
   const out: { hash: string; size: number; mime: string }[] = []
@@ -124,7 +129,7 @@ function wireHashes(d: RecordDelta): { hash: string; size: number; mime: string 
     for (const r of Object.values(d.l?.[field]?.e ?? {})) {
       const v = r[1] as { blob?: unknown; size?: unknown; mime?: unknown } | null
       if (v && typeof v.blob === 'string' && SHA256.test(v.blob))
-        out.push({ hash: v.blob, size: typeof v.size === 'number' ? v.size : 0, mime: typeof v.mime === 'string' ? v.mime : '' })
+        out.push({ hash: v.blob, size: claimedSize(v.size), mime: typeof v.mime === 'string' ? v.mime : '' })
     }
   }
   return out
@@ -310,28 +315,58 @@ export async function capture(core: Core, o: { pageSize?: number } = {}): Promis
 const sameJson = (a: unknown, b: unknown) => canonicalJson(a) === canonicalJson(b)
 
 /**
+ * How far (ms) the furthest timestamp among the well-formed `ops` is ahead of `now` (≤ 0: none is). The
+ * engine holds a batch back while this is between CLOCK_AHEAD_MAX and CLOCK_AHEAD_STALL.
+ */
+export function opsAhead(ops: unknown[], now: number): number {
+  let ahead = -Infinity
+  for (const op of ops) if (!validateDelta(op)) ahead = Math.max(ahead, hlcAhead(deltaHlcMax(op as RecordDelta), now))
+  return ahead
+}
+
+/**
  * Merge remote ops into shadow and rows. Must run inside a transaction over `syncTxTables` that was
- * passed to `markRemote`. Invalid ops are skipped and logged, never written.
+ * passed to `markRemote`. Invalid ops are skipped and logged, never written: malformed ones, ones stamped
+ * more than CLOCK_AHEAD_MAX ahead of local time (the clock refuses them), and ones whose id belongs to a
+ * record of another collection. Each accepted op advances the clock.
  */
 export async function applyOpsInTx(core: Core, ops: RecordDelta[], applied: Applied, o: { out?: OutboxWriter } = {}) {
   const { db } = core
   const out = o.out ?? new OutboxWriter(core)
+  const skip = (op: RecordDelta, why: string) => {
+    applied.skipped++
+    core.log?.(`skipped op ${String(op?.c).slice(0, 20)}/${String(op?.id).slice(0, 80)}: ${why}`)
+  }
   for (const op of ops) {
     const bad = validateDelta(op)
     if (bad) {
-      applied.skipped++
-      core.log?.(`skipped op ${(op as RecordDelta)?.c}/${(op as RecordDelta)?.id}: ${bad}`)
+      skip(op, bad)
       continue
     }
-    applied.ops++
+    const h = deltaHlcMax(op)
+    if (!core.clock.receive(h, core.now())) {
+      skip(op, `stamped ${Math.round(hlcAhead(h, core.now()) / 60_000)} min ahead (over ${CLOCK_AHEAD_MAX / 60_000})`)
+      continue
+    }
     if (!isCollection(op.c)) {
       // Unknown collection (newer app version): kept opaquely and included in our snapshots.
       const sh = await db.syncShadow.get(op.id)
+      if (sh && sh.c !== op.c) {
+        skip(op, `id belongs to a ${sh.c} record`)
+        continue
+      }
+      applied.ops++
       const x = mergeDelta(sh?.x as RecordDelta | undefined, op)
       await db.syncShadow.put({ id: op.id, c: op.c, f: {}, m: {}, l: {}, n: {}, x })
       continue
     }
     const c = op.c
+    const other = await db.syncShadow.get(op.id)
+    if (other && other.c !== c) {
+      skip(op, `id belongs to a ${other.c} record`)
+      continue
+    }
+    applied.ops++
     const dirty = await db.syncDirty.get(recKey(c, op.id))
     if (dirty) await captureOne(core, dirty, out)
     const table = db.table(TABLE_OF[c])
@@ -364,14 +399,18 @@ async function queueMissing(db: OpenStandDB, song: Song, state: RecordDelta) {
   }
 }
 
+const validSeq = (d: unknown, s: unknown): s is number => isDeviceId(d) && typeof s === 'number' && Number.isSafeInteger(s) && s >= 0
+
 /**
  * Apply one remote batch (or snapshot slice) in its own remote-marked transaction, advancing the
- * cursor and the clock with it.
+ * cursor and the clock with it. The clock moves only by the ops actually accepted (a batch's own
+ * `hlcMax` is never trusted). Cursors only move forward, and only for well-formed device ids and seqs:
+ * the caller has already clamped them to the observed heads.
  */
 export async function applyOps(
   core: Core,
   ops: RecordDelta[],
-  o: { cursor?: { device: string; seq: number }; cursors?: Record<string, number>; hlcMax?: string } = {},
+  o: { cursor?: { device: string; seq: number }; cursors?: Record<string, number> } = {},
 ): Promise<Applied> {
   const { db } = core
   const applied = newApplied()
@@ -379,13 +418,11 @@ export async function applyOps(
     markRemote(Dexie.currentTransaction)
     const out = await applyOpsInTx(core, ops, applied)
     await out.flush()
-    if (o.hlcMax) core.clock.receive(o.hlcMax, core.now())
-    else for (const op of ops) core.clock.receive(deltaHlcMax(op), core.now())
     await putState(db, 'clock', core.clock.last)
-    if (o.cursor || o.cursors) {
-      const cur = { ...((await getState(db, 'cursors')) ?? {}) }
-      if (o.cursor) cur[o.cursor.device] = Math.max(cur[o.cursor.device] ?? 0, o.cursor.seq)
-      for (const [d, s] of Object.entries(o.cursors ?? {})) cur[d] = Math.max(cur[d] ?? 0, s)
+    const moves: [string, number][] = [...(o.cursor ? [[o.cursor.device, o.cursor.seq] as [string, number]] : []), ...Object.entries(o.cursors ?? {})]
+    if (moves.length) {
+      const cur: Record<string, number> = { ...((await getState(db, 'cursors')) ?? {}) }
+      for (const [d, s] of moves) if (validSeq(d, s) && s > (cur[d] ?? 0)) cur[d] = s
       await putState(db, 'cursors', cur)
     }
   })

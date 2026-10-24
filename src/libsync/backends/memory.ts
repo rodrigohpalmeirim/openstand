@@ -9,6 +9,7 @@
 import { SINGLE_PUT_MAX } from '../model'
 import {
   BackendError,
+  GET_MAX,
   type BackendCaps,
   type BackendCheck,
   type BackendCheckStep,
@@ -24,6 +25,7 @@ import {
   partCount,
   partRange,
   resumableSession,
+  tooLarge,
   type MultipartSession,
   type PartLayout,
 } from './util'
@@ -206,13 +208,22 @@ export class MemoryBackend implements StorageBackend {
     })
   }
 
-  async get(key: string, o: { range?: [number, number]; signal?: AbortSignal } = {}): Promise<Uint8Array | null> {
+  async get(key: string, o: { range?: [number, number]; signal?: AbortSignal; maxBytes?: number } = {}): Promise<Uint8Array | null> {
     return this.run('get', key, o.signal, () => {
       const obj = this.store.objects.get(key)
       if (!obj) return null
-      if (!o.range || !this.caps.rangeGet) return obj.data.slice()
+      if (!o.range) {
+        const max = o.maxBytes ?? GET_MAX
+        if (obj.data.length > max) throw tooLarge(key, max)
+        return obj.data.slice()
+      }
       const [s, e] = o.range
       if (!(Number.isInteger(s) && Number.isInteger(e) && 0 <= s && s <= e)) throw new BackendError('unknown', 'bad range')
+      // Without range support, behave like a server that ignores Range: the whole object, if it fits.
+      if (!this.caps.rangeGet) {
+        if (obj.data.length > e - s + 1) throw tooLarge(key, e - s + 1, 'RangeIgnored', 200)
+        return obj.data.slice(s, e + 1)
+      }
       return obj.data.slice(s, e + 1)
     })
   }
