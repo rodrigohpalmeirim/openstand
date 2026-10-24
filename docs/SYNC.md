@@ -1,6 +1,6 @@
 # Library sync: implementation spec
 
-Status: approved design, not implemented. Read `AGENTS.md` first.
+Status: phase 1 (S3-compatible storage) implemented. Read `AGENTS.md` first.
 
 Library sync keeps a whole library (songs, files, annotations, setlists, layers) identical on all of a
 user's devices. There are no accounts: the user brings their own storage. Everything is end-to-end

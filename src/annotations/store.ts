@@ -6,7 +6,7 @@ import { useEffect, useSyncExternalStore } from 'react'
 import { create } from 'zustand'
 import { db } from '../db/db'
 import type { Annotation, Point } from '../db/schema'
-import { makeCommand, UndoStack, type PageChange } from './history'
+import { applyChanges, diffItems, makeCommand, UndoStack, type PageChange } from './history'
 
 export type { PageChange }
 
@@ -26,6 +26,15 @@ export function parseKey(key: string): PageMeta {
 
 interface Entry {
   items: Annotation[]
+  /**
+   * The items last read from or written to IndexedDB: what `items` was derived from. Flushing writes only
+   * the base→items changes onto the stored row, so items another device added meanwhile survive (§8.5).
+   */
+  base: Annotation[]
+  /** The last non-transient items (transient = a drag preview, `setItems(…, false)`). */
+  stable: Annotation[]
+  /** Stable arrays replaced while a drag preview showed; a gesture "cancel" restoring one gets the new one. */
+  superseded?: WeakSet<Annotation[]>
   loaded: boolean
   loading?: Promise<void>
   subs: Set<() => void>
@@ -41,7 +50,7 @@ const WRITE_DELAY = 700
 
 function entry(key: string): Entry {
   let e = pages.get(key)
-  if (!e) pages.set(key, (e = { items: EMPTY, loaded: false, subs: new Set(), version: 0 }))
+  if (!e) pages.set(key, (e = { items: EMPTY, base: EMPTY, stable: EMPTY, loaded: false, subs: new Set(), version: 0 }))
   return e
 }
 
@@ -49,22 +58,38 @@ function notify(key: string) {
   pages.get(key)?.subs.forEach((f) => f())
 }
 
-/** Load (or reload) a page from IndexedDB unless it has unsaved changes. */
+/** Replace the stable items. During a drag the preview stays on screen; the gesture's commit rebases. */
+function setStable(key: string, e: Entry, next: Annotation[]) {
+  if (next === e.stable || (!next.length && !e.stable.length)) return
+  if (e.items !== e.stable) {
+    ;(e.superseded ??= new WeakSet()).add(e.stable)
+    e.stable = next
+    return
+  }
+  e.items = e.stable = next
+  notify(key)
+}
+
+/**
+ * Take a freshly read row as the new base. Unsaved local changes (base→items) are re-applied on top, so a
+ * reload never drops them and never reverts what's stored.
+ */
+function rebaseOnto(key: string, e: Entry, row: Annotation[]) {
+  const local = dirty.has(key) || flushing.has(key)
+  const next = local ? applyChanges(row, diffItems(e.base, e.stable)) : row
+  e.base = row
+  setStable(key, e, next)
+}
+
+/** Load (or reload) a page from IndexedDB, keeping unsaved changes. */
 export function load(key: string, force = false): Promise<void> {
   const e = entry(key)
   if (e.loading) return e.loading
   if (e.loaded && !force) return Promise.resolve()
-  const v = e.version
   e.loading = db.annotations
     .get(key)
     .then((rec) => {
-      if (!dirty.has(key) && e.version === v) {
-        const items = rec?.items ?? EMPTY
-        if (items !== e.items && (items.length || e.items.length)) {
-          e.items = items
-          notify(key)
-        }
-      }
+      rebaseOnto(key, e, rec?.items ?? EMPTY)
       e.loaded = true
     })
     .catch((err) => console.warn('annotations load failed', err))
@@ -88,24 +113,69 @@ function scheduleWrite(key: string) {
   writeTimer = setTimeout(() => void flush(), WRITE_DELAY)
 }
 
-/** Write all pending pages now. */
-export async function flush(): Promise<void> {
+/** Keys whose flush transaction is running (their local changes aren't in the base yet). */
+const flushing = new Set<string>()
+let flushChain: Promise<void> = Promise.resolve()
+
+/**
+ * Write all pending pages now. Three-way: the base→items changes are applied to the row as stored, so
+ * items written meanwhile by another device (sync) or tab are kept. Flushes run one at a time.
+ */
+export function flush(): Promise<void> {
   clearTimeout(writeTimer)
+  const run = flushChain.then(flushNow)
+  flushChain = run.catch(() => {})
+  return run
+}
+
+async function flushNow(): Promise<void> {
   const keys = [...dirty]
   dirty.clear()
   if (!keys.length) return
+  keys.forEach((k) => flushing.add(k))
+  const sent = new Map<string, Annotation[]>()
+  const written = new Map<string, Annotation[]>()
   try {
     await db.transaction('rw', db.annotations, async () => {
       for (const key of keys) {
-        const items = getItems(key)
-        if (!items.length) await db.annotations.delete(key)
-        else await db.annotations.put({ id: key, ...parseKey(key), items })
+        const e = entry(key)
+        const items = e.stable
+        sent.set(key, items)
+        const row = await db.annotations.get(key)
+        const stored = row?.items ?? EMPTY
+        const merged = applyChanges(stored, diffItems(e.base, items))
+        if (!merged.length) {
+          if (row) await db.annotations.delete(key)
+        } else if (merged !== stored || !row) await db.annotations.put({ id: key, ...parseKey(key), items: merged })
+        written.set(key, merged.length ? merged : EMPTY)
       }
     })
   } catch (err) {
     console.error('annotations save failed', err)
     keys.forEach((k) => dirty.add(k))
+    return
+  } finally {
+    keys.forEach((k) => flushing.delete(k))
   }
+  for (const [key, merged] of written) {
+    const e = entry(key)
+    const items = sent.get(key)!
+    e.base = merged
+    // Keep edits made while the transaction ran (they're dirty again and flush next time).
+    setStable(key, e, e.stable === items ? merged : applyChanges(merged, diffItems(items, e.stable)))
+  }
+}
+
+/**
+ * Library sync applied remote changes to these pages (keys = page ids): re-read the loaded ones. Pages
+ * with unsaved local edits keep them on top of the new row (§8.5).
+ */
+export async function remoteChanged(keys: Iterable<string>): Promise<void> {
+  const loaded = [...keys].filter((k) => pages.get(k)?.loaded)
+  if (!loaded.length) return
+  await flushChain
+  const rows = await db.annotations.bulkGet(loaded)
+  loaded.forEach((key, i) => rebaseOnto(key, entry(key), rows[i]?.items ?? EMPTY))
 }
 
 if (typeof window !== 'undefined') {
@@ -119,11 +189,21 @@ if (typeof window !== 'undefined') {
  */
 export function setItems(key: string, items: Annotation[], persist = true) {
   const e = entry(key)
+  // A cancelled drag restores the items it started from; if those were replaced meanwhile, use the new ones.
+  if (!persist && e.superseded?.has(items)) items = e.stable
   e.items = items
   e.loaded = true
   e.version++
+  if (persist) e.stable = items
+  if (items === e.stable) e.superseded = undefined
   notify(key)
   if (persist) scheduleWrite(key)
+}
+
+/** `before → after` applied to the page's current (stable) items: rebased if they changed meanwhile. */
+function rebased(key: string, before: Annotation[], after: Annotation[]): Annotation[] {
+  const cur = entry(key).stable
+  return cur === before ? after : applyChanges(cur, diffItems(before, after))
 }
 
 /* ---------------------------------------------------------------- History */
@@ -138,11 +218,12 @@ export function commit(label: string, changes: PageChange[]) {
   const cmd = makeCommand(label, changes)
   if (!cmd) {
     // Still restore the final state in case a transient preview differs.
-    for (const ch of changes) if (getItems(ch.key) !== ch.after) setItems(ch.key, ch.after)
+    for (const ch of changes) if (getItems(ch.key) !== entry(ch.key).stable) setItems(ch.key, entry(ch.key).stable, false)
     return
   }
   history.push(cmd)
-  for (const ch of cmd.changes) setItems(ch.key, ch.after)
+  // Gestures compute `after` from the items when they started; items synced in meanwhile are kept.
+  for (const ch of cmd.changes) setItems(ch.key, rebased(ch.key, ch.before, ch.after))
   syncHistory()
 }
 
@@ -153,10 +234,16 @@ export function update(key: string, label: string, fn: (items: Annotation[]) => 
   if (after !== before) commit(label, [{ key, before, after }])
 }
 
+/** Apply a recorded change (or its inverse) as a diff on the current items. */
+function replay(ch: PageChange, inverse: boolean) {
+  const next = inverse ? rebased(ch.key, ch.after, ch.before) : rebased(ch.key, ch.before, ch.after)
+  if (next !== entry(ch.key).stable) setItems(ch.key, next)
+}
+
 export function undo(): string | undefined {
   const c = history.undo()
   if (!c) return
-  for (const ch of c.changes) setItems(ch.key, ch.before)
+  for (const ch of c.changes) replay(ch, true)
   clearSelection()
   syncHistory()
   return c.label
@@ -165,7 +252,7 @@ export function undo(): string | undefined {
 export function redo(): string | undefined {
   const c = history.redo()
   if (!c) return
-  for (const ch of c.changes) setItems(ch.key, ch.after)
+  for (const ch of c.changes) replay(ch, false)
   clearSelection()
   syncHistory()
   return c.label
@@ -208,7 +295,7 @@ export async function loadSong(songId: string): Promise<string[]> {
   for (const r of recs) {
     const e = entry(r.id)
     if (!dirty.has(r.id) && !e.loaded) {
-      e.items = r.items
+      e.items = e.base = e.stable = r.items
       e.loaded = true
     }
   }

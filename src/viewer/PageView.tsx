@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { getBlob } from '../db/db'
+import { MissingBlobError, getBlob } from '../db/db'
 import type { Crop, SongFile } from '../db/schema'
 import { loadPdf, renderPdfRegion } from '../files/pdf'
+import { BlobPending } from '../libsync/ui/BlobPending'
 import { MAX_PAGE_PIXELS, cachedBitmap, clearRenderCache, maxRenderWidth, renderPage } from './pageSource'
 
 export const PAPER: Record<string, string> = { white: '#ffffff', cream: '#fbf6e9', sepia: '#f3e7cf', gray: '#ececec', cool: '#eef3f9' }
@@ -63,6 +64,9 @@ export function PageView({
   const detailRef = useRef<Detail | null>(null)
   const [ready, setReady] = useState(false)
   const [epoch, setEpoch] = useState(0)
+  // Library sync: this file's data hasn't arrived yet. Keyed by blob, so another file starts fresh.
+  const [missingBlob, setMissingBlob] = useState<string | null>(null)
+  const missing = missingBlob === file.blobId
   const c = crop ?? { top: 0, bottom: 0, left: 0, right: 0 }
   const fullW = width / Math.max(0.05, 1 - c.left - c.right)
   const fullH = height / Math.max(0.05, 1 - c.top - c.bottom)
@@ -114,6 +118,8 @@ export function PageView({
         })
         .catch((e) => {
           if (cancelled) return
+          // Not a glitch: the data isn't here. BlobPending re-renders (epoch) once it arrives.
+          if (e instanceof MissingBlobError) return setMissingBlob(e.blobId)
           if (attempt === 0) retry = setTimeout(() => render(1), 400)
           else console.warn('render failed', e)
         })
@@ -139,7 +145,7 @@ export function PageView({
 
   // Detail layer: a sharp render of the visible region when the whole-page bitmap is capped below device resolution.
   useEffect(() => {
-    if (file.kind !== 'pdf' || width < 2) return
+    if (file.kind !== 'pdf' || width < 2 || missing) return
     let timer: ReturnType<typeof setTimeout> | undefined
     let pending: { ac: AbortController; d: Omit<Detail, 'canvas'> } | null = null
     const abort = () => {
@@ -222,7 +228,7 @@ export function PageView({
           (e) => {
             if (ac.signal.aborted) return
             pending = null
-            console.warn('detail render failed', e)
+            if (!(e instanceof MissingBlobError)) console.warn('detail render failed', e)
           },
         )
     }
@@ -241,37 +247,52 @@ export function PageView({
       document.removeEventListener('scroll', schedule, opts)
       window.removeEventListener('resize', schedule)
     }
-  }, [file, page, rotation, fullW, fullH, width, epoch])
+  }, [file, page, rotation, fullW, fullH, width, epoch, missing])
 
   return (
-    <div
-      ref={boxRef}
-      className="relative overflow-hidden"
-      style={{
-        width,
-        height,
-        background: PAPER[paper] ?? paper,
-        filter: night ? 'invert(1) hue-rotate(180deg)' : undefined,
-        boxShadow: '0 1px 3px rgb(0 0 0 / 0.18)',
-      }}
-    >
+    <>
+      {missing && (
+        <BlobPending
+          blobId={file.blobId}
+          width={width}
+          height={height}
+          onReady={() => {
+            setMissingBlob(null)
+            setEpoch((e) => e + 1)
+          }}
+        />
+      )}
       <div
-        ref={pageRef}
-        className="absolute"
-        style={{ width: fullW, height: fullH, left: -c.left * fullW, top: -c.top * fullH }}
+        ref={boxRef}
+        className="relative overflow-hidden"
+        style={{
+          // Kept mounted (hidden) while the file downloads, so the canvas and its listeners survive.
+          display: missing ? 'none' : undefined,
+          width,
+          height,
+          background: PAPER[paper] ?? paper,
+          filter: night ? 'invert(1) hue-rotate(180deg)' : undefined,
+          boxShadow: '0 1px 3px rgb(0 0 0 / 0.18)',
+        }}
       >
-        {/* Blended as one group so the opaque detail canvas covers the page bitmap instead of multiplying with it. */}
         <div
-          className="relative size-full transition-opacity duration-150"
-          style={{ opacity: ready ? 1 : 0, mixBlendMode: paper === 'white' ? undefined : 'multiply' }}
+          ref={pageRef}
+          className="absolute"
+          style={{ width: fullW, height: fullH, left: -c.left * fullW, top: -c.top * fullH }}
         >
-          <canvas ref={canvasRef} className="block size-full" />
-          <div ref={detailHostRef} className="pointer-events-none absolute inset-0" />
+          {/* Blended as one group so the opaque detail canvas covers the page bitmap instead of multiplying with it. */}
+          <div
+            className="relative size-full transition-opacity duration-150"
+            style={{ opacity: ready ? 1 : 0, mixBlendMode: paper === 'white' ? undefined : 'multiply' }}
+          >
+            <canvas ref={canvasRef} className="block size-full" />
+            <div ref={detailHostRef} className="pointer-events-none absolute inset-0" />
+          </div>
+          {/* The overlay is inverted along with the page in night mode, so dark ink stays readable. */}
+          {overlay && <div className="absolute inset-0">{overlay}</div>}
         </div>
-        {/* The overlay is inverted along with the page in night mode, so dark ink stays readable. */}
-        {overlay && <div className="absolute inset-0">{overlay}</div>}
+        {!ready && <div className="absolute inset-0 animate-pulse bg-black/[0.03]" />}
       </div>
-      {!ready && <div className="absolute inset-0 animate-pulse bg-black/[0.03]" />}
-    </div>
+    </>
   )
 }

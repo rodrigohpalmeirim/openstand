@@ -13,6 +13,7 @@ import {
   ArchiveRestore,
   RadioTower,
   Cable,
+  Cloud,
   Monitor,
   Sun,
   Moon,
@@ -21,6 +22,7 @@ import {
 import type { ReactNode } from 'react'
 import { BackupSettings } from '../backup/BackupSettings'
 import { FaceGestureList, FaceGestureTest, FacePrivacyNote } from '../faces/FaceSettings'
+import { LibrarySyncSettings } from '../libsync/ui/LibrarySyncSettings'
 import { MidiSettings } from '../midi/MidiSettings'
 import { DEFAULT_SETTINGS, useSettings, type Settings } from '../state/settings'
 import { SyncSettings } from '../sync/SyncSettings'
@@ -491,6 +493,14 @@ const midi: SectionDef = {
   groups: [{ items: [customItem('midi', 'MIDI devices and messages', wrap(() => <MidiSettings />), 'midi devices channel program change controller pedal')] }],
 }
 
+const libsync: SectionDef = {
+  id: 'libsync',
+  title: 'Library sync',
+  icon: Cloud,
+  summary: 'Your library on all your devices, end-to-end encrypted',
+  groups: [{ items: [customItem('libsync', 'Library sync', wrap(() => <LibrarySyncSettings />), 'sync cloud s3 r2 backblaze dropbox devices pair qr')] }],
+}
+
 const sync: SectionDef = {
   id: 'sync',
   title: 'Devices & sync',
@@ -581,6 +591,7 @@ export const SECTIONS: SectionDef[] = [
   metronome,
   autoscroll,
   midi,
+  libsync,
   sync,
   backup,
   faces,

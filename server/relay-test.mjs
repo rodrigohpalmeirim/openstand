@@ -11,7 +11,7 @@ let relay
 let base
 
 before(async () => {
-  relay = createRelay({ maxMessage: 200_000, maxRoom: 3, heartbeatMs: 200, log: null })
+  relay = createRelay({ maxMessage: 200_000, maxRoom: 3, lib: { maxRoom: 4 }, heartbeatMs: 200, log: null })
   await new Promise((r) => relay.server.listen(0, '127.0.0.1', r))
   base = `ws://127.0.0.1:${relay.server.address().port}`
 })
@@ -20,9 +20,9 @@ after(() => {
   relay.server.close()
 })
 
-function open(room) {
+function open(room, path = '/') {
   return new Promise((resolve, reject) => {
-    const ws = new WebSocket(`${base}/?room=${encodeURIComponent(room)}`)
+    const ws = new WebSocket(room === null ? `${base}${path}` : `${base}${path}?room=${encodeURIComponent(room)}`)
     ws.inbox = []
     ws.waiters = []
     ws.onmessage = (e) => {
@@ -124,4 +124,107 @@ test('answers plain HTTP with a health summary', async () => {
   const body = await res.json()
   assert.equal(body.service, 'openstand-relay')
   assert.equal(typeof body.clients, 'number')
+})
+
+// --- library-sync rooms (docs/SYNC.md §9) ------------------------------------------------------
+
+const LIB_ID = 'abcdefghijklmnopqrstuvwxyz'
+const openLib = (id = LIB_ID, prefix = '/lib/') => open(null, `${prefix}${id}`)
+
+/** Status line of a raw upgrade request (the WebSocket client hides rejected handshakes). */
+async function upgradeStatus(path) {
+  const sock = connect(relay.server.address().port, '127.0.0.1')
+  await new Promise((r) => sock.once('connect', r))
+  sock.write(
+    `GET ${path} HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n` +
+      'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n',
+  )
+  const head = await new Promise((r) => sock.once('data', (d) => r(d.toString())))
+  sock.destroy()
+  return Number(head.split(' ')[1])
+}
+
+test('lib rooms: /lib/<id> and /relay/lib/<id> are the same room; a ?room param is ignored', async () => {
+  const a = await openLib()
+  const b = await open('other', `/relay/lib/${LIB_ID}`)
+  a.send('{"v":1,"n":"x"}')
+  assert.equal(await next(b), '{"v":1,"n":"x"}')
+  assert.ok(relay.rooms.has(`lib:${LIB_ID}`))
+  assert.ok(!relay.rooms.has('other'))
+  a.close()
+  b.close()
+})
+
+test('lib rooms: a 1 KiB message passes, 1 KiB + 1 closes the socket with 1009', async () => {
+  const a = await openLib()
+  const b = await openLib()
+  a.send('x'.repeat(1024))
+  assert.equal((await next(b)).length, 1024)
+  const closed = new Promise((r) => (a.onclose = (e) => r(e.code)))
+  a.send('x'.repeat(1025))
+  assert.equal(await closed, 1009)
+  b.close()
+})
+
+test('lib rooms: at most 5 messages per second per client are forwarded', async () => {
+  const a = await openLib()
+  const b = await openLib()
+  for (let i = 0; i < 12; i++) a.send(`m${i}`)
+  await sleep(300)
+  assert.deepEqual(b.inbox.splice(0), ['m0', 'm1', 'm2', 'm3', 'm4'])
+  await sleep(900) // next window
+  a.send('later')
+  assert.equal(await next(b), 'later')
+  a.close()
+  b.close()
+})
+
+test('lib rooms: their own room-size limit', async () => {
+  const id = 'room4full2222222222222222zz'.slice(0, 26)
+  const xs = [await openLib(id), await openLib(id), await openLib(id), await openLib(id)]
+  await assert.rejects(openLib(id))
+  xs.forEach((x) => x.close())
+})
+
+test('perf rooms named lib:* and malformed lib paths are rejected with 400', async () => {
+  assert.equal(await upgradeStatus('/?room=lib:x'), 400)
+  assert.equal(await upgradeStatus(`/?room=lib:${LIB_ID}`), 400)
+  assert.equal(await upgradeStatus('/lib:abc'), 400)
+  assert.equal(await upgradeStatus('/lib/TOO-SHORT'), 400)
+  assert.equal(await upgradeStatus('/relay/lib/'), 400)
+  assert.equal(await upgradeStatus(`/lib/${LIB_ID}`), 101)
+  assert.equal(await upgradeStatus('/?room=library'), 101)
+})
+
+test('perf and lib rooms with the same id are isolated', async () => {
+  const perf = await open(LIB_ID)
+  const perf2 = await open(LIB_ID)
+  const lib = await openLib()
+  const lib2 = await openLib()
+  perf.send('perf-msg')
+  lib.send('lib-msg')
+  assert.equal(await next(perf2), 'perf-msg')
+  assert.equal(await next(lib2), 'lib-msg')
+  await sleep(100)
+  assert.equal(perf2.inbox.length + lib2.inbox.length + perf.inbox.length + lib.inbox.length, 0)
+  for (const ws of [perf, perf2, lib, lib2]) ws.close()
+})
+
+test('{"ping":1} gets {"pong":1} back and is not forwarded (both room kinds)', async () => {
+  for (const [a, b] of [
+    [await openLib(), await openLib()],
+    [await open('pp'), await open('pp')],
+  ]) {
+    a.send('{"ping":1}')
+    assert.equal(await next(a), '{"pong":1}')
+    await sleep(50)
+    assert.equal(b.inbox.length, 0)
+    a.close()
+    b.close()
+  }
+})
+
+test('health JSON advertises lib support', async () => {
+  const res = await fetch(`http://127.0.0.1:${relay.server.address().port}/`)
+  assert.deepEqual((await res.json()).features, ['lib'])
 })

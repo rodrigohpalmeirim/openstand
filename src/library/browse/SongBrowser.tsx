@@ -20,6 +20,7 @@ import {
 } from 'lucide-react'
 import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type { Song } from '../../db/schema'
+import { SyncIndicator } from '../../libsync/ui/SyncIndicator'
 import { useNav } from '../../state/nav'
 import { useSettings } from '../../state/settings'
 import { Button, cx, IconButton, Input, Menu, promptDialog, toast, useMenu, type MenuItem } from '../../ui/primitives'
@@ -345,6 +346,8 @@ export function SongBrowser(p: SongBrowserProps) {
                 <ChevronLeft className="size-5" />
               </IconButton>
             )}
+            {/* Phones have no sidebar to hold the library-sync indicator. */}
+            <SyncIndicator className="md:hidden" />
             <div className="min-w-0 flex-1 px-1">
               <h1 className="truncate text-lg font-semibold leading-tight">{p.title}</h1>
               <div className="truncate text-xs text-muted">

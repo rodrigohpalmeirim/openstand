@@ -1,5 +1,5 @@
 // @vitest-environment node
-// Step-0 contract guard (docs/SYNC.md §4, §6, §7, §12.1): compile-time shape checks plus the stub defaults.
+// Step-0 contract guard (docs/SYNC.md §4, §6, §7, §12.1): compile-time shape checks plus the off-state defaults.
 import { describe, expect, expectTypeOf, it } from 'vitest'
 import * as api from './api'
 import { BackendError, type BackendConfig, type StorageBackend } from './backends/types'
@@ -14,12 +14,14 @@ describe('libsync contracts', () => {
     expect(s.devices).toEqual([])
   })
 
-  it('stub actions reject, passive calls are safe', async () => {
-    await expect(api.syncNow()).rejects.toThrow(/not implemented/)
-    await expect(api.parsePairingCode('OSJ1.x')).rejects.toThrow(/not implemented/)
-    expect(api.useBlobState('b')).toEqual({ state: 'local' })
+  it('actions reject with typed errors, passive calls are safe while sync is off', async () => {
+    await expect(api.parsePairingCode('not a code')).rejects.toBeInstanceOf(PairingError)
     expect(() => api.prioritizeSongs(['s'])).not.toThrow()
-    const off = api.onBlobReady('b', () => {})
+    let fired = 0
+    const off = api.onBlobReady('b', () => fired++)
+    api.emitBlobReady('b')
+    api.emitBlobReady('b') // once only
+    expect(fired).toBe(1)
     expect(() => off()).not.toThrow()
   })
 

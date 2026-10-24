@@ -1,6 +1,7 @@
 import { ArchiveRestore, FolderOpen, HardDriveDownload, Loader2, PackageOpen, ShieldAlert, ShieldCheck } from 'lucide-react'
 import { useRef, useState } from 'react'
 import { terms, useTerms } from '../library/browse/terms'
+import { useLibSync } from '../libsync/api'
 import { settings, useSettings } from '../state/settings'
 import { Button, Dialog, Field, Segmented, Select, Toggle, confirmDialog, cx, toast } from '../ui/primitives'
 import type { OpenedArchive, Progress, RestoreResult } from './archive'
@@ -74,12 +75,15 @@ function RestoreDialog({ file, archive, onClose }: { file: File; archive: Opened
   const { busy, progress } = useBackupJob()
   const m = archive.manifest
   const hasSettings = !!archive.library.settings
+  const synced = useLibSync((st) => st.configured)
 
   const run = async () => {
     if (mode === 'replace') {
       const ok = await confirmDialog({
         title: 'Replace your library?',
-        message: 'All songs, setlists and annotations on this device are replaced by the backup. This cannot be undone.',
+        message: synced
+          ? 'This replaces the library on all your synced devices: all songs, setlists and annotations are replaced by the backup. This cannot be undone.'
+          : 'All songs, setlists and annotations on this device are replaced by the backup. This cannot be undone.',
         confirmLabel: 'Replace library',
         danger: true,
       })
@@ -150,7 +154,9 @@ function RestoreDialog({ file, archive, onClose }: { file: File; archive: Opened
             <p className="-mt-2 text-sm text-muted">
               {mode === 'merge'
                 ? 'Adds songs and setlists from the backup. Songs already on this device are matched by identity.'
-                : 'Deletes this device’s library and restores the backup exactly.'}
+                : synced
+                  ? 'Deletes the library on this device and on all your synced devices, and restores the backup exactly.'
+                  : 'Deletes this device’s library and restores the backup exactly.'}
             </p>
             {mode === 'merge' && (
               <Field label="When a song exists on both">

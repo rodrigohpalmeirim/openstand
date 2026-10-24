@@ -87,11 +87,11 @@ workspace). This table tracks where OpenStand stands. ✅ = implemented, ◐ = p
 | --- | --- | --- |
 | Song MIDI commands on load (PC, bank/patch select, CC, notes, SysEx, song select, clock, pauses, batches) | ✅ | Web MIDI (not on iOS Safari) |
 | MIDI learn, MIDI → actions, song recall from MIDI | ✅ | |
-| Library sync between devices | — | Planned. For now, move songs with backups or `.ospkg` packages |
+| Library sync between devices | ✅ | Whole library (songs, files, annotations, layers, setlists, play history) through your own S3-compatible storage (R2, B2, S3, MinIO), end-to-end encrypted, full offline copy on every device, merges offline edits per field. Pair by QR or text code; instant updates through the relay, else polling. Dropbox / Google Drive / OneDrive planned |
 | Leader/follower page sync between devices | ✅ | BroadcastChannel, or a WebSocket relay (`server/relay.mjs`, or built into the Cloudflare deployment) |
 | Full backup / restore (replace or merge) | ✅ | `.osbackup` |
 | Share songs/setlists as packages | ✅ | `.ospkg` |
 | Export files (with annotations, crop, merged PDF), title lists (.txt/.pdf), print | ✅ | |
 | Settings export/import | ✅ | |
-| PC companion | — | OpenStand runs in any desktop browser; library sync (above) will cover the rest |
+| PC companion | — | OpenStand runs in any desktop browser; library sync (above) covers the rest |
 | Genos/PSR-SX registration link | ◐ | No dedicated button; record the keyboard's registration message with MIDI learn |

@@ -3,7 +3,7 @@ import { db } from '../db/db'
 import type { Annotation, StrokeAnnotation } from '../db/schema'
 import { cycleLayer, deleteLayer, getLayers, addLayer } from './layers'
 import { annotationsToSVG } from './render'
-import { commit, flush, getItems, load, pageKey, parseKey, redo, resetHistory, setItems, undo, update, useAnnotHistory } from './store'
+import { commit, flush, getItems, load, pageKey, parseKey, redo, remoteChanged, resetHistory, setItems, undo, update, useAnnotHistory } from './store'
 
 const mk = (id: string, layer = 'default', type: 'pen' | 'highlighter' = 'pen'): StrokeAnnotation => ({
   id,
@@ -130,5 +130,94 @@ describe('export', () => {
     expect(all).toContain('transform="translate(')
     const visible = annotationsToSVG(items, 600, 800, { layers: [{ id: 'default', name: 'D', visible: true }, { id: 'hidden', name: 'H', visible: false }] })
     expect(visible).not.toContain('a &lt;b&gt;')
+  })
+})
+
+describe('remote changes (library sync, §8.5)', () => {
+  const ids = (k: string) => getItems(k).map((i) => i.id)
+  const stored = async (k: string) => (await db.annotations.get(k))?.items.map((i) => i.id) ?? []
+  const remotePut = (k: string, items: Annotation[]) => db.annotations.put({ id: k, ...parseKey(k), items })
+
+  it('flush is three-way: strokes written meanwhile by another device survive', async () => {
+    resetHistory()
+    const k = pageKey('r1', 'f', 0)
+    await remotePut(k, [mk('a')])
+    await load(k)
+    update(k, 'b', (items) => [...items, mk('b')])
+    await remotePut(k, [mk('a'), mk('r')]) // sync applied a remote stroke before our flush
+    await flush()
+    expect(await stored(k)).toEqual(['a', 'r', 'b'])
+    expect(ids(k)).toEqual(['a', 'r', 'b'])
+  })
+
+  it('a local erase only removes the erased item', async () => {
+    resetHistory()
+    const k = pageKey('r2', 'f', 0)
+    await remotePut(k, [mk('a'), mk('b')])
+    await load(k)
+    update(k, 'erase', (items) => items.filter((i) => i.id !== 'a'))
+    await remotePut(k, [mk('a'), mk('b'), mk('r')])
+    await flush()
+    expect(await stored(k)).toEqual(['b', 'r'])
+  })
+
+  it('remoteChanged reloads clean pages and rebases dirty ones', async () => {
+    resetHistory()
+    const clean = pageKey('r3', 'f', 0)
+    const dirtyKey = pageKey('r3', 'f', 1)
+    await remotePut(clean, [mk('a')])
+    await remotePut(dirtyKey, [mk('x')])
+    await load(clean)
+    await load(dirtyKey)
+    update(dirtyKey, 'y', (items) => [...items, mk('y')])
+    await remotePut(clean, [mk('a'), mk('r')])
+    await remotePut(dirtyKey, [mk('x'), mk('s')])
+    await remoteChanged([clean, dirtyKey, pageKey('not', 'loaded', 0)])
+    expect(ids(clean)).toEqual(['a', 'r'])
+    expect(ids(dirtyKey)).toEqual(['x', 's', 'y'])
+    await flush()
+    expect(await stored(dirtyKey)).toEqual(['x', 's', 'y'])
+  })
+
+  it('undo applies the inverse diff and keeps remote items', async () => {
+    resetHistory()
+    const k = pageKey('r4', 'f', 0)
+    await load(k)
+    update(k, 'b', (items) => [...items, mk('b')])
+    await flush()
+    await remotePut(k, [mk('b'), mk('r')])
+    await remoteChanged([k])
+    expect(undo()).toBe('b')
+    expect(ids(k)).toEqual(['r'])
+    redo()
+    expect(ids(k)).toEqual(['r', 'b'])
+    await flush()
+    expect(await stored(k)).toEqual(['r', 'b'])
+  })
+
+  it('a drag that overlaps a remote change keeps the remote item', async () => {
+    resetHistory()
+    const k = pageKey('r5', 'f', 0)
+    await remotePut(k, [mk('a')])
+    await load(k)
+    const before = getItems(k)
+    const moved = { ...before[0], color: '#ff0000' }
+    setItems(k, [moved], false) // drag preview
+    await remotePut(k, [mk('a'), mk('r')])
+    await remoteChanged([k])
+    expect(ids(k)).toEqual(['a']) // the preview stays while dragging
+    commit('Move', [{ key: k, before, after: [moved] }])
+    expect(ids(k)).toEqual(['a', 'r'])
+    await flush()
+    expect(await stored(k)).toEqual(['a', 'r'])
+    expect((await db.annotations.get(k))?.items[0].color).toBe('#ff0000')
+
+    // A cancelled drag restores the current items, not the stale snapshot.
+    const start = getItems(k)
+    setItems(k, [], false)
+    await remotePut(k, [mk('a'), mk('r'), mk('s')])
+    await remoteChanged([k])
+    setItems(k, start, false)
+    expect(ids(k)).toEqual(['a', 'r', 's'])
   })
 })

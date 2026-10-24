@@ -1,0 +1,66 @@
+import { describe, expect, it } from 'vitest'
+import { offStatus, type LibSyncErrorCode, type LibSyncStatus } from '../api'
+import { downloadLine, errorText, fmtBytes, indicatorState, phaseLine, timeAgo, uploadLine } from './format'
+
+const NOW = 1_800_000_000_000
+const on = (p: Partial<LibSyncStatus> = {}): LibSyncStatus => ({ ...offStatus(), configured: true, phase: 'idle', ...p })
+const tp = (files: number, doneFiles: number, bytes = 0, doneBytes = 0) => ({ files, doneFiles, bytes, doneBytes })
+
+describe('§12.3 wording', () => {
+  it('status lines', () => {
+    expect(phaseLine(on({ lastSyncAt: NOW - 2 * 60_000 }), NOW)).toBe('Up to date · 2 min ago')
+    expect(phaseLine(on())).toBe('Up to date')
+    expect(phaseLine(on({ phase: 'offline' }))).toBe('Offline. Changes will sync when you’re back online.')
+    expect(uploadLine(tp(3, 0, 12e6))).toBe('Uploading 3 files (12 MB)')
+    expect(downloadLine(tp(125, 5))).toBe('Downloading 120 files. You can keep using OpenStand.')
+  })
+
+  it('fixed message and action per error code', () => {
+    const t = (code: LibSyncErrorCode, message: string = code, detail?: string) => errorText({ code, message, detail })
+    expect(t('auth')).toMatchObject({ message: 'Your storage rejected the access key. It may have expired or been revoked.', actionLabel: 'Update storage keys' })
+    expect(t('cors')).toMatchObject({ message: 'Your bucket doesn’t allow this site yet.', actionLabel: 'Show CORS rule' })
+    expect(t('quota')).toMatchObject({ message: 'Your storage is full.', actionLabel: 'Open provider' })
+    expect(t('localQuota', 'localQuota', '1200000000')).toMatchObject({ message: 'This device is out of space (needs 1.2 GB more).', actionLabel: 'Storage settings' })
+    expect(t('clock')).toMatchObject({ message: 'This device’s clock is wrong, so the storage refused the request.', actionLabel: 'Retry' })
+    expect(t('clockAhead', '“iPad” has its clock set 3 h ahead. Edits from it may win over newer ones.')).toMatchObject({
+      message: '“iPad” has its clock set 3 h ahead. Edits from it may win over newer ones.',
+      warning: true,
+    })
+    expect(t('clockAhead').action).toBeUndefined()
+    expect(t('wrongSecret')).toMatchObject({ message: 'This code doesn’t match the data in that storage.', actionLabel: 'Join again' })
+    expect(t('libraryGone')).toMatchObject({ message: 'The synced library was deleted from storage.', actionLabel: 'Stop syncing' })
+    expect(t('newerFormat')).toMatchObject({ message: 'Another device uses a newer OpenStand. Update this one to keep syncing.', actionLabel: 'Reload app' })
+    expect(t('rejoin')).toMatchObject({ message: 'This device needs to rejoin the synced library.', actionLabel: 'Rejoin' })
+    expect(t('corrupt')).toMatchObject({ message: 'This device needs to rejoin the synced library.', actionLabel: 'Rejoin' })
+  })
+
+  it('never says "conflict"', () => {
+    const codes: LibSyncErrorCode[] = ['auth', 'cors', 'quota', 'localQuota', 'network', 'clock', 'clockAhead', 'wrongSecret', 'libraryGone', 'newerFormat', 'corrupt', 'rejoin', 'server', 'unknown']
+    for (const code of codes) expect(errorText({ code, message: code }).message.toLowerCase()).not.toContain('conflict')
+  })
+
+  it('formats sizes and ages', () => {
+    expect(fmtBytes(512)).toBe('512 B')
+    expect(fmtBytes(3.2e9)).toBe('3.2 GB')
+    expect(timeAgo(NOW - 10_000, NOW)).toBe('just now')
+    expect(timeAgo(NOW - 3 * 3600_000, NOW)).toBe('3 h ago')
+    expect(timeAgo(NOW - 26 * 3600_000, NOW)).toBe('yesterday')
+  })
+})
+
+describe('indicatorState', () => {
+  it('up to date, offline, paused', () => {
+    expect(indicatorState(on()).icon).toBe('cloud')
+    expect(indicatorState(on({ phase: 'offline' })).icon).toBe('off')
+    expect(indicatorState(on({ phase: 'paused' })).icon).toBe('off')
+  })
+  it('transfers show a progress ring, downloads first', () => {
+    expect(indicatorState(on({ phase: 'syncing', upload: tp(4, 1, 100, 25) }))).toMatchObject({ icon: 'upload', progress: 0.25 })
+    expect(indicatorState(on({ phase: 'syncing', upload: tp(4, 1), download: tp(10, 5, 200, 50) }))).toMatchObject({ icon: 'download', progress: 0.25 })
+    expect(indicatorState(on({ phase: 'starting', initial: { kind: 'join', step: 's', done: 1, total: 4 } }))).toMatchObject({ icon: 'download', progress: 0.25 })
+  })
+  it('errors get an alert with a dot; warnings do not', () => {
+    expect(indicatorState(on({ phase: 'error', error: { code: 'auth', message: 'x', at: 0 } }))).toMatchObject({ icon: 'alert', dot: true })
+    expect(indicatorState(on({ error: { code: 'clockAhead', message: 'x', at: 0 } })).icon).toBe('cloud')
+  })
+})

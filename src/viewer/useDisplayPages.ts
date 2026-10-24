@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { looksLikeChordPro, parseChordPro, textToChordPro, type ChordProSong } from '../chordpro/parse'
 import { effectiveStyle, songBlocks, type RenderOpts, type TextStyle } from '../chordpro/render'
 import { ABC_PAGE_PADDING, useAbcjsReady } from '../abc/AbcView'
 import { layoutAbc, layoutWidthFor, paginateAbcLines, withPageHint } from '../abc/engine'
 import { instrumentLoaded, loadInstrument } from '../music/diagrams'
-import { getBlob } from '../db/db'
+import { db, getBlob, MissingBlobError } from '../db/db'
+import { onBlobReady } from '../libsync/api'
 import type { Song, SongFile } from '../db/schema'
 import { displayAspect, pageSettingsKey, pageSize, resolvePageRefs } from './pageSource'
 import { paginate, type TextPage } from './textPagination'
@@ -46,6 +47,13 @@ export type DisplayPage =
       page?: number
       count?: number
     }
+  | {
+      /** Library sync: a text/ABC file whose data hasn't arrived on this device yet. */
+      type: 'pending'
+      key: string
+      file: SongFile
+      aspect: number
+    }
 
 const DEFAULT_ASPECT = 612 / 792
 
@@ -56,6 +64,8 @@ export function fileText(file: SongFile): Promise<string> {
   if (!p) {
     p = getBlob(file.blobId).then((b) => b.text())
     textCache.set(file.blobId, p)
+    // Don't cache a failure: with library sync the file may still be downloading.
+    p.catch(() => textCache.delete(file.blobId))
   }
   return p
 }
@@ -81,20 +91,40 @@ export function useDisplayPages(
   const [loading, setLoading] = useState(true)
   // Which song the sizes/texts belong to: they are stale for a moment after switching songs.
   const [loadedId, setLoadedId] = useState<string>()
+  // Library sync: blobs that were missing on the last load, and a counter bumped when one arrives.
+  const [missing, setMissing] = useState<{ blobs: string[]; texts: Set<string> }>(() => ({ blobs: [], texts: new Set() }))
+  const [arrived, setArrived] = useState(0)
+  const lastLoad = useRef<{ song?: Song; arrived: number }>({ arrived: 0 })
 
   // Page sizes and text contents.
   useEffect(() => {
     if (!song) return
     let cancelled = false
-    setLoading(true)
+    // A file arriving re-measures quietly; anything else shows the loading state.
+    const quiet = lastLoad.current.song === song && lastLoad.current.arrived !== arrived
+    lastLoad.current = { song, arrived }
+    if (!quiet) setLoading(true)
     ;(async () => {
       const sz: Record<string, number> = {}
       const tx: Record<string, string> = {}
       const byId = new Map(song.files.map((f) => [f.id, f]))
+      const miss = new Set<string>()
+      const missText = new Set<string>()
+      const noteMissing = (f: SongFile, e: unknown) => {
+        if (e instanceof MissingBlobError) miss.add(f.blobId)
+        return e instanceof MissingBlobError
+      }
       // Text contents first (small), then page sizes, publishing progressively so big books open fast.
-      for (const f of song.files) if (f.kind !== 'pdf' && f.kind !== 'image') tx[f.id] = await fileText(f).catch(() => '')
+      for (const f of song.files)
+        if (f.kind !== 'pdf' && f.kind !== 'image')
+          tx[f.id] = await fileText(f).catch((e) => {
+            if (noteMissing(f, e)) missText.add(f.id)
+            return ''
+          })
       if (cancelled) return
+      const publishMissing = () => setMissing((m) => (m.blobs.length || miss.size ? { blobs: [...miss], texts: missText } : m))
       setTexts(tx)
+      publishMissing()
       let n = 0
       for (const r of refs) {
         const f = byId.get(r.fileId)
@@ -103,7 +133,8 @@ export function useDisplayPages(
         try {
           const size = await pageSize(f, r.page)
           sz[`${f.id}:${r.page}`] = displayAspect(size, ps?.rotation ?? 0, ps?.crop)
-        } catch {
+        } catch (e) {
+          noteMissing(f, e)
           sz[`${f.id}:${r.page}`] = DEFAULT_ASPECT
         }
         if (cancelled) return
@@ -114,13 +145,27 @@ export function useDisplayPages(
         }
       }
       setSizes(sz)
+      publishMissing()
       setLoading(false)
       setLoadedId(song.id)
     })()
     return () => {
       cancelled = true
     }
-  }, [song, refs])
+  }, [song, refs, arrived])
+
+  // Reload once a missing file has downloaded (also if it landed between the failed read and now).
+  useEffect(() => {
+    if (!missing.blobs.length) return
+    const bump = () => setArrived((n) => n + 1)
+    const offs = missing.blobs.map((id) => onBlobReady(id, bump))
+    let alive = true
+    void db.blobs.bulkGet(missing.blobs).then((rows) => alive && rows.some(Boolean) && bump())
+    return () => {
+      alive = false
+      for (const off of offs) off()
+    }
+  }, [missing])
 
   // ABC files (and ChordPro {start_of_abc} sections) need abcjs; bottom diagrams need the dictionary.
   const needAbc = !!song?.files.some((f) => f.kind === 'abc' || (texts[f.id] !== undefined && /\{\s*(start_of_abc|soa)\b/.test(texts[f.id])))
@@ -171,6 +216,10 @@ export function useDisplayPages(
       const text = texts[f.id]
       if (text === undefined) continue
       const aspect = textBox.width / Math.max(1, textBox.height)
+      if (missing.texts.has(f.id)) {
+        out.push({ type: 'pending', key: `${f.id}:pending`, file: f, aspect })
+        continue
+      }
       if (f.kind === 'abc') {
         // Split into pages of whole staff lines that fit the page box.
         const pad = textBox.width * ABC_PAGE_PADDING
@@ -218,7 +267,7 @@ export function useDisplayPages(
     }
     return out
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [song, refs, sizes, texts, textBox, style, opts.transpose, opts.columns, opts.zoom, abcReady, dictReady])
+  }, [song, refs, sizes, texts, missing, textBox, style, opts.transpose, opts.columns, opts.zoom, abcReady, dictReady])
 
   return { pages, loading: loading || loadedId !== song?.id }
 }

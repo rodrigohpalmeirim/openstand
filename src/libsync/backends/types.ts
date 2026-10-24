@@ -113,6 +113,12 @@ export interface StorageBackend {
       signal?: AbortSignal
     },
   ): Promise<void>
+  /**
+   * Cancels a resumable session (and frees its stored parts) so it won't be resumed. Best effort; a
+   * missing session counts as success. The engine calls it for its own sessions older than
+   * MULTIPART_STALE (§7.1). Optional: backends without server-side sessions omit it. (Added by WP2.)
+   */
+  abortUpload?(state: UploadState, o?: { signal?: AbortSignal }): Promise<void>
   /** Connection test (§7.1 for the S3 order). Never throws; failures are reported in the result. */
   check(): Promise<BackendCheck>
 }

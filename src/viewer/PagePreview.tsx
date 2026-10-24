@@ -9,7 +9,7 @@ export function PagePreview({ dp, index, total, left }: { dp: DisplayPage; index
     let alive = true
     const c = ref.current
     if (!c || dp.type !== 'file') return
-    renderPage(dp.file, dp.page, 180, dp.rotation).then((bmp) => {
+    void renderPage(dp.file, dp.page, 180, dp.rotation).then((bmp) => {
       if (!alive) return
       c.width = bmp.width
       c.height = bmp.height
@@ -18,7 +18,7 @@ export function PagePreview({ dp, index, total, left }: { dp: DisplayPage; index
       } catch {
         /* evicted bitmap */
       }
-    })
+    }, () => {}) // e.g. the file is still downloading (library sync)
     return () => {
       alive = false
     }

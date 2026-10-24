@@ -55,6 +55,13 @@ export default defineConfig({
       },
     }),
   ],
+  server: {
+    // Like the Cloudflare deployment, the dev server offers a same-site relay at /relay (performance sync,
+    // library-sync notices) when `node server/relay.mjs` runs; without it sync falls back to polling.
+    proxy: {
+      '/relay': { target: process.env.OPENSTAND_RELAY ?? 'http://127.0.0.1:8787', ws: true },
+    },
+  },
   test: {
     environment: 'jsdom',
     setupFiles: ['./src/test/setup.ts'],

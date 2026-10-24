@@ -3,7 +3,9 @@
  * OpenStand sync relay — a tiny, dependency-free WebSocket broadcast server.
  *
  * Devices connect to ws://HOST:PORT/?room=NAME and every text message is forwarded to the other
- * clients in the same room. The relay doesn't parse or store messages (the app protocol lives in
+ * clients in the same room. Library sync (docs/SYNC.md §9) uses ws://HOST:PORT/lib/<roomId> (or
+ * /relay/lib/<roomId>): room `lib:<roomId>` with tighter limits (1 KiB messages, 5 msg/s, 32 clients);
+ * perf rooms can't use the `lib:` prefix. `{"ping":1}` is answered with `{"pong":1}` and not forwarded. The relay doesn't parse or store messages (the app protocol lives in
  * src/sync/protocol.ts), so it is safe to run anywhere: a laptop on the gig's Wi-Fi, a Raspberry Pi,
  * or a small VPS behind a TLS proxy (needed when OpenStand itself is served over https: use wss://).
  *
@@ -22,6 +24,10 @@ import { createServer } from 'node:http'
 import { pathToFileURL } from 'node:url'
 
 const GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11'
+const LIB_PATH = /^\/(?:relay\/)?lib\/([a-z2-7]{26})$/
+const LIB_LIKE = /^\/(?:relay\/)?lib\//
+const PING = '{"ping":1}'
+const PONG = Buffer.from('{"pong":1}')
 const OP = { cont: 0x0, text: 0x1, binary: 0x2, close: 0x8, ping: 0x9, pong: 0xa }
 
 /** Encode one unmasked server frame. */
@@ -53,10 +59,11 @@ const closePayload = (code, reason = '') => {
 }
 
 class Client {
-  constructor(socket, room, relay) {
+  constructor(socket, room, relay, limits) {
     this.socket = socket
     this.room = room
     this.relay = relay
+    this.limits = limits
     this.buf = Buffer.alloc(0)
     this.fragments = null
     this.fragOpcode = 0
@@ -108,13 +115,13 @@ class Client {
       } else if (len === 127) {
         if (b.length < 10) return
         const big = b.readBigUInt64BE(2)
-        if (big > BigInt(this.relay.maxMessage)) return this.close(1009, 'Message too big')
+        if (big > BigInt(this.limits.maxMessage)) return this.close(1009, 'Message too big')
         len = Number(big)
         off = 10
       }
       if (b[0] & 0x70) return this.close(1002, 'Reserved bits set')
       if (!masked) return this.close(1002, 'Client frames must be masked')
-      if (len > this.relay.maxMessage) return this.close(1009, 'Message too big')
+      if (len > this.limits.maxMessage) return this.close(1009, 'Message too big')
       if (b.length < off + 4 + len) return
       const mask = b.subarray(off, off + 4)
       const payload = Buffer.from(b.subarray(off + 4, off + 4 + len))
@@ -139,7 +146,7 @@ class Client {
       if (!this.fragments) return this.close(1002, 'Unexpected continuation')
       this.fragments.push(payload)
       const size = this.fragments.reduce((n, f) => n + f.length, 0)
-      if (size > this.relay.maxMessage) return this.close(1009, 'Message too big')
+      if (size > this.limits.maxMessage) return this.close(1009, 'Message too big')
       if (!fin) return
       const whole = Buffer.concat(this.fragments)
       const op = this.fragOpcode
@@ -158,15 +165,32 @@ class Client {
 
   onMessage(opcode, payload) {
     if (opcode !== OP.text) return // the app only speaks JSON text
-    // Simple flood protection: 60 messages per second per client.
+    if (payload.length === PING.length && payload.toString() === PING) return this.send(OP.text, PONG)
+    // Simple flood protection: perSecond messages per second per client (60 perf, 5 lib).
     const now = Date.now()
     if (now - this.window.start > 1000) this.window = { start: now, count: 0 }
-    if (++this.window.count > 60) return
+    if (++this.window.count > this.limits.perSecond) return
     this.relay.broadcast(this, payload)
   }
 }
 
-export function createRelay({ maxMessage = 256 * 1024, maxRoom = 64, allowedOrigins = [], heartbeatMs = 30_000, log = console.log } = {}) {
+/**
+ * `maxMessage`, `maxRoom` and `perSecond` are the perf-room limits; `lib` overrides the library-sync ones
+ * (default 1 KiB, 32 clients, 5 msg/s, as in worker/index.ts).
+ */
+export function createRelay({
+  maxMessage = 256 * 1024,
+  maxRoom = 64,
+  perSecond = 60,
+  lib = {},
+  allowedOrigins = [],
+  heartbeatMs = 30_000,
+  log = console.log,
+} = {}) {
+  const limits = {
+    perf: { maxMessage, maxRoom, perSecond },
+    lib: { maxMessage: 1024, maxRoom: 32, perSecond: 5, ...lib },
+  }
   /** @type {Map<string, Set<Client>>} */
   const rooms = new Map()
   const relay = {
@@ -187,7 +211,7 @@ export function createRelay({ maxMessage = 256 * 1024, maxRoom = 64, allowedOrig
   const server = createServer((req, res) => {
     const clients = [...rooms.values()].reduce((n, s) => n + s.size, 0)
     res.writeHead(200, { 'content-type': 'application/json', 'access-control-allow-origin': '*', 'cache-control': 'no-store' })
-    res.end(JSON.stringify({ service: 'openstand-relay', rooms: rooms.size, clients }))
+    res.end(JSON.stringify({ service: 'openstand-relay', features: ['lib'], rooms: rooms.size, clients }))
   })
 
   server.on('upgrade', (req, socket) => {
@@ -200,12 +224,22 @@ export function createRelay({ maxMessage = 256 * 1024, maxRoom = 64, allowedOrig
     const origin = req.headers.origin
     if (allowedOrigins.length && origin && !allowedOrigins.includes(origin)) return reject(403, 'Forbidden')
     const url = new URL(req.url ?? '/', 'http://relay')
-    const room = (url.searchParams.get('room') || url.pathname.replace(/^\/+/, '') || 'default').slice(0, 64)
+    const libMatch = LIB_PATH.exec(url.pathname)
+    let room, kind
+    if (libMatch) {
+      room = `lib:${libMatch[1]}`
+      kind = 'lib'
+    } else {
+      if (LIB_LIKE.test(url.pathname)) return reject(400, 'Bad Request')
+      room = (url.searchParams.get('room') || url.pathname.replace(/^\/+/, '') || 'default').slice(0, 64)
+      if (room.startsWith('lib:')) return reject(400, 'Bad Request')
+      kind = 'perf'
+    }
     const set = rooms.get(room) ?? new Set()
-    if (set.size >= maxRoom) return reject(503, 'Room Full')
+    if (set.size >= limits[kind].maxRoom) return reject(503, 'Room Full')
     const accept = createHash('sha1').update(key + GUID).digest('base64')
     socket.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`)
-    const client = new Client(socket, room, relay)
+    const client = new Client(socket, room, relay, limits[kind])
     set.add(client)
     rooms.set(room, set)
     log?.(`+ ${req.socket.remoteAddress} room="${room}" (${set.size} in room)`)

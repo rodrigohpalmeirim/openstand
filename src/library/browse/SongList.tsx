@@ -1,8 +1,11 @@
-import { Heart, MoreVertical } from 'lucide-react'
+import { CloudDownload, Heart, MoreVertical } from 'lucide-react'
 import { memo, useCallback, useEffect, useRef, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react'
 import type { GroupField, Song } from '../../db/schema'
 import { useSettings } from '../../state/settings'
 import { cx, IconButton, type MenuItem } from '../../ui/primitives'
+import { useBlob } from '../../libsync/ui/client'
+import { pendingCaption } from '../../libsync/ui/format'
+import { shownBlobId } from '../../files/pageRefs'
 import { Thumb } from '../Thumb'
 import { formatDuration } from './logic'
 import { setFavorite } from './ops'
@@ -113,6 +116,8 @@ const SongRow = memo(function SongRow(p: RowProps) {
   const lp = useLongPress(() => p.onLong(p.index))
   const showKey = p.fields.includes('keys') && s.keys[0]
   const caption = p.caption ?? songCaption(s, p.fields)
+  // Library sync: the file the thumbnail shows hasn't downloaded yet (shares the thumbnail's live query).
+  const pending = pendingCaption(useBlob(p.view === 'list' ? shownBlobId(s) : undefined))
   return (
     <div
       role="row"
@@ -150,7 +155,15 @@ const SongRow = memo(function SongRow(p: RowProps) {
       {p.view === 'list' && <Thumb song={s} className="h-12 w-9" />}
       <div className={cx('min-w-0 flex-1', p.view === 'compact' && 'flex items-baseline gap-2')}>
         <div className="truncate font-medium leading-snug">{s.title}</div>
-        {caption && <div className={cx('truncate text-muted', p.view === 'compact' ? 'text-xs' : 'text-sm')}>{caption}</div>}
+        {pending ? (
+          <div className="flex items-center gap-1 truncate text-sm text-muted">
+            <CloudDownload className="size-3.5 shrink-0" aria-hidden />
+            <span className="truncate">{pending}</span>
+            {caption && <span className="truncate text-faint">· {caption}</span>}
+          </div>
+        ) : (
+          caption && <div className={cx('truncate text-muted', p.view === 'compact' ? 'text-xs' : 'text-sm')}>{caption}</div>
+        )}
       </div>
       {/* Fixed-width cells (even when empty) keep keys and durations aligned down the list. */}
       {p.fields.includes('keys') && <span className="flex min-w-10 shrink-0 justify-center">{showKey && <Badge>{s.keys[0]}</Badge>}</span>}

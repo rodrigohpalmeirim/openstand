@@ -1,5 +1,7 @@
 import { Music4, Sparkles, Upload } from 'lucide-react'
 import { useState } from 'react'
+import { db, sha256, type OpenStandDB } from '../../db/db'
+import type { Song } from '../../db/schema'
 import { createTextSong } from '../../files/import'
 import { settings, useSettings } from '../../state/settings'
 import { Button, cx, Dialog, toast } from '../../ui/primitives'
@@ -50,6 +52,28 @@ K:D
 |:A2FA dAFA|B2GB dBGB|A2FA dfed|cABc d2dc:|
 |:d2fd adfd|e2ge bege|f2af g2ec|dfec d2d2:|
 `
+
+const DEMO_TITLES: Record<string, string> = { 'Welcome to OpenStand': DEMO_CHORDPRO, 'Stand Tune': DEMO_ABC }
+const demoHashes = new Map<string, Promise<string>>()
+const demoHash = (text: string) => {
+  let h = demoHashes.get(text)
+  if (!h) demoHashes.set(text, (h = sha256(new TextEncoder().encode(text).buffer as ArrayBuffer)))
+  return h
+}
+
+/**
+ * A demo song exactly as `createDemoSongs` made it: demo title, its single text file unchanged, never
+ * edited, no annotations. Joining a synced library deletes these first instead of publishing them.
+ */
+// oxlint-disable-next-line react/only-export-components -- §5.5 places the demo check next to the demo content
+export async function isUntouchedDemo(song: Song, d: OpenStandDB = db): Promise<boolean> {
+  const text = DEMO_TITLES[song.title]
+  if (!text || song.files.length !== 1 || song.createdAt !== song.modifiedAt) return false
+  const blobId = song.files[0].blobId
+  const hash = /^[0-9a-f]{64}$/.test(blobId) ? blobId : (await d.blobs.get(blobId))?.hash
+  if (hash !== (await demoHash(text))) return false
+  return (await d.annotations.where('songId').equals(song.id).count()) === 0
+}
 
 /** Create two small demo songs (ChordPro + ABC) so a new user can try performing right away. */
 export async function createDemoSongs() {

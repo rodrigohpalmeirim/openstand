@@ -97,5 +97,7 @@ export async function deleteLibrary(id: string) {
   if (id === 'default') return
   if (useLibraries.getState().active === id) switchLibrary('default')
   save(useLibraries.getState().list.filter((l) => l.id !== id))
+  // Library sync: retire this device from the synced library (best effort) and clear the capture flag.
+  await import('../../libsync/service').then((m) => m.beforeLibraryDelete(dbNameFor(id))).catch(() => {})
   await Dexie.delete(dbNameFor(id))
 }

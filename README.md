@@ -27,8 +27,9 @@ modernised interface.
   bookmarks, link points for repeats/D.S./codas, song notes.
 - 🎹 **MIDI** — send program changes/CC/SysEx when songs load, recall songs from incoming MIDI, map MIDI
   messages to actions (Web MIDI).
-- 🔄 **Devices** — leader/follower page sync between devices (same browser windows or via a tiny relay
-  server), full-library backup/restore, song packages for sharing, export with annotations.
+- 🔄 **Devices** — library sync across your devices through your own storage, end-to-end encrypted;
+  leader/follower page sync between devices (same browser windows or via a tiny relay server); full-library
+  backup/restore, song packages for sharing, export with annotations.
 
 ## Getting started
 
@@ -71,7 +72,45 @@ Import a repository*; build command `npm run build`, deploy command `npx wrangle
 once the checks pass. Add a custom domain under the Worker's *Settings → Domains & Routes*. To keep other
 sites from using your relay, set `ALLOWED_ORIGINS` in `wrangler.jsonc`.
 
-## Syncing devices
+## Library sync
+
+Library sync keeps a whole library (songs, files, annotations, layers, setlists, play history) the same on
+all your devices, and every device keeps a full offline copy. There are no accounts and no OpenStand
+server that holds your music: you bring your own storage, and the app talks to it directly from the
+browser. Edits made offline sync later and merge field by field, so editing different things on two devices
+never loses either change. Set it up in *Settings → Library sync*; the design is in
+[docs/SYNC.md](docs/SYNC.md).
+
+- **Storage:** any S3-compatible bucket — Cloudflare R2, Backblaze B2, Amazon S3, MinIO or others. Use
+  credentials limited to that one bucket; every paired device shares them. (Dropbox, Google Drive and
+  OneDrive are planned.)
+- **End-to-end encrypted:** a random 256-bit library secret is created on the first device, and every
+  key is derived from it. Song data, files and file names are encrypted (AES-GCM) before they leave the
+  device. The storage provider sees only the number of devices, object sizes and timing, not titles,
+  contents or which files you have; the relay sees only a random room id.
+- **Pairing:** on a synced device choose *Add a device*, then scan the QR code with the other device
+  (*Join from another device*), or copy the text code and paste it there. The code carries the library
+  secret and the storage credentials, so treat it like a password. A device that already has music can
+  join as a separate library (the default) or merge into the synced one.
+- **Instant updates:** after each upload a device sends an encrypted notice through the relay (built into
+  the Cloudflare deployment at `/relay`), so the others fetch the change within a few seconds. Without a
+  relay, devices check the storage every 30 seconds.
+- **CORS:** the bucket must allow requests from the site OpenStand runs on. The setup wizard tests this
+  and shows the exact rule to paste (methods `GET PUT POST DELETE HEAD`, all headers, and `ETag`,
+  `Content-Length`, `Content-Range` and `Date` exposed) plus where to paste it for your provider. MinIO
+  sets CORS for the whole server instead (`MINIO_API_CORS_ALLOW_ORIGIN`; it allows every origin by
+  default).
+
+For development, run MinIO locally and point the wizard at it (`http://127.0.0.1:9000`, path-style):
+
+```bash
+docker run -d --rm --name openstand-minio -p 9000:9000 -p 9001:9001 \
+  -e MINIO_ROOT_USER=openstand -e MINIO_ROOT_PASSWORD=openstand-dev-secret \
+  minio/minio:latest server /data --console-address :9001
+node server/relay.mjs   # optional: instant updates; the dev server proxies /relay to it
+```
+
+## Page sync between devices
 
 Windows of the same browser sync out of the box (BroadcastChannel). On the Cloudflare deployment, devices
 sync over the internet: in *Settings → Devices & sync* choose *Use this site* (relay address `/relay`) and
@@ -100,11 +139,13 @@ If OpenStand is served over HTTPS, browsers require the relay behind TLS (`wss:/
 | Metronome, auto-scroll, audio, bookmarks, links | `src/tools/` |
 | MIDI | `src/midi/` |
 | Backup, packages, export | `src/backup/` |
-| Device sync (+ relay servers) | `src/sync/`, `server/` (Node), `worker/` (Cloudflare) |
+| Library sync (encrypted, bring-your-own storage) | `src/libsync/`, `src/db/capture.ts` |
+| Page sync between devices (+ relay servers) | `src/sync/`, `server/` (Node), `worker/` (Cloudflare) |
 | Settings | `src/settings/`, `src/state/settings.ts` |
 
 Everything is stored locally in the browser (IndexedDB). Nothing is uploaded anywhere unless you
-connect to a sync relay, which only forwards page turns and song changes and stores nothing. Ask the browser to make storage persistent from *Settings → Storage* so the OS
+turn on library sync (encrypted, to storage you choose) or connect to a sync relay, which only forwards
+page turns, song changes and encrypted sync notices and stores nothing. Ask the browser to make storage persistent from *Settings → Storage* so the OS
 doesn't evict your library.
 
 ## Credits

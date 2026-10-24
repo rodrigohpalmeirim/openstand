@@ -3,7 +3,9 @@ import { useEffect, useState } from 'react'
 import { db } from '../db/db'
 import type { Song } from '../db/schema'
 import { cx } from '../ui/primitives'
-import { pageSettingsKey, resolvePageRefs } from '../files/pageRefs'
+import { pageSettingsKey, resolvePageRefs, shownBlobId } from '../files/pageRefs'
+import { PendingThumb } from '../libsync/ui/BlobPending'
+import { usePendingFile } from '../libsync/ui/client'
 
 const THUMB_WIDTH = 240
 const urls = new Map<string, string>()
@@ -75,6 +77,9 @@ export function Thumb({ song, page = 0, className = 'h-12 w-9' }: { song: Song; 
   const kind = (shown && song.files.find((f) => f.id === shown.fileId)?.kind) ?? song.files[0]?.kind
   const key = `${song.id}:${thumbSource(song, page)?.sig ?? kind}`
   const [url, setUrl] = useState<string | null>(urls.get(key) ?? null)
+  // Library sync: the file may still be downloading; retry once it arrives.
+  const [arrived, setArrived] = useState(0)
+  const blob = usePendingFile(shownBlobId(song, page), () => setArrived((n) => n + 1))
   useEffect(() => {
     if (urls.has(key)) return setUrl(urls.get(key)!)
     setUrl(null)
@@ -92,7 +97,8 @@ export function Thumb({ song, page = 0, className = 'h-12 w-9' }: { song: Song; 
     return () => {
       alive = false
     }
-  }, [key])
+  }, [key, arrived])
+  if (!url && blob.state !== 'local') return <PendingThumb state={blob} className={className} />
   return (
     <div className={cx(className, 'shrink-0 overflow-hidden rounded-md border border-line shadow-sm', url ? 'bg-white' : 'bg-surface')}>
       {url ? (

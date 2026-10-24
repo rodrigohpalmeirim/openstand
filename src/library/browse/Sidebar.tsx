@@ -26,6 +26,7 @@ import {
   type LucideIcon,
 } from 'lucide-react'
 import { useEffect, useMemo } from 'react'
+import { SyncIndicator } from '../../libsync/ui/SyncIndicator'
 import { scanToNewSong } from '../../scan/launch'
 import { useNav, type Section } from '../../state/nav'
 import { useSettings } from '../../state/settings'
@@ -189,15 +190,18 @@ export function Sidebar({ onClose }: { onClose?: () => void }) {
             <Plus className="size-5" />
           </IconButton>
         </div>
-        <button
-          onClick={() => {
-            useLibraryUI.getState().set({ drawer: false })
-            useNav.getState().go({ name: 'settings' })
-          }}
-          className="flex h-10 items-center gap-3 rounded-lg px-3 text-sm text-fg hover:bg-surface-2"
-        >
-          <Settings className="size-[18px] text-muted" /> Settings
-        </button>
+        <div className="flex items-center gap-1">
+          <button
+            onClick={() => {
+              useLibraryUI.getState().set({ drawer: false })
+              useNav.getState().go({ name: 'settings' })
+            }}
+            className="flex h-10 flex-1 items-center gap-3 rounded-lg px-3 text-sm text-fg hover:bg-surface-2"
+          >
+            <Settings className="size-[18px] text-muted" /> Settings
+          </button>
+          <SyncIndicator />
+        </div>
       </div>
     </nav>
   )

@@ -4,7 +4,8 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } fro
 import { db, pruneAnnotations, uid } from '../../db/db'
 import { emptySong, type Song } from '../../db/schema'
 import { MidiCommandsEditor } from '../../midi/MidiCommandsEditor'
-import { Button, cx, Dialog, Menu, Textarea, toast, useMenu } from '../../ui/primitives'
+import { rebaseOnLatest } from '../../libsync/state'
+import { Button, confirmDialog, cx, Dialog, Menu, Textarea, toast, useMenu } from '../../ui/primitives'
 import { useTerms } from '../browse/terms'
 import { useBackHandler } from '../history'
 import { AudioTab } from './AudioTab'
@@ -122,7 +123,7 @@ export function SongEditor({
     setSaving(true)
     try {
       const now = Date.now()
-      const s: Song = {
+      let s: Song = {
         ...draft,
         title,
         sortTitle: draft.sortTitle?.trim() || undefined,
@@ -131,6 +132,19 @@ export function SongEditor({
         modifiedAt: now,
       }
       if (opts.asNew) Object.assign(s, { id: uid(), createdAt: now, playCount: 0, lastPlayedAt: undefined })
+      else if (base && !isNew) {
+        // The draft may be minutes old: apply only the user's changes to the song as stored now, so
+        // edits that arrived from another device meanwhile (sync) aren't reverted (docs/SYNC.md §8.4).
+        const latest = await rebaseOnLatest(db, base, s)
+        if (latest === 'deleted') {
+          const again = await confirmDialog({
+            title: `This ${t.song} was deleted on another device`,
+            message: `Save it again with your changes?`,
+            confirmLabel: 'Save again',
+          })
+          if (!again) return null
+        } else s = latest
+      }
       await db.songs.put(s)
       clearGroupValueCache()
       setBase(s)

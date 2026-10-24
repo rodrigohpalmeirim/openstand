@@ -3,8 +3,9 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 import { AnnotationLayer } from '../annotations/AnnotationLayer'
 import { AbcView } from '../abc/AbcView'
 import { textContainerStyle } from '../chordpro/render'
-import { db, updateSong } from '../db/db'
+import { db, recordPlay, updateSong } from '../db/db'
 import type { DisplayMode, Song } from '../db/schema'
+import { BlobPending } from '../libsync/ui/BlobPending'
 import { useSettings } from '../state/settings'
 import { useViewer } from '../state/viewer'
 import { toast } from '../ui/primitives'
@@ -158,7 +159,7 @@ export function Viewer() {
     // StrictMode (and quick remounts) run this twice for one opening: count a play once.
     const now = Date.now()
     if (lastPlay.id !== song.id || now - lastPlay.at > 2000) {
-      updateSong(song.id, { lastPlayedAt: now, playCount: (song.playCount ?? 0) + 1 })
+      void recordPlay(song.id, now)
     }
     lastPlay = { id: song.id, at: now }
     setZoom(1)
@@ -762,12 +763,13 @@ export function DisplayPageView({ dp, index, size, ctx, priority = true, clip }:
   const overlay = ctx.song ? (
     <>
       {(ctx.showAnnotations || ctx.annotating) && (
-        <AnnotationLayer songId={ctx.song.id} fileId={dp.file.id} page={dp.type === 'file' ? dp.page : dp.type === 'text' ? 1000 + dp.page : 2000 + (dp.page ?? 0)} editable={ctx.annotating} />
+        <AnnotationLayer songId={ctx.song.id} fileId={dp.file.id} page={dp.type === 'file' ? dp.page : dp.type === 'text' ? 1000 + dp.page : dp.type === 'abc' ? 2000 + (dp.page ?? 0) : -1} editable={ctx.annotating} />
       )}
       {!ctx.annotating && <LinkMarkers song={ctx.song} pageIndex={index} onFollow={ctx.onFollowLink} />}
     </>
   ) : null
   const inner = (() => {
+    if (dp.type === 'pending') return <BlobPending blobId={dp.file.blobId} songId={ctx.song?.id} width={size.width} height={size.height} />
     if (dp.type === 'file')
       return (
         <PageView

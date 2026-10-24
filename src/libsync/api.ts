@@ -1,13 +1,16 @@
 /**
  * Library sync: public facade for the UI (docs/SYNC.md §12.1).
  *
- * CONTRACT. Step 0 ships stubs: `useLibSync` stays `off`, actions reject with "not implemented", and the
- * hooks/fire-and-forget calls the library and viewer use unconditionally are safe no-ops. WP3 replaces
- * the bodies and keeps every signature (additive changes only).
+ * CONTRACT: signatures change additively only. `useLibSync` is fed by the service (service.ts); actions
+ * reject with `LibSyncFailure` (or `PairingError` from `parsePairingCode`). The hooks and fire-and-forget
+ * calls the library and viewer use unconditionally are cheap no-ops while sync is off.
  */
+import { liveQuery } from 'dexie'
+import { useCallback, useSyncExternalStore } from 'react'
 import { create, type StoreApi, type UseBoundStore } from 'zustand'
+import { db, type OpenStandDB } from '../db/db'
 import type { BackendCheck, BackendConfig } from './backends/types'
-import type { DeviceRecord, JoinMode, PairingPayload } from './model'
+import { PairingError, type DeviceRecord, type JoinMode, type PairingPayload } from './model'
 
 export type LibSyncPhase = 'off' | 'starting' | 'idle' | 'syncing' | 'offline' | 'paused' | 'error'
 
@@ -114,84 +117,265 @@ export class LibSyncFailure extends Error {
   }
 }
 
-const notImplemented = (name: string) => Promise.reject(new Error(`libsync: ${name} not implemented`))
+// ---------------------------------------------------------------------------------------------
+// Implementation. The engine, flows and backends load lazily: users who never sync don't pay for them.
+// ---------------------------------------------------------------------------------------------
+
+const service = () => import('./service')
+const flows = () => import('./join')
+const libraries = () => import('../library/browse/libraries')
+
+/** Rejections carry a `LibSyncFailure` code (§12.3 wording) unless they're already one / a PairingError. */
+async function failure(e: unknown): Promise<never> {
+  if (e instanceof LibSyncFailure || e instanceof PairingError) throw e
+  const { toSyncError } = await import('./engine')
+  const err = toSyncError(e)
+  throw new LibSyncFailure(err.code, err.message, err.detail)
+}
+
+const guarded =
+  <A extends unknown[], R>(fn: (...a: A) => Promise<R>) =>
+  (...a: A): Promise<R> =>
+    fn(...a).catch(failure)
 
 /** Runs the backend's connection test (§7.1). */
-export function checkBackend(_cfg: BackendConfig): Promise<BackendCheck> {
-  return notImplemented('checkBackend')
-}
+export const checkBackend = guarded(async (cfg: BackendConfig): Promise<BackendCheck> => {
+  const { createBackend } = await import('./backends')
+  return createBackend(cfg).check()
+})
 
 /** First device: create the synced library from the current one (§10.3 "Enable"). */
-export function enableSync(_o: { backend: BackendConfig; relay?: string | null }): Promise<void> {
-  return notImplemented('enableSync')
-}
+export const enableSync = guarded(async (o: { backend: BackendConfig; relay?: string | null }): Promise<void> => {
+  const svc = await service()
+  const { enable, initialUpload } = await flows()
+  const { activeLibraryName } = await libraries()
+  let relay = o.relay
+  if (relay === undefined) {
+    const { sameSiteRelayAvailable, SAME_SITE_RELAY } = await import('../sync/transports')
+    relay = (await sameSiteRelayAvailable()) ? SAME_SITE_RELAY : null
+  }
+  void navigator.storage?.persist?.().catch(() => {})
+  await svc.withEngineStopped(async () => {
+    const e = await enable(db, { backendConfig: o.backend, relay, name: activeLibraryName(), deviceName: svc.deviceName })
+    e.stop()
+  })
+  // withEngineStopped restarted the engine; publish everything and write the first snapshot once it runs.
+  await svc.restart({
+    afterStart: async (e) => {
+      svc.setInitial({ kind: 'upload', step: 'publish', done: 0, total: 1 })
+      try {
+        await initialUpload(e, { onProgress: (step, done, total) => svc.setInitial({ kind: 'upload', step, done, total }) })
+      } finally {
+        svc.setInitial(undefined)
+      }
+    },
+  })
+})
 
 /** The `OSJ1.` text code for the current library (also what the QR encodes). */
-export function pairingCode(): Promise<string> {
-  return notImplemented('pairingCode')
-}
+export const pairingCode = guarded(async (): Promise<string> => {
+  const { getConfig } = await import('./state')
+  const config = await getConfig(db)
+  if (!config) throw new LibSyncFailure('unknown', 'Library sync is not set up for this library')
+  const { encodePairing } = await import('./pairing')
+  return encodePairing({ v: 1, s: config.secret, n: config.name, b: config.backend, r: config.relay })
+})
 
 /** Accepts the code embedded in pasted text. Rejects with `PairingError('format' | 'version')`. */
-export function parsePairingCode(_text: string): Promise<PairingPayload> {
-  return notImplemented('parsePairingCode')
+export async function parsePairingCode(text: string): Promise<PairingPayload> {
+  const { decodePairing } = await import('./pairing')
+  return decodePairing(text)
 }
 
 /**
  * Verifies the code against storage and counts what a join would bring. Rejects with a `LibSyncFailure`
  * (`wrongSecret`, `libraryGone`, `auth`, `cors`, `network`, …).
  */
-export function previewJoin(_p: PairingPayload): Promise<JoinPreview> {
-  return notImplemented('previewJoin')
-}
+export const previewJoin = guarded(async (p: PairingPayload): Promise<JoinPreview> => (await flows()).previewJoin(db, p))
 
 /** §10.3 "Join". Resolves when the bootstrap is done; downloads continue in the background. */
-export function joinSync(_p: PairingPayload, _mode: JoinMode): Promise<void> {
-  return notImplemented('joinSync')
-}
+export const joinSync = guarded(async (p: PairingPayload, mode: JoinMode): Promise<void> => {
+  const svc = await service()
+  const { join } = await flows()
+  if (mode === 'newLibrary') {
+    const { createLibrary, switchLibrary, useLibraries } = await libraries()
+    const { useNav } = await import('../state/nav')
+    const name = p.n?.trim() || 'Synced library'
+    const taken = useLibraries.getState().list.some((l) => l.name === name)
+    const { route } = useNav.getState()
+    switchLibrary(createLibrary(taken ? `${name} (synced)` : name))
+    // Switching resets navigation to the library; stay on the screen that started the join (in the same
+    // tick, so it doesn't unmount) so its progress and "Done" stay visible.
+    if (route.name === 'settings') useNav.getState().go(route)
+  }
+  const progress = (step: string, done: number, total: number) => svc.setInitial({ kind: 'join', step, done, total })
+  progress('verify', 0, 1)
+  try {
+    await svc.withEngineStopped(async () => {
+      const e = await join(db, p, mode === 'newLibrary' ? 'here' : mode, { deviceName: svc.deviceName, onProgress: progress })
+      e.stop()
+    })
+  } finally {
+    svc.setInitial(undefined)
+  }
+})
 
 /** Capture, push and pull now. */
-export function syncNow(): Promise<void> {
-  return notImplemented('syncNow')
-}
+export const syncNow = guarded(async (): Promise<void> => {
+  const svc = await service()
+  const e = svc.currentEngine()
+  if (e) await e.sync()
+  else svc.requestSyncNow()
+})
 
-export function setPaused(_paused: boolean): Promise<void> {
-  return notImplemented('setPaused')
-}
+export const setPaused = guarded(async (paused: boolean): Promise<void> => {
+  const { getConfig, putState } = await import('./state')
+  const config = await getConfig(db)
+  if (!config) return
+  await putState(db, 'config', { ...config, paused })
+  const e = (await service()).currentEngine()
+  if (e) e.setPaused(paused)
+  else useLibSync.setState({ phase: paused ? 'paused' : 'starting' })
+})
 
 /** §10.4 "Stop syncing on this device". Library rows stay. */
-export function leaveSync(): Promise<void> {
-  return notImplemented('leaveSync')
-}
+export const leaveSync = guarded(async (): Promise<void> => {
+  const svc = await service()
+  const e = svc.currentEngine()
+  await svc.withEngineStopped(async () => (await flows()).leave(db, e ?? undefined))
+})
 
 /** §10.5 "Delete synced data from storage…" (the UI confirms by typing the library name first). */
-export function deleteRemoteData(): Promise<void> {
-  return notImplemented('deleteRemoteData')
-}
+export const deleteRemoteData = guarded(async (): Promise<void> => {
+  const svc = await service()
+  await svc.withEngineStopped(async () => (await flows()).deleteRemote(db))
+})
 
 /** §3.2 repair pass ("Re-check files"). */
-export function repair(): Promise<void> {
-  return notImplemented('repair')
-}
+export const repair = guarded(async (): Promise<void> => {
+  const e = (await service()).currentEngine()
+  if (!e) throw new LibSyncFailure('unknown', 'Library sync is not running')
+  await e.repair()
+})
 
 /** New keys after rotation at the provider; same bucket and library. */
-export function updateBackend(_cfg: BackendConfig): Promise<void> {
-  return notImplemented('updateBackend')
-}
+export const updateBackend = guarded(async (cfg: BackendConfig): Promise<void> => {
+  const { getConfig, putState } = await import('./state')
+  const config = await getConfig(db)
+  if (!config) throw new LibSyncFailure('unknown', 'Library sync is not set up for this library')
+  // Prove the new credentials reach the same library before saving them.
+  await (await flows()).openPairing({ v: 1, s: config.secret, b: cfg })
+  const svc = await service()
+  await svc.withEngineStopped(() => putState(db, 'config', { ...config, backend: cfg }))
+})
 
 const LOCAL: BlobState = { state: 'local' }
+const SHA256_HEX = /^[0-9a-f]{64}$/
 
-/** React hook. Stub: with sync off every blob is local. */
-export function useBlobState(_blobId: string | undefined): BlobState {
-  return LOCAL
+/** Where a blob is: local, or (with sync on) queued / downloading / waiting for its uploader / missing. */
+export function blobStateOf(d: OpenStandDB, blobId: string): Promise<BlobState> {
+  // One read transaction: a download that completes in between must not look `missing`.
+  return d.transaction('r', d.blobs, d.syncTransfers, () => readBlobState(d, blobId))
 }
 
-/** Calls `cb` once the blob has arrived locally. Returns an unsubscribe function. Stub: never fires. */
-export function onBlobReady(_blobId: string, _cb: () => void): () => void {
-  return () => {}
+async function readBlobState(d: OpenStandDB, blobId: string): Promise<BlobState> {
+  if ((await d.blobs.get(blobId)) || (SHA256_HEX.test(blobId) && (await d.blobs.where('hash').equals(blobId).count()))) return LOCAL
+  const t = SHA256_HEX.test(blobId) ? await d.syncTransfers.get(['down', blobId]) : undefined
+  if (!t) return { state: 'missing' }
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) return { state: 'offline' }
+  if (t.state === 'waiting') return { state: 'waiting' }
+  if (t.state === 'active' || t.doneChunks) {
+    const chunks = Math.max(1, Math.ceil(t.size / (1 << 20)))
+    return { state: 'downloading', progress: Math.min(1, (t.doneChunks ?? 0) / chunks) }
+  }
+  return { state: 'queued' }
 }
 
-/** Called when a song or setlist opens: its files jump the download queue (+1000). Stub: no-op. */
-export function prioritizeSongs(_ids: string[]): void {}
+/**
+ * One live query per (library, blob), shared by every component showing that blob (a song row's caption and
+ * its thumbnail, say), and dropped with its last subscriber.
+ */
+interface BlobWatch {
+  value?: BlobState
+  listeners: Set<() => void>
+  sub: { unsubscribe(): void }
+}
+const blobWatches = new Map<string, BlobWatch>()
+
+function watchBlob(key: string, d: OpenStandDB, blobId: string, cb: () => void): () => void {
+  let w = blobWatches.get(key)
+  if (!w) {
+    const watch: BlobWatch = { listeners: new Set(), sub: { unsubscribe() {} } }
+    blobWatches.set(key, (w = watch))
+    watch.sub = liveQuery(() => blobStateOf(d, blobId)).subscribe({
+      next: (v) => {
+        const prev = watch.value
+        if (prev && prev.state === v.state && prev.progress === v.progress) return
+        watch.value = v
+        for (const l of watch.listeners) l()
+      },
+      error: (e) => console.warn('[libsync] blob state', e),
+    })
+  }
+  const watch = w
+  watch.listeners.add(cb)
+  return () => {
+    watch.listeners.delete(cb)
+    if (watch.listeners.size) return
+    watch.sub.unsubscribe()
+    if (blobWatches.get(key) === watch) blobWatches.delete(key)
+  }
+}
+
+/** Like `useBlobState`, but `undefined` until the first answer (callers that must tell "not known yet" from local). */
+export function useBlobStateRaw(blobId: string | undefined): BlobState | undefined {
+  const configured = useLibSync((s) => s.configured)
+  const d = db
+  const key = blobId ? `${d.name}\n${configured ? 1 : 0}\n${blobId}` : ''
+  const subscribe = useCallback((cb: () => void) => (key ? watchBlob(key, d, blobId!, cb) : () => {}), [key]) // eslint-disable-line react-hooks/exhaustive-deps
+  const snapshot = useCallback(() => (key ? blobWatches.get(key)?.value : LOCAL), [key])
+  return useSyncExternalStore(subscribe, snapshot)
+}
+
+/** React hook: the blob's local/download state, live. `local` while loading or when `blobId` is unset. */
+export function useBlobState(blobId: string | undefined): BlobState {
+  return useBlobStateRaw(blobId) ?? LOCAL
+}
+
+const readyListeners = new Map<string, Set<() => void>>()
+
+/** Calls `cb` once the blob has arrived locally. Returns an unsubscribe function. */
+export function onBlobReady(blobId: string, cb: () => void): () => void {
+  let set = readyListeners.get(blobId)
+  if (!set) readyListeners.set(blobId, (set = new Set()))
+  set.add(cb)
+  return () => {
+    set.delete(cb)
+    if (!set.size && readyListeners.get(blobId) === set) readyListeners.delete(blobId)
+  }
+}
+
+/** The engine reports a finished download (blob id = content hash). */
+export function emitBlobReady(hash: string) {
+  const set = readyListeners.get(hash)
+  if (!set) return
+  readyListeners.delete(hash)
+  for (const cb of set) {
+    try {
+      cb()
+    } catch (e) {
+      console.error(e)
+    }
+  }
+}
+
+/** Called when a song or setlist opens: its files jump the download queue (+1000). */
+export function prioritizeSongs(ids: string[]): void {
+  if (!ids.length || !useLibSync.getState().configured) return
+  void service()
+    .then((m) => m.prioritizeSongs(ids))
+    .catch(() => {})
+}
 
 /**
  * The bucket CORS rule to paste (§7.1), filled with `location.origin`. Pure, so implemented already:
@@ -199,7 +383,8 @@ export function prioritizeSongs(_ids: string[]): void {}
  */
 export function corsRule(provider: BackendConfig & { kind: 's3' }): string {
   const origin = typeof location === 'undefined' ? 'https://openstand.rodlabs.dev' : location.origin
-  const expose = ['ETag', 'Content-Length', 'Content-Range']
+  // `Date` lets the S3 backend correct clock skew (§7.1).
+  const expose = ['ETag', 'Content-Length', 'Content-Range', 'Date']
   const rule =
     provider.provider === 'b2'
       ? [

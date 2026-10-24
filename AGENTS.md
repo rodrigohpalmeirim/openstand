@@ -30,9 +30,21 @@ zustand, pdf.js (`src/files/pdf.ts`), pdf-lib, abcjs, fflate, lucide-react icons
 - `src/ui/primitives.tsx` UI kit: Button, IconButton, Input, Textarea, Select, Field, Toggle, Segmented,
   Slider, Dialog, Popover, Menu/useMenu, toast(), confirmDialog(), promptDialog(), Empty, Kbd. Reuse them.
 - `src/services.ts` `registerService(fn)` for background services; add a side-effect import to `src/modules.ts`.
+- `src/libsync/` library sync (spec: `docs/SYNC.md`; separate from `src/sync/`). Pure model: `hlc.ts`, `hash.ts`,
+  `fields.ts` (per-collection field tables, `syncedKv` allow-list), `merge.ts` (project/diff/mergeDelta/materialize/
+  rebase), `joinPlan.ts`. Storage and wire: `crypto.ts` (HKDF keys, sealed envelopes, chunked blob container),
+  `codec.ts`, `paths.ts`, `pairing.ts`, `backends/` (`s3.ts` via aws4fetch, `memory.ts` for tests,
+  `contract.test-helper.ts`). Engine: `engine.ts` (capture → push, poll/notice → pull → apply, maintenance),
+  `apply.ts`, `blobs.ts` (transfer queue), `relay.ts` (notices), `join.ts` (enable/join/leave/reset), `state.ts`,
+  `service.ts` (one engine per library DB, Web Lock). `api.ts` is the UI facade (`useLibSync`, `useBlobState`,
+  `onBlobReady`); `ui/` holds the settings section, wizard, pairing, indicator and `BlobPending`. Only `api.ts`,
+  `service.ts`, `state.ts`, `fields.ts` and the indicator are in the startup bundle; the rest loads lazily.
+  `src/db/capture.ts` is a Dexie DBCore middleware marking changed records dirty (no libsync imports). New kv keys
+  sync only if added to `syncedKv`. `getBlob` throws `MissingBlobError` while a synced file is still downloading:
+  show `BlobPending` rather than an error. Count plays with `recordPlay`, not a read-modify-write.
 - `src/sync/` device sync; `server/relay.mjs` (Node) and `worker/index.ts` (Cloudflare Durable Object) are two
   implementations of the same dumb relay contract: `?room=NAME`, rebroadcast text frames to the room's other
-  clients. Keep them in step. `wrangler.jsonc` deploys `dist/` + the relay; run `npm run cf:typegen` after
+  clients (library sync uses `/relay/lib/<roomId>` rooms with tighter limits). Keep them in step. `wrangler.jsonc` deploys `dist/` + the relay; run `npm run cf:typegen` after
   changing it (needs glibc ≥ 2.35 for workerd; use a `node:24-bookworm` container on older systems).
 
 ## Rules for parallel work

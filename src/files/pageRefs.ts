@@ -19,3 +19,10 @@ export function resolvePageRefs(song: Song): PageRef[] {
 export function pageSettingsKey(fileId: string, page: number) {
   return `${fileId}:${page}`
 }
+
+/** Blob of the file holding page `page` of the page order (else the first file): what a thumbnail shows. */
+export function shownBlobId(song: Song, page = 0): string | undefined {
+  const refs = resolvePageRefs(song)
+  const shown = refs[page] ?? refs[0]
+  return (shown && song.files.find((f) => f.id === shown.fileId)?.blobId) ?? song.files[0]?.blobId
+}

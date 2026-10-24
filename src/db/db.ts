@@ -1,6 +1,7 @@
 import Dexie, { type EntityTable, type Table } from 'dexie'
 import type { BlobRecord, KV, PageAnnotations, Setlist, Song, ThumbRecord } from './schema'
 import type { ChunkRow, DirtyRow, OutboxRow, ShadowRecord, SyncStateRow, TransferRow } from '../libsync/model'
+import { installCapture } from './capture'
 
 export class OpenStandDB extends Dexie {
   songs!: EntityTable<Song, 'id'>
@@ -37,6 +38,8 @@ export class OpenStandDB extends Dexie {
       syncTransfers: '[dir+hash], state, priority',
       syncChunks: '[hash+index]',
     })
+    // Library sync: mark changed records dirty inside the writing transaction (docs/SYNC.md §8.1).
+    installCapture(this)
   }
 }
 
@@ -58,19 +61,31 @@ export async function sha256(data: ArrayBuffer): Promise<string> {
   return [...new Uint8Array(h)].map((b) => b.toString(16).padStart(2, '0')).join('')
 }
 
-/** Store binary content, de-duplicated by hash. Returns the blob id. */
+/**
+ * Store binary content, de-duplicated by hash. Returns the blob id. New blobs use the hash as their id, so
+ * ids match across synced devices; older libraries keep their uuid ids.
+ */
 export async function putBlob(data: ArrayBuffer, mime: string): Promise<{ id: string; size: number }> {
   const hash = await sha256(data)
   const existing = await db.blobs.where('hash').equals(hash).first()
   if (existing) return { id: existing.id, size: existing.size }
-  const id = uid()
-  await db.blobs.put({ id, hash, mime, size: data.byteLength, data: new Blob([data], { type: mime }) })
-  return { id, size: data.byteLength }
+  await db.blobs.put({ id: hash, hash, mime, size: data.byteLength, data: new Blob([data], { type: mime }) })
+  return { id: hash, size: data.byteLength }
+}
+
+/** The file data isn't on this device (yet). With library sync on it may still be downloading. */
+export class MissingBlobError extends Error {
+  readonly blobId: string
+  constructor(blobId: string) {
+    super(`Missing file data (${blobId})`)
+    this.name = 'MissingBlobError'
+    this.blobId = blobId
+  }
 }
 
 export async function getBlob(id: string): Promise<Blob> {
   const rec = await db.blobs.get(id)
-  if (!rec) throw new Error(`Missing file data (${id})`)
+  if (!rec) throw new MissingBlobError(id)
   return rec.data
 }
 
@@ -96,12 +111,36 @@ export async function pruneAnnotations(songId?: string): Promise<number> {
   const songs = songId ? [await db.songs.get(songId)] : await db.songs.toArray()
   for (const s of songs) if (s) files.set(s.id, new Set(s.files.map((f) => f.id)))
   const pages = songId ? db.annotations.where('songId').equals(songId) : db.annotations.toCollection()
-  const dead: string[] = []
+  let dead: string[] = []
   await pages.each((a) => {
     if (!files.get(a.songId)?.has(a.fileId)) dead.push(a.id)
   })
+  if (dead.length && pruneFilter) dead = await pruneFilter(db, dead)
   await db.annotations.bulkDelete(dead)
   return dead.length
+}
+
+/** Narrows the pages `pruneAnnotations` may delete to those it returns. */
+export type PruneFilter = (db: OpenStandDB, pageIds: string[]) => Promise<string[]>
+let pruneFilter: PruneFilter | null = null
+
+/**
+ * Library sync registers a filter so pages that were already synced aren't pruned (that would delete them
+ * on every device, e.g. when annotations arrive before their song). Keeps db.ts free of libsync imports.
+ */
+export function setPruneFilter(fn: PruneFilter | null) {
+  pruneFilter = fn
+}
+
+/** Count one play: an atomic increment, so it's never based on a stale copy of the song (§8.4). */
+export function recordPlay(songId: string, at = Date.now()) {
+  return db.songs
+    .where('id')
+    .equals(songId)
+    .modify((s) => {
+      s.playCount = (s.playCount ?? 0) + 1
+      s.lastPlayedAt = at
+    })
 }
 
 export async function getKV<T>(key: string, fallback: T): Promise<T> {

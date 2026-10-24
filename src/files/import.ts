@@ -352,20 +352,24 @@ export async function importFiles(sources: ImportSource[], opts: ImportOptions =
   return result
 }
 
-/** Add files to an existing song (saves it). */
+/**
+ * Add files to an existing song (saves it). The change is applied to the song as stored now, not to the
+ * possibly stale `song` passed in, so edits synced from another device meanwhile aren't reverted.
+ */
 export async function addFilesToSong(song: Song, files: File[]): Promise<Song> {
-  const next = structuredClone(song)
+  const added: SongFile[] = []
   for (const f of files) {
     const r = await readImportFile({ file: f })
-    if ('file' in r) next.files.push(r.file)
+    if ('file' in r) added.push(r.file)
   }
-  if (next.pageOrder) {
-    for (const f of next.files.slice(song.files.length))
-      for (let p = 0; p < f.pageCount; p++) next.pageOrder.push({ fileId: f.id, page: p })
-  }
-  next.modifiedAt = Date.now()
-  await db.songs.put(next)
-  return next
+  return db.transaction('rw', db.songs, async () => {
+    const next = structuredClone((await db.songs.get(song.id)) ?? song)
+    next.files.push(...added)
+    if (next.pageOrder) for (const f of added) for (let p = 0; p < f.pageCount; p++) next.pageOrder.push({ fileId: f.id, page: p })
+    next.modifiedAt = Date.now()
+    await db.songs.put(next)
+    return next
+  })
 }
 
 /** Store a text body as a new SongFile (not attached to any song yet). */
@@ -441,6 +445,8 @@ export function refreshMetaFromText(song: Song, kind: FileKind, oldText: string,
   return song
 }
 
+const TEXT_KINDS = new Set<FileKind>(['chordpro', 'text', 'abc'])
+
 /**
  * Replace the contents of a text file inside a song (text/ChordPro/ABC editors), refreshing song
  * metadata that was derived from the file (see `refreshMetaFromText`).
@@ -448,22 +454,28 @@ export function refreshMetaFromText(song: Song, kind: FileKind, oldText: string,
 export async function updateTextFile(song: Song, fileId: string, body: string, kind?: FileKind): Promise<Song> {
   const buf = new TextEncoder().encode(body).buffer as ArrayBuffer
   const { id: blobId, size } = await putBlob(buf, 'text/plain;charset=utf-8')
-  const next = structuredClone(song)
-  const f = next.files.find((x) => x.id === fileId)
-  if (f) {
-    const k = kind ?? f.kind
-    if (k === 'chordpro' || k === 'text' || k === 'abc') {
-      const old = await getBlob(f.blobId)
-        .then((b) => b.text())
-        .catch(() => '')
-      refreshMetaFromText(next, k, old, body, f.name)
+  // Apply the change to the song as stored now: the editor's copy may be stale (edits synced meanwhile).
+  const latest = (await db.songs.get(song.id)) ?? song
+  const prev = latest.files.find((x) => x.id === fileId)
+  const old =
+    prev && TEXT_KINDS.has(kind ?? prev.kind)
+      ? await getBlob(prev.blobId)
+          .then((b) => b.text())
+          .catch(() => '')
+      : ''
+  return db.transaction('rw', db.songs, async () => {
+    const next = structuredClone((await db.songs.get(song.id)) ?? latest)
+    const f = next.files.find((x) => x.id === fileId)
+    if (f) {
+      const k = kind ?? f.kind
+      if (TEXT_KINDS.has(k)) refreshMetaFromText(next, k, f.blobId === prev?.blobId ? old : '', body, f.name)
+      f.blobId = blobId
+      f.size = size
     }
-    f.blobId = blobId
-    f.size = size
-  }
-  next.modifiedAt = Date.now()
-  await db.songs.put(next)
-  return next
+    next.modifiedAt = Date.now()
+    await db.songs.put(next)
+    return next
+  })
 }
 
 /** Recursively collect files from a directory handle (File System Access API). Paths exclude the root. */
