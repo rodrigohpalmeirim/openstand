@@ -1009,8 +1009,13 @@ export function joinSong(local: Song, remote: Song): Song
 
 - **"Delete synced data from storage…"** requires typing the library name. It lists and deletes
   `os1/<libraryId>/`. This is the only operation that deletes other devices' keys, and the user invokes it
-  deliberately. Afterwards, other devices get `libraryGone` (meta 404 plus empty heads), stop, and keep
-  their local data.
+  deliberately. Meta goes first. Afterwards, other devices get `libraryGone` (meta 404 plus empty heads),
+  stop, and keep their local data. Their banner offers **Join with a new code** (stop syncing, then the
+  join flow with merge preselected, so the songs stay in this library) and **Stop syncing**.
+- **No orphans:** a device that hasn't noticed yet must not write into the old prefix. Before writing it
+  HEADs `meta`: once per write cycle for log pushes and snapshots (every locked engine run starts a new
+  cycle), fresh for the device record (daily, rename, retire), at most every 30 s for blob uploads. When
+  `meta` is gone it stops with `libraryGone` instead of writing.
 - **"Reset sync"** is delete followed by enable with a new secret. This is the key-rotation path, used
   after a lost device; the remaining devices then pair again. It is also the only way forward for a
   library that still holds v1-format objects (`oldFormat`, §4.4).
@@ -1110,6 +1115,7 @@ export function leaveSync(): Promise<void>
 export function deleteRemoteData(): Promise<void>
 export function repair(): Promise<void>
 export function updateBackend(cfg: BackendConfig): Promise<void>   // new keys after rotation at the provider
+export function renameDevice(name: string): Promise<void>         // '' = default name; overwrites devices/<me>
 export function useBlobState(blobId: string | undefined): { state: 'local' | 'queued' | 'downloading' | 'waiting' | 'offline' | 'missing'; progress?: number }
 export function onBlobReady(blobId: string, cb: () => void): () => void
 export function prioritizeSongs(ids: string[]): void
@@ -1117,7 +1123,11 @@ export function corsRule(provider: BackendConfig & { kind: 's3' }): string   // 
 ```
 
 The device name comes from `settings().sync.deviceName` (shared with performance sync), falling back to
-`defaultDeviceName()`.
+`defaultDeviceName()` (`src/sync/deviceName.ts`): "iPad", "iPhone", "Pixel 8" (the model from UA client
+hints), "Android tablet", "Chromebook", "Windows PC", "Mac" or "Linux PC", never browser plus OS. A
+default name gets a number ("iPad 2") when a device that joined earlier already uses it; only earlier
+devices count, so names don't flip. Renaming this device in the devices list saves the setting and
+overwrites `devices/<me>` at once.
 
 ### 12.2 Screens and placement
 
@@ -1140,7 +1150,7 @@ The device name comes from `settings().sync.deviceName` (shared with performance
     - A status card with phase, "Up to date · 2 min ago", pending changes, transfer bars, and "Ready
       offline: 1,238 of 1,240 files".
     - **Sync now** and **Add a device** (QR plus Copy code).
-    - The devices list: name, last seen, a "This device" badge; retired devices dimmed.
+    - The devices list: name, last seen, a "This device" badge with a rename button; retired devices dimmed.
     - Storage: backend label and **Update storage keys**.
     - A **Pause sync** toggle.
     - Danger zone: **Re-check files** (repair), **Stop syncing on this device**, **Delete synced data
@@ -1167,6 +1177,9 @@ Never show "conflict". Use calm, specific wording:
 - "Uploading 3 files (12 MB)"
 - "Downloading 120 files. You can keep using OpenStand."
 - "Offline. Changes will sync when you're back online."
+- Enable/join steps never show their ids: "Checking the synced library…", "Loading the synced library…
+  812 of 1,240", "Adding this device…", "Combining your songs…", "Uploading songs and files…" (join:
+  "Uploading this device's songs…"), "Finishing up…". Single-step phases show no "0 of 1".
 
 Each error code below has fixed wording and an action:
 
@@ -1178,7 +1191,8 @@ Each error code below has fixed wording and an action:
 | `localQuota` | "This device is out of space (needs 1.2 GB more)." | Storage settings |
 | `clock` | "This device's clock is wrong, so the storage refused the request." | Retry (auto-corrected once) |
 | `clockAhead` | "“iPad” has its clock set 3 h ahead. Edits from it may win over newer ones." | none |
-| `wrongSecret` / `libraryGone` | "This code doesn't match the data in that storage." / "The synced library was deleted from storage." | Join again / Stop syncing |
+| `wrongSecret` | "This code doesn't match the data in that storage." | Join again |
+| `libraryGone` | "The synced library was reset or deleted from another device." plus "To keep syncing, get a new pairing code from a device that's still syncing and join again. Your songs stay on this device." | Join with a new code / Stop syncing |
 | `newerFormat` | "Another device uses a newer OpenStand. Update this one to keep syncing." | Reload app |
 | `rejoin` / `corrupt` | "This device needs to rejoin the synced library." | Rejoin |
 | `network` | not an error: phase `offline` | none |

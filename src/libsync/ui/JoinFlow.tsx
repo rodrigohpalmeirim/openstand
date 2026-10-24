@@ -6,7 +6,7 @@ import type { JoinMode } from '../model'
 import { useLibraries } from '../../library/browse/libraries'
 import { Button, Dialog, cx } from '../../ui/primitives'
 import { joinSync, leaveSync, parsePairingCode, previewJoin } from './client'
-import { active, downloadLine } from './format'
+import { active, downloadLine, initialLine } from './format'
 import { initialJoin, joinErrorText, joinReducer, joinTarget, mergeLine, previewLine, type JoinTarget } from './joinState'
 import { PairScanner } from './PairScanner'
 import { Bar, Note } from './parts'
@@ -45,8 +45,10 @@ function TargetBox({ t }: { t: JoinTarget }) {
 /**
  * `rejoin`: this device's sync is broken (`rejoin`, `corrupt`, `wrongSecret`); joining first stops the old
  * sync, and merging into this library is preselected so unsynced local edits aren't stranded.
+ * `reason: 'libraryGone'`: the synced library was reset or deleted elsewhere and this device already
+ * stopped syncing (its songs stayed); the user joins again with a new code.
  */
-export function JoinFlow({ open, onClose, rejoin }: { open: boolean; onClose: () => void; rejoin?: boolean }) {
+export function JoinFlow({ open, onClose, rejoin, reason }: { open: boolean; onClose: () => void; rejoin?: boolean; reason?: 'libraryGone' }) {
   const [s, dispatch] = useReducer(joinReducer, undefined, initialJoin)
   const initial = useLibSync((st) => st.initial)
   const download = useLibSync((st) => st.download)
@@ -122,10 +124,16 @@ export function JoinFlow({ open, onClose, rejoin }: { open: boolean; onClose: ()
     )
 
   return (
-    <Dialog open={open} onClose={onClose} title={rejoin ? 'Rejoin the synced library' : 'Join a synced library'} footer={footer}>
+    <Dialog open={open} onClose={onClose} title={reason === 'libraryGone' ? 'Join with a new code' : rejoin ? 'Rejoin the synced library' : 'Join a synced library'} footer={footer}>
       <div className="grid gap-5 px-5 py-4">
         {(s.step === 'scan' || s.step === 'checking') && (
           <>
+            {reason === 'libraryGone' && (
+              <Note tone="info">
+                <p className="font-medium">This device stopped syncing. Your songs are still here.</p>
+                <p className="mt-0.5 text-muted">The synced library was reset or deleted from another device. Get a new pairing code from a device that’s still syncing to join again.</p>
+              </Note>
+            )}
             <p className="text-sm text-muted">
               On a device that already syncs, open <b className="text-fg">Settings → Library sync → Add a device</b> and show the pairing code.
             </p>
@@ -208,8 +216,8 @@ export function JoinFlow({ open, onClose, rejoin }: { open: boolean; onClose: ()
               Joining{name ? ` “${name}”` : ''}…
             </h3>
             <Bar
-              value={initial?.total ? initial.done / initial.total : undefined}
-              label={initial ? `${initial.step} · ${initial.done.toLocaleString()} of ${initial.total.toLocaleString()}` : 'Checking the synced library…'}
+              value={initial && initial.total > 1 ? initial.done / initial.total : undefined}
+              label={initial ? initialLine(initial) : 'Checking the synced library…'}
             />
             <p className="text-sm text-muted">You can close this window. Joining continues in the background, and the cloud icon in the sidebar shows how far it got.</p>
           </>

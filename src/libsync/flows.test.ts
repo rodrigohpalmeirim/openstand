@@ -6,7 +6,9 @@ import { openLibrary, pruneAnnotations } from '../db/db'
 import type { SongLayers } from '../db/schema'
 import { SyncError } from './engine'
 import { deleteRemote, leave } from './join'
-import { deviceKey, headsPrefix, logPrefix } from './paths'
+import { decodeDevice } from './codec'
+import { deviceKey, headsPrefix, libraryPrefix, logKey, logPrefix } from './paths'
+import { uniqueDeviceName } from '../sync/deviceName'
 import { getConfig, getState, putState } from './state'
 import { addSong, bytes, converge, enableDevice, joinDevice, outgoing, page, setlist, settle, stroke, view, world } from './sync.test-helper'
 
@@ -232,6 +234,113 @@ describe('leave and delete', () => {
     // Stopping sync on B afterwards (the banner's action) writes nothing back into the deleted library.
     await leave(B, eB, w.opts())
     expect([...w.backend().objects().keys()]).toEqual([])
+  })
+})
+
+describe('no orphans after another device resets or deletes the library', () => {
+  it('a device that hasn’t noticed yet writes nothing into the old prefix (device record, logs, blobs)', async () => {
+    const w = world()
+    const A = w.db('A')
+    await addSong(A, 's1', 'x', { files: [{ id: 'f', data: bytes(1, 10) }] })
+    const eA = await enableDevice(w, A)
+    const B = w.db('B')
+    const eB = await joinDevice(w, B, A)
+    await eB.sync()
+    const old = libraryPrefix(eB.core.keys.libraryId)
+    const inOld = () => [...w.backend().objects().keys()].filter((k) => k.startsWith(old))
+
+    // A resets: the old library is deleted and a new one (new secret, new prefix) uploaded.
+    await deleteRemote(A, eA, w.opts())
+    const eA2 = await enableDevice(w, A)
+    expect(eA2.core.keys.libraryId).not.toBe(eB.core.keys.libraryId)
+    expect(inOld()).toEqual([])
+    w.advance(60_000)
+
+    // The periodic device-record write (maintenance, due daily).
+    w.advance(DAY + 1)
+    await expect(eB.maintenance()).rejects.toMatchObject({ code: 'libraryGone' })
+    expect(inOld()).toEqual([])
+    expect(eB.status).toMatchObject({ phase: 'error', error: { code: 'libraryGone' } })
+
+    // A local edit pushed before any pull noticed (push alone, no fresh pull).
+    await B.table('songs').update('s1', { title: 'edited on B' })
+    await eB.captureNow()
+    await expect(eB.push()).rejects.toMatchObject({ code: 'libraryGone' })
+    expect(inOld()).toEqual([])
+
+    // A new file's upload.
+    await addSong(B, 's2', 'new on B', { files: [{ id: 'g', data: bytes(2, 50) }] })
+    await eB.captureNow()
+    await settle(eB)
+    expect(await B.syncTransfers.count()).toBe(1) // still queued, not uploaded
+    expect(inOld()).toEqual([])
+
+    // The local library is untouched, and leaving afterwards writes nothing either.
+    expect((await B.songs.toArray()).map((s) => s.title).sort()).toEqual(['edited on B', 'new on B'])
+    await leave(B, eB, w.opts())
+    expect(inOld()).toEqual([])
+  })
+
+  it('the engine checks the library once per write cycle, not once per object', async () => {
+    const w = world()
+    const A = w.db('A')
+    const eA = await enableDevice(w, A)
+    const backend = eA.core.backend
+    let heads = 0
+    const head = backend.head.bind(backend)
+    backend.head = (key, o) => {
+      if (key.endsWith('/meta')) heads++
+      return head(key, o)
+    }
+    for (let i = 0; i < 5; i++) await addSong(A, `n${i}`, `New ${i}`)
+    // One sync = capture, push, pull, capture, push: one HEAD on meta.
+    await eA.sync()
+    expect(heads).toBe(1)
+    expect(await A.syncOutbox.count()).toBe(0)
+    // Nothing to push: no HEAD at all.
+    heads = 0
+    await eA.sync()
+    expect(heads).toBe(0)
+  })
+})
+
+describe('device names', () => {
+  it('two iPads get distinct default names; a rename overwrites the record and shows in warnings', async () => {
+    const w = world()
+    const own: Record<string, string> = {}
+    // Like the service: the user's own name, else the default made unique against earlier devices.
+    const named = (who: string) => ({ deviceName: ({ taken }: { taken: string[] }) => own[who] || uniqueDeviceName('iPad', taken) })
+    const A = w.db('A')
+    await addSong(A, 's1', 'One')
+    const eA = await enableDevice(w, A, named('A'))
+    w.advance(1000)
+    const B = w.db('B')
+    const eB = await joinDevice(w, B, A, 'here', named('B'))
+    await eA.refreshDevices()
+    const names = (e: typeof eA) => Object.fromEntries(e.status.devices.map((d) => [d.self ? 'self' : 'other', d.name]))
+    expect(names(eA)).toEqual({ self: 'iPad', other: 'iPad 2' })
+
+    // Daily rewrites keep the names (only devices that joined earlier count).
+    await eA.putDevice()
+    await eB.putDevice()
+    await eA.refreshDevices()
+    expect(names(eA)).toEqual({ self: 'iPad', other: 'iPad 2' })
+
+    // B renames itself: its record is overwritten at once.
+    own.B = 'Stage iPad'
+    await eB.rename()
+    const rec = await decodeDevice(eB.core.keys, (await w.backend().get(deviceKey(eB.core.keys.libraryId, eB.config.deviceId)))!, eB.config.deviceId)
+    expect(rec.name).toBe('Stage iPad')
+    await eA.refreshDevices()
+    expect(names(eA).other).toBe('Stage iPad')
+
+    // An unreadable entry from B names it by its new name.
+    await addSong(B, 's2', 'Two')
+    await eB.sync()
+    const seq = (await getState(B, 'cursors'))![eB.config.deviceId]
+    await w.backend().put(logKey(eB.core.keys.libraryId, eB.config.deviceId, seq), bytes(9, 200))
+    await eA.sync()
+    expect(eA.status.streams?.[eB.config.deviceId]?.message).toBe('Changes from “Stage iPad” can’t be read right now. Other devices keep syncing.')
   })
 })
 

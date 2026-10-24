@@ -2,7 +2,7 @@
 import type { JoinPreview } from '../api'
 import { LibSyncFailure } from '../api'
 import { PairingError, type JoinMode, type PairingPayload } from '../model'
-import { errorText, fmtBytes, plural } from './format'
+import { errorText, failureText, fmtBytes, plural } from './format'
 
 export type JoinStep = 'scan' | 'checking' | 'preview' | 'joining' | 'done'
 
@@ -61,7 +61,7 @@ export function joinErrorText(e: unknown): string {
     if (f.code === 'network') return 'Can’t reach the storage. Check your connection and try again.'
     return errorText({ code: f.code, message: f.message, detail: f.detail }).message
   }
-  return (e as Error)?.message || 'Something went wrong. Try again.'
+  return failureText(e)
 }
 
 /** "Synced library: 1,240 songs, 3.2 GB · This device: 12 songs" */

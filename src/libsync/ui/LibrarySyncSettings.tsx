@@ -9,6 +9,7 @@ import {
   Loader2,
   Lock,
   MonitorSmartphone,
+  Pencil,
   QrCode,
   RefreshCw,
   ShieldAlert,
@@ -22,9 +23,11 @@ import { useLibSync, type LibSyncStatus } from '../api'
 import type { S3Config } from '../backends/types'
 import { useLibraries } from '../../library/browse/libraries'
 import { useNav } from '../../state/nav'
-import { Button, Dialog, Input, confirmDialog, cx, toast } from '../../ui/primitives'
-import { checkBackend, currentPayload, deleteRemoteData, enableSync, leaveSync, repair, setPaused, syncNow, updateBackend } from './client'
-import { active, downloadLine, errorText, fraction, phaseLine, plural, syncProblem, timeAgo, uploadLine, type ErrorAction } from './format'
+import { useSettings } from '../../state/settings'
+import { defaultDeviceName } from '../../sync/deviceName'
+import { Button, Dialog, Field, IconButton, Input, confirmDialog, cx, toast } from '../../ui/primitives'
+import { checkBackend, currentPayload, deleteRemoteData, enableSync, leaveSync, renameDevice, repair, setPaused, syncNow, updateBackend } from './client'
+import { active, controls, downloadLine, errorText, failureText, fraction, initialLine, phaseLine, plural, syncProblem, timeAgo, uploadLine, type ErrorAction } from './format'
 import { JoinFlow } from './JoinFlow'
 import { PairingQr } from './PairingQr'
 import { Bar, Block, Note, SwitchRow } from './parts'
@@ -33,14 +36,15 @@ import { checkFailureText, formFromConfig, needsCors, preset, toConfig, validate
 
 type Modal =
   | { kind: 'wizard' }
-  | { kind: 'join'; rejoin?: boolean }
+  | { kind: 'join'; rejoin?: boolean; reason?: 'libraryGone' }
+  | { kind: 'rename' }
   | { kind: 'pair' }
   | { kind: 'keys' }
   | { kind: 'cors' }
   | { kind: 'confirm'; what: 'delete' | 'reset' }
   | null
 
-const fail = (e: unknown) => toast((e as Error)?.message || 'Something went wrong', 'error')
+const fail = (e: unknown) => toast(failureText(e), 'error')
 
 /** The shared storage config (from the pairing payload), loaded when `want` turns true. */
 function useStorageConfig(want: boolean): { config: S3Config | null; relay?: string | null; loading: boolean } {
@@ -138,14 +142,27 @@ function ErrorBanner({ s, onAction, providerConsole }: { s: LibSyncStatus; onAct
         </a>
       ) : null
     ) : t.action ? (
-      <Button size="sm" variant={t.warning ? 'secondary' : 'primary'} onClick={() => onAction(t.action!)}>
-        {t.actionLabel}
-      </Button>
+      <>
+        <Button size="sm" variant={t.warning ? 'secondary' : 'primary'} onClick={() => onAction(t.action!)}>
+          {t.actionLabel}
+        </Button>
+        {t.secondary && (
+          <Button size="sm" variant="secondary" onClick={() => onAction(t.secondary!)}>
+            {t.secondaryLabel}
+          </Button>
+        )}
+      </>
     ) : null
   return (
     <Note tone={t.warning ? 'warn' : 'danger'} action={action}>
       <p className="font-medium">{t.message}</p>
-      {s.error.detail && !/^\d+$/.test(s.error.detail) && <p className="mt-0.5 text-xs text-muted">{s.error.detail}</p>}
+      {t.hint && <p className="mt-0.5 text-muted">{t.hint}</p>}
+      {s.error.detail && !/^\d+$/.test(s.error.detail) && (
+        <details className="mt-1 text-xs text-muted">
+          <summary className="cursor-pointer select-none">Technical details</summary>
+          <p className="mt-0.5 break-words">{s.error.detail}</p>
+        </details>
+      )}
     </Note>
   )
 }
@@ -177,7 +194,7 @@ function StatusCard({ s }: { s: LibSyncStatus }) {
         </div>
       </div>
       {s.initial && (
-        <Bar value={s.initial.total ? s.initial.done / s.initial.total : undefined} label={`${s.initial.step} · ${s.initial.done.toLocaleString()} of ${s.initial.total.toLocaleString()}`} />
+        <Bar value={s.initial.total > 1 ? s.initial.done / s.initial.total : undefined} label={initialLine(s.initial)} />
       )}
       {!s.initial && active(s.upload) && <Bar value={fraction(s.upload)} label={uploadLine(s.upload)} />}
       {!s.initial && active(s.download) && <Bar value={fraction(s.download)} label={downloadLine(s.download)} />}
@@ -196,7 +213,7 @@ function DeviceIcon({ platform }: { platform: string }) {
   return <C className="size-5 shrink-0 text-muted" />
 }
 
-function Devices({ s }: { s: LibSyncStatus }) {
+function Devices({ s, onRename }: { s: LibSyncStatus; onRename?: () => void }) {
   const list = [...s.devices].sort((a, b) => Number(!!a.retired) - Number(!!b.retired) || Number(b.self) - Number(a.self) || b.lastSeenAt - a.lastSeenAt)
   if (!list.length) return <p className="text-sm text-muted">No devices yet.</p>
   return (
@@ -210,10 +227,15 @@ function Devices({ s }: { s: LibSyncStatus }) {
               {d.self && <span className="shrink-0 rounded-full bg-accent-soft px-2 py-0.5 text-[11px] font-medium text-accent">This device</span>}
             </div>
             <div className="truncate text-xs text-muted">
-              {d.retired ? 'Stopped syncing' : d.self ? 'Syncing now' : `Last seen ${timeAgo(d.lastSeenAt)}`}
+              {d.retired ? 'Stopped syncing' : d.self ? (s.phase === 'error' ? 'Not syncing' : s.phase === 'paused' ? 'Paused' : 'Syncing now') : `Last seen ${timeAgo(d.lastSeenAt)}`}
               {d.platform ? ` · ${d.platform}` : ''}
             </div>
           </div>
+          {d.self && !d.retired && onRename && (
+            <IconButton label="Rename this device" className="-mr-2 size-11 text-muted" onClick={onRename}>
+              <Pencil className="size-4" />
+            </IconButton>
+          )}
         </li>
       ))}
     </ul>
@@ -221,6 +243,54 @@ function Devices({ s }: { s: LibSyncStatus }) {
 }
 
 /* ------------------------------------------------------------ Dialogs */
+
+/** Rename this device: the name other devices see (shared with performance sync). Empty = the default name. */
+function RenameDialog({ current, onClose }: { current: string; onClose: () => void }) {
+  const own = useSettings((st) => st.s.sync.deviceName)
+  const [name, setName] = useState(own.trim() || current)
+  const [busy, setBusy] = useState(false)
+  const fallback = defaultDeviceName()
+  const save = async () => {
+    if (busy) return
+    setBusy(true)
+    try {
+      // Saving the default name unchanged keeps it a default (numbered if another device has it too).
+      const next = !own.trim() && name.trim() === current ? '' : name.trim().slice(0, 60)
+      await renameDevice(next)
+      toast('Device renamed', 'ok')
+      onClose()
+    } catch (e) {
+      fail(e)
+    } finally {
+      setBusy(false)
+    }
+  }
+  return (
+    <Dialog
+      open
+      size="sm"
+      onClose={() => !busy && onClose()}
+      title="Rename this device"
+      footer={
+        <>
+          <Button variant="ghost" onClick={onClose} disabled={busy}>
+            Cancel
+          </Button>
+          <Button variant="primary" onClick={save} disabled={busy}>
+            {busy && <Loader2 className="size-4 animate-spin" />}
+            Save
+          </Button>
+        </>
+      }
+    >
+      <div className="grid gap-3 px-5 py-4 text-sm">
+        <Field label="Device name" hint={`Your other devices show this name. Leave it empty to use “${fallback}”.`}>
+          <Input value={name} maxLength={60} placeholder={fallback} onChange={(e) => setName(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && void save()} autoFocus autoComplete="off" />
+        </Field>
+      </div>
+    </Dialog>
+  )
+}
 
 function KeysDialog({ onClose }: { onClose: () => void }) {
   const { config, loading } = useStorageConfig(true)
@@ -555,12 +625,26 @@ export function LibrarySyncSettings() {
     if (ok) await run('leave', leaveSync, 'Stopped syncing on this device')()
   }
 
+  // The library is gone: stop syncing (local songs stay as they are), then join again with a new code.
+  const joinNew = async () => {
+    setBusy('leave')
+    try {
+      await leaveSync()
+      setModal({ kind: 'join', rejoin: true, reason: 'libraryGone' })
+    } catch (e) {
+      fail(e)
+    } finally {
+      setBusy(null)
+    }
+  }
+
   const onAction = (a: ErrorAction) => {
     if (a === 'updateKeys') setModal({ kind: 'keys' })
     else if (a === 'showCors') setModal({ kind: 'cors' })
     else if (a === 'storageSettings') useNav.getState().go({ name: 'settings', page: 'storage' })
     else if (a === 'retry') void run('sync', syncNow)()
     else if (a === 'joinAgain' || a === 'rejoin') setModal({ kind: 'join', rejoin: true })
+    else if (a === 'joinNew') void joinNew()
     else if (a === 'stopSyncing') void leave()
     else if (a === 'reload') location.reload()
   }
@@ -568,7 +652,8 @@ export function LibrarySyncSettings() {
   const dialogs = (
     <>
       {modal?.kind === 'wizard' && <SetupWizard open onClose={close} />}
-      {modal?.kind === 'join' && <JoinFlow open onClose={close} rejoin={modal.rejoin} />}
+      {modal?.kind === 'join' && <JoinFlow open onClose={close} rejoin={modal.rejoin} reason={modal.reason} />}
+      {modal?.kind === 'rename' && <RenameDialog current={s.devices.find((d) => d.self)?.name ?? defaultDeviceName()} onClose={close} />}
       {modal?.kind === 'keys' && <KeysDialog onClose={close} />}
       {modal?.kind === 'cors' && <CorsDialog onClose={close} />}
       {modal?.kind === 'confirm' && modal.what === 'delete' && <DeleteDialog s={s} onClose={close} />}
@@ -604,6 +689,7 @@ export function LibrarySyncSettings() {
     )
 
   const paused = s.phase === 'paused'
+  const c = controls(s)
   return (
     <>
       <div className="grid gap-8">
@@ -611,49 +697,62 @@ export function LibrarySyncSettings() {
           <ErrorBanner s={s} onAction={onAction} providerConsole={config ? preset(config.provider).console : undefined} />
           <WarningBanner s={s} onAction={onAction} />
           <StatusCard s={s} />
-          <div className="flex flex-wrap gap-2">
-            <Button
-              icon={busy === 'sync' || s.phase === 'syncing' ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
-              onClick={run('sync', syncNow)}
-              disabled={!!busy || paused || s.phase === 'starting'}
-            >
-              Sync now
-            </Button>
-            <Button variant="primary" icon={<QrCode className="size-4" />} onClick={() => setModal({ kind: 'pair' })}>
-              Add a device
-            </Button>
-          </div>
+          {(c.syncNow || c.addDevice) && (
+            <div className="flex flex-wrap items-center gap-2">
+              {c.syncNow && (
+                <Button
+                  icon={busy === 'sync' || s.phase === 'syncing' ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
+                  onClick={run('sync', syncNow)}
+                  title={c.syncNowOff}
+                  disabled={!!busy || !!c.syncNowOff}
+                >
+                  Sync now
+                </Button>
+              )}
+              {c.addDevice && (
+                <Button variant="primary" icon={<QrCode className="size-4" />} onClick={() => setModal({ kind: 'pair' })}>
+                  Add a device
+                </Button>
+              )}
+            </div>
+          )}
         </div>
 
         <Block title="Devices" icon={<MonitorSmartphone className="size-4" />} description="Every device keeps a full copy of the library.">
-          <Devices s={s} />
+          <Devices s={s} onRename={c.rename ? () => setModal({ kind: 'rename' }) : undefined} />
         </Block>
 
         <Block title="Storage" icon={<HardDrive className="size-4" />}>
           <div className="flex flex-wrap items-center gap-3 rounded-xl border border-line px-4 py-2.5">
             <span className="min-w-0 flex-1 basis-48 break-words text-sm">{s.backendLabel ?? 'Your storage'}</span>
-            <Button size="sm" variant="ghost" icon={<KeyRound className="size-4" />} onClick={() => setModal({ kind: 'keys' })}>
-              Update storage keys
-            </Button>
+            {c.storageKeys && (
+              <Button size="sm" variant="ghost" icon={<KeyRound className="size-4" />} onClick={() => setModal({ kind: 'keys' })}>
+                Update storage keys
+              </Button>
+            )}
           </div>
-          <SwitchRow
-            label="Pause sync"
-            hint="Stops uploading and downloading on this device until you turn it back on."
-            checked={paused}
-            disabled={busy === 'pause'}
-            onChange={(v) => void run('pause', () => setPaused(v))()}
-          />
+          {c.pause && (
+            <SwitchRow
+              label="Pause sync"
+              hint="Stops uploading and downloading on this device until you turn it back on."
+              checked={paused}
+              disabled={busy === 'pause'}
+              onChange={(v) => void run('pause', () => setPaused(v))()}
+            />
+          )}
         </Block>
 
         <Block title="Troubleshooting" icon={<ShieldAlert className="size-4" />}>
           <div className="grid gap-2">
-            <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-              <Button size="sm" onClick={run('repair', repair, 'Files checked')} disabled={!!busy}>
-                {busy === 'repair' && <Loader2 className="size-4 animate-spin" />}
-                Re-check files
-              </Button>
-              <span className="text-xs text-muted">Uploads any file the storage is missing.</span>
-            </div>
+            {c.recheck && (
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                <Button size="sm" onClick={run('repair', repair, 'Files checked')} disabled={!!busy}>
+                  {busy === 'repair' && <Loader2 className="size-4 animate-spin" />}
+                  Re-check files
+                </Button>
+                <span className="text-xs text-muted">Uploads any file the storage is missing.</span>
+              </div>
+            )}
             <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
               <Button size="sm" onClick={leave} disabled={!!busy}>
                 {busy === 'leave' && <Loader2 className="size-4 animate-spin" />}
@@ -668,9 +767,11 @@ export function LibrarySyncSettings() {
               <Button size="sm" variant="ghost" className="!text-danger" onClick={() => setModal({ kind: 'confirm', what: 'reset' })}>
                 Reset sync…
               </Button>
-              <Button size="sm" variant="ghost" className="!text-danger" onClick={() => setModal({ kind: 'confirm', what: 'delete' })}>
-                Delete synced data from storage…
-              </Button>
+              {c.deleteRemote && (
+                <Button size="sm" variant="ghost" className="!text-danger" onClick={() => setModal({ kind: 'confirm', what: 'delete' })}>
+                  Delete synced data from storage…
+                </Button>
+              )}
             </div>
           </div>
         </Block>

@@ -8,9 +8,9 @@ import { db as currentDb, OpenStandDB } from '../db/db'
 import { flush as flushAnnotations, remoteChanged } from '../annotations/store'
 import { useLibraries } from '../library/browse/libraries'
 import { registerService } from '../services'
-import { settings } from '../state/settings'
+import { settings, useSettings } from '../state/settings'
 import { useViewer } from '../state/viewer'
-import { defaultDeviceName } from '../sync/sync'
+import { defaultDeviceName, loadDeviceHints, uniqueDeviceName } from '../sync/deviceName'
 import { on } from '../viewer/events'
 import { emitBlobReady, offStatus, useLibSync, type LibSyncStatus } from './api'
 import type { Engine, EngineEnv, EngineStatus } from './engine'
@@ -35,7 +35,23 @@ const env: EngineEnv = {
   idle: () => env.visible() && !env.performing() && Date.now() - lastInput > 60_000,
 }
 
-export const deviceName = () => settings().sync.deviceName.trim() || defaultDeviceName()
+/** The user's name for this device (Settings, shared with performance sync); else the default, made unique. */
+export async function deviceName(ctx: { taken: string[] } = { taken: [] }): Promise<string> {
+  const own = settings().sync.deviceName.trim()
+  if (own) return own
+  await loadDeviceHints()
+  return uniqueDeviceName(defaultDeviceName(), ctx.taken)
+}
+
+/**
+ * Rename this device ('' = back to the default name): saved in Settings, then the engine overwrites the
+ * device record. Another tab running the engine is asked to do it.
+ */
+export async function renameDevice(name: string) {
+  useSettings.getState().setIn('sync', { deviceName: name.trim() })
+  if (engine) await engine.rename()
+  else channel?.postMessage({ db: currentDb.name, cmd: 'rename', name: name.trim() })
+}
 
 // ---------------------------------------------------------------------------------------------
 // Status: published to `useLibSync` here, mirrored to other tabs
@@ -173,13 +189,18 @@ export async function prioritizeSongs(ids: string[]) {
 }
 
 registerService(() => {
+  void loadDeviceHints()
   if (typeof BroadcastChannel !== 'undefined') {
     channel = new BroadcastChannel(CHANNEL)
     channel.onmessage = (ev) => {
-      const m = ev.data as { db?: string; status?: LibSyncStatus; cmd?: string }
+      const m = ev.data as { db?: string; status?: LibSyncStatus; cmd?: string; name?: string }
       if (m.db !== currentDb.name) return
       if (m.status && !engine) useLibSync.setState(m.status, true)
       if (m.cmd === 'syncNow' && engine) void engine.sync().catch(() => {})
+      if (m.cmd === 'rename' && engine && typeof m.name === 'string') {
+        useSettings.getState().setIn('sync', { deviceName: m.name })
+        void engine.rename().catch(() => {})
+      }
     }
   }
   const input = () => (lastInput = Date.now())

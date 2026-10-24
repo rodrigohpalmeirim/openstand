@@ -1,8 +1,9 @@
 /**
  * Dev only: `?libsyncMock=<phase>` drives the library-sync UI without storage (loaded by api.ts in dev).
  *
- * Phases: off, starting, join, idle, syncing, pending, offline, paused, warning (one device's changes held
- * back, non-fatal), warning-streams (two devices), error (= error-auth), and
+ * Phases: off, starting, join, reset (just after "Reset sync": the first upload of the new library), idle,
+ * devices (two iPads, so the second is numbered), syncing, pending, offline, paused, warning (one device's
+ * changes held back, non-fatal), warning-streams (two devices), error (= error-auth), and
  * error-<code> for every `LibSyncErrorCode` (error-cors, error-quota, error-localQuota, error-clock,
  * error-clockAhead, error-wrongSecret, error-libraryGone, error-newerFormat, error-rejoin, error-corrupt, …).
  * Actions are faked too, so the wizard, join flow and buttons can be walked through. In the wizard, a bucket
@@ -35,10 +36,19 @@ const PAYLOAD: PairingPayload = { v: 1, s: 'mock-secret-0123456789abcdefghijklmn
 const CODE = `OSJ1.${'q1Zy0rM0NDDQMzI0MzQzNjE2MbE0NDY0MzExMjEwMzI0MDAzM'.repeat(6)}`
 
 const DEVICES: LibSyncStatus['devices'] = [
-  { v: 1, id: 'a1b2c3d4e5f60718', name: 'Chrome on Linux', platform: 'Linux', appVersion: '0.1.0', createdAt: now - 40 * 86400_000, lastSeenAt: now, self: true },
+  { v: 1, id: 'a1b2c3d4e5f60718', name: 'Linux PC', platform: 'Linux', appVersion: '0.1.0', createdAt: now - 40 * 86400_000, lastSeenAt: now, self: true },
   { v: 1, id: 'b2c3d4e5f6071829', name: 'iPad', platform: 'iPadOS', appVersion: '0.1.0', createdAt: now - 30 * 86400_000, lastSeenAt: now - 2 * 3600_000, self: false },
   { v: 1, id: 'c3d4e5f60718293a', name: 'Pixel 8', platform: 'Android', appVersion: '0.1.0', createdAt: now - 9 * 86400_000, lastSeenAt: now - 3 * 86400_000, self: false },
   { v: 1, id: 'd4e5f60718293a4b', name: 'Old phone', platform: 'Android', appVersion: '0.0.9', createdAt: now - 90 * 86400_000, lastSeenAt: now - 50 * 86400_000, self: false, retired: true },
+]
+
+const TWO_IPADS: LibSyncStatus['devices'] = [
+  DEVICES[0],
+  DEVICES[1],
+  { v: 1, id: 'e5f60718293a4b5c', name: 'iPad 2', platform: 'iPadOS', appVersion: '0.1.0', createdAt: now - 20 * 86400_000, lastSeenAt: now - 25 * MIN, self: false },
+  { v: 1, id: 'f60718293a4b5c6d', name: 'Android tablet', platform: 'Android tablet', appVersion: '0.1.0', createdAt: now - 12 * 86400_000, lastSeenAt: now - 5 * 3600_000, self: false },
+  DEVICES[2],
+  DEVICES[3],
 ]
 
 const ERRORS: Record<LibSyncErrorCode, string> = {
@@ -50,7 +60,7 @@ const ERRORS: Record<LibSyncErrorCode, string> = {
   clock: 'RequestTimeTooSkewed',
   clockAhead: '“iPad” has its clock set 3 h ahead. Edits from it may win over newer ones.',
   wrongSecret: 'wrongSecret',
-  libraryGone: 'libraryGone',
+  libraryGone: 'The synced library was reset or deleted from another device.',
   newerFormat: 'newerFormat',
   corrupt: 'corrupt',
   rejoin: 'rejoin',
@@ -99,7 +109,7 @@ function statusFor(phase: string): LibSyncStatus {
         phase: 'starting',
         lastSyncAt: undefined,
         devices: DEVICES.slice(0, 1),
-        initial: { kind: 'upload', step: 'Uploading files', done: 37, total: 120 },
+        initial: { kind: 'upload', step: 'publish', done: 37, total: 120 },
         upload: tp(120, 37, 412e6, 131e6),
         pendingChanges: 1240,
       })
@@ -107,10 +117,22 @@ function statusFor(phase: string): LibSyncStatus {
       return on({
         phase: 'starting',
         lastSyncAt: undefined,
-        initial: { kind: 'join', step: 'Loading songs', done: 812, total: 1240 },
+        initial: { kind: 'join', step: 'bootstrap', done: 812, total: 1240 },
         download: tp(1240, 0, 3.2e9, 0),
         offlineReady: { have: 0, total: 1240 },
       })
+    case 'reset':
+      // Right after "Reset sync": the service reports the `publish` step (0 of 1) until the upload is done.
+      return on({
+        phase: 'starting',
+        lastSyncAt: undefined,
+        devices: DEVICES.slice(0, 1),
+        initial: { kind: 'upload', step: 'publish', done: 0, total: 1 },
+        pendingChanges: 1240,
+        offlineReady: { have: 1240, total: 1240 },
+      })
+    case 'devices':
+      return on({ devices: TWO_IPADS })
     case 'syncing':
       return on({ phase: 'syncing', pendingChanges: 4, upload: tp(3, 0, 12e6, 0), download: tp(120, 2, 410e6, 9e6), offlineReady: { have: 1120, total: 1240 } })
     case 'pending':
@@ -155,7 +177,7 @@ async function runInitial(kind: 'upload' | 'join', total: number) {
       on({
         phase: 'starting',
         lastSyncAt: undefined,
-        initial: { kind, step: kind === 'join' ? 'Loading songs' : 'Uploading songs', done, total },
+        initial: { kind, step: kind === 'join' ? 'bootstrap' : 'publish', done, total },
         devices: kind === 'join' ? DEVICES : DEVICES.slice(0, 1),
       }),
       true,
@@ -225,6 +247,10 @@ export function applyLibSyncMock(phase: string) {
     },
     repair: async () => {
       await wait(1500)
+    },
+    renameDevice: async (name) => {
+      await wait(300)
+      put({ devices: current.devices.map((d) => (d.self ? { ...d, name: name.trim() || 'Linux PC' } : d)) })
     },
     updateBackend: async () => {
       await wait(500)

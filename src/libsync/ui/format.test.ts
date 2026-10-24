@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { offStatus, type LibSyncErrorCode, type LibSyncStatus } from '../api'
-import { downloadLine, errorText, fmtBytes, indicatorState, phaseLine, syncProblem, timeAgo, uploadLine } from './format'
+import { LibSyncFailure, offStatus, type LibSyncErrorCode, type LibSyncStatus } from '../api'
+import { controls, downloadLine, errorText, failureText, fmtBytes, indicatorState, initialLine, phaseLine, stepLabel, syncProblem, timeAgo, uploadLine } from './format'
 
 const NOW = 1_800_000_000_000
 const on = (p: Partial<LibSyncStatus> = {}): LibSyncStatus => ({ ...offStatus(), configured: true, phase: 'idle', ...p })
@@ -28,7 +28,12 @@ describe('§12.3 wording', () => {
     })
     expect(t('clockAhead').action).toBeUndefined()
     expect(t('wrongSecret')).toMatchObject({ message: 'This code doesn’t match the data in that storage.', actionLabel: 'Join again' })
-    expect(t('libraryGone')).toMatchObject({ message: 'The synced library was deleted from storage.', actionLabel: 'Stop syncing' })
+    expect(t('libraryGone')).toMatchObject({
+      message: 'The synced library was reset or deleted from another device.',
+      actionLabel: 'Join with a new code',
+      secondaryLabel: 'Stop syncing',
+    })
+    expect(t('libraryGone').hint).toMatch(/new pairing code from a device that’s still syncing/)
     expect(t('newerFormat')).toMatchObject({ message: 'Another device uses a newer OpenStand. Update this one to keep syncing.', actionLabel: 'Reload app' })
     expect(t('rejoin')).toMatchObject({ message: 'This device needs to rejoin the synced library.', actionLabel: 'Rejoin' })
     expect(t('corrupt')).toMatchObject({ message: 'This device needs to rejoin the synced library.', actionLabel: 'Rejoin' })
@@ -94,5 +99,55 @@ describe('non-fatal stream warnings', () => {
     expect(syncProblem(fatal)).toEqual({ error: fatal.error })
     expect(indicatorState(fatal)).toMatchObject({ icon: 'alert', dot: true })
     expect(syncProblem(on({ phase: 'offline', error: { code: 'network', message: 'x', at: 0 } }))).toEqual({})
+  })
+})
+
+describe('enable/join steps', () => {
+  const ids = ['verify', 'bootstrap', 'register', 'merge', 'publish', 'snapshot', 'somethingNew']
+  it('every checkpoint phase has friendly wording; no raw identifier reaches the screen', () => {
+    for (const kind of ['upload', 'join'] as const)
+      for (const step of ids) {
+        const label = stepLabel({ kind, step })
+        expect(label).not.toContain(step)
+        expect(label).toMatch(/^[A-Z].*…$/)
+      }
+  })
+  it('right after a reset: "Uploading songs and files…" without "0 of 1"', () => {
+    expect(initialLine({ kind: 'upload', step: 'publish', done: 0, total: 1 })).toBe('Uploading songs and files…')
+    expect(initialLine({ kind: 'join', step: 'bootstrap', done: 812, total: 1240 })).toBe('Loading the synced library… 812 of 1,240')
+    expect(initialLine({ kind: 'join', step: 'publish', done: 0, total: 1 })).toBe('Uploading this device’s songs…')
+  })
+  it('the status card headline during the first upload', () => {
+    expect(phaseLine(on({ phase: 'starting', initial: { kind: 'upload', step: 'publish', done: 0, total: 1 } }))).toBe('Uploading your library…')
+  })
+})
+
+describe('failure toasts', () => {
+  it('never show a bare code', () => {
+    expect(failureText(new LibSyncFailure('unknown', 'unknown'))).toBe('Something went wrong while syncing.')
+    expect(failureText(new LibSyncFailure('libraryGone', 'libraryGone'))).toBe('The synced library was reset or deleted from another device.')
+    expect(failureText(new LibSyncFailure('unknown', 'Library sync is not running'))).toBe('Library sync is not running')
+    expect(failureText(new Error('TypeError'))).toBe('Something went wrong. Try again.')
+    expect(failureText(new Error('Couldn’t reach the bucket.'))).toBe('Couldn’t reach the bucket.')
+  })
+})
+
+describe('controls per state', () => {
+  const err = (code: LibSyncErrorCode) => on({ phase: 'error', error: { code, message: code, at: 0 } })
+  it('library gone or unreadable: only the banner’s actions', () => {
+    for (const code of ['libraryGone', 'wrongSecret'] as const)
+      expect(controls(err(code))).toMatchObject({ syncNow: false, addDevice: false, storageKeys: false, pause: false, recheck: false })
+    expect(controls(err('libraryGone')).deleteRemote).toBe(false)
+  })
+  it('rejoin/corrupt: no pairing code or sync, storage keys stay', () => {
+    for (const code of ['rejoin', 'corrupt'] as const) expect(controls(err(code))).toMatchObject({ syncNow: false, addDevice: false, storageKeys: true })
+  })
+  it('newer format elsewhere: no Sync now, pairing still fine', () => {
+    expect(controls(err('newerFormat'))).toMatchObject({ syncNow: false, addDevice: true })
+  })
+  it('retryable errors, paused, offline', () => {
+    expect(controls(err('auth'))).toMatchObject({ syncNow: true, syncNowOff: undefined, addDevice: true, storageKeys: true })
+    expect(controls(on({ phase: 'paused' }))).toMatchObject({ syncNow: true, syncNowOff: 'Sync is paused.', addDevice: true, pause: true })
+    expect(controls(on({ phase: 'offline' })).syncNowOff).toBeUndefined()
   })
 })

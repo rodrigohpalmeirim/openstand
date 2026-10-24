@@ -30,6 +30,7 @@ import {
   type SetlistItemRef,
   type SongRef,
 } from './protocol'
+import { defaultDeviceName } from './deviceName'
 import { LocalTransport, RelayTransport, type Transport, type TransportStatus } from './transports'
 
 export type SyncStatus = 'off' | 'connecting' | 'online' | 'error'
@@ -51,13 +52,7 @@ export const useSync = create<SyncStore>(() => ({ active: false, status: 'off', 
 const deviceId = typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : String(Math.random()).slice(2)
 export const myDeviceId = () => deviceId
 
-export function defaultDeviceName(): string {
-  if (typeof navigator === 'undefined') return 'This device'
-  const ua = navigator.userAgent
-  const os = /iPad/.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1) ? 'iPad' : /iPhone/.test(ua) ? 'iPhone' : /Android/.test(ua) ? 'Android' : /Mac/.test(ua) ? 'Mac' : /Windows/.test(ua) ? 'Windows' : /Linux/.test(ua) ? 'Linux' : 'Device'
-  const br = /Edg\//.test(ua) ? 'Edge' : /Firefox\//.test(ua) ? 'Firefox' : /Chrome\//.test(ua) ? 'Chrome' : /Safari\//.test(ua) ? 'Safari' : ''
-  return br ? `${br} on ${os}` : os
-}
+export { defaultDeviceName }
 
 const myName = () => settings().sync.deviceName.trim() || defaultDeviceName()
 

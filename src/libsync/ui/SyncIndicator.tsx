@@ -4,7 +4,7 @@ import { useState } from 'react'
 import { useLibSync } from '../api'
 import { Button, Popover, cx } from '../../ui/primitives'
 import { syncNow } from './client'
-import { active, downloadLine, fraction, indicatorState, phaseLine, plural, syncProblem, uploadLine } from './format'
+import { active, controls, downloadLine, fraction, indicatorState, initialLine, phaseLine, plural, syncProblem, uploadLine } from './format'
 import { openLibSyncSettings } from './nav'
 import { Bar } from './parts'
 
@@ -31,7 +31,7 @@ export function SyncIndicator({ className }: { className?: string }) {
   const st = indicatorState(s)
   const Icon = ICONS[st.icon]
   const { warning } = syncProblem(s)
-  const canSync = s.phase !== 'paused' && s.phase !== 'offline' && s.phase !== 'starting'
+  const c = controls(s)
 
   return (
     <>
@@ -71,7 +71,7 @@ export function SyncIndicator({ className }: { className?: string }) {
               </div>
             </div>
           )}
-          {s.initial && <Bar value={s.initial.total ? s.initial.done / s.initial.total : undefined} label={`${s.initial.step} · ${s.initial.done.toLocaleString()} of ${s.initial.total.toLocaleString()}`} />}
+          {s.initial && <Bar value={s.initial.total > 1 ? s.initial.done / s.initial.total : undefined} label={initialLine(s.initial)} />}
           {!s.initial && active(s.upload) && <Bar value={fraction(s.upload)} label={uploadLine(s.upload)} />}
           {!s.initial && active(s.download) && <Bar value={fraction(s.download)} label={downloadLine(s.download)} />}
           {(s.pendingChanges > 0 || s.offlineReady.total > s.offlineReady.have) && (
@@ -85,10 +85,12 @@ export function SyncIndicator({ className }: { className?: string }) {
             </div>
           )}
           <div className="flex gap-2">
+            {c.syncNow && (
             <Button
               size="sm"
               className="h-10 flex-1"
-              disabled={!canSync || busy}
+              title={c.syncNowOff}
+              disabled={!!c.syncNowOff || busy}
               icon={busy || s.phase === 'syncing' ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
               onClick={async () => {
                 setBusy(true)
@@ -103,9 +105,10 @@ export function SyncIndicator({ className }: { className?: string }) {
             >
               Sync now
             </Button>
+            )}
             <Button
               size="sm"
-              variant="ghost"
+              variant={c.syncNow ? 'ghost' : 'primary'}
               className="h-10 flex-1"
               icon={<Settings className="size-4" />}
               onClick={() => {

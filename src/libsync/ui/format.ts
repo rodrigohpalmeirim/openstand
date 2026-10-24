@@ -1,5 +1,5 @@
 /** Wording and number formatting for the library-sync UI (docs/SYNC.md §12.3). Pure. */
-import type { BlobState, LibSyncError, LibSyncErrorCode, LibSyncStatus, TransferProgress } from '../api'
+import { LibSyncFailure, type BlobState, type LibSyncError, type LibSyncErrorCode, type LibSyncStatus, type TransferProgress } from '../api'
 
 export const fmtBytes = (n: number) =>
   n < 1000 ? `${n} B` : n < 1000 ** 2 ? `${Math.round(n / 1000)} KB` : n < 1000 ** 3 ? `${Math.round(n / 1000 ** 2)} MB` : `${(n / 1000 ** 3).toFixed(1)} GB`
@@ -40,6 +40,36 @@ export function downloadLine(t: TransferProgress): string {
 
 export const OFFLINE_LINE = 'Offline. Changes will sync when you’re back online.'
 
+/**
+ * Friendly wording for the enable/join checkpoint steps the service reports in `initial.step` (`verify`,
+ * `bootstrap`, `register`, `merge`, `publish`, `snapshot`). Unknown steps never reach the screen as-is.
+ */
+export function stepLabel(initial: Pick<NonNullable<LibSyncStatus['initial']>, 'kind' | 'step'>): string {
+  const join = initial.kind === 'join'
+  switch (initial.step) {
+    case 'verify':
+      return 'Checking the synced library…'
+    case 'bootstrap':
+      return 'Loading the synced library…'
+    case 'register':
+      return 'Adding this device…'
+    case 'merge':
+      return 'Combining your songs…'
+    case 'publish':
+      return join ? 'Uploading this device’s songs…' : 'Uploading songs and files…'
+    case 'snapshot':
+      return 'Finishing up…'
+    default:
+      return join ? 'Joining the synced library…' : 'Uploading your library…'
+  }
+}
+
+/** Progress caption: "Loading the synced library… 812 of 1,240" (no count for single-step phases). */
+export function initialLine(initial: NonNullable<LibSyncStatus['initial']>): string {
+  const label = stepLabel(initial)
+  return initial.total > 1 ? `${label} ${initial.done.toLocaleString('en-US')} of ${initial.total.toLocaleString('en-US')}` : label
+}
+
 /** The headline of the status card and the indicator popover. */
 export function phaseLine(s: LibSyncStatus, now = Date.now()): string {
   switch (s.phase) {
@@ -60,13 +90,18 @@ export function phaseLine(s: LibSyncStatus, now = Date.now()): string {
   }
 }
 
-export type ErrorAction = 'updateKeys' | 'showCors' | 'openProvider' | 'storageSettings' | 'retry' | 'joinAgain' | 'stopSyncing' | 'reload' | 'rejoin'
+export type ErrorAction = 'updateKeys' | 'showCors' | 'openProvider' | 'storageSettings' | 'retry' | 'joinAgain' | 'joinNew' | 'stopSyncing' | 'reload' | 'rejoin'
 
 export interface ErrorText {
   message: string
   /** What the banner's button does; none for warnings like `clockAhead`. */
   action?: ErrorAction
   actionLabel?: string
+  /** A second, quieter button. */
+  secondary?: ErrorAction
+  secondaryLabel?: string
+  /** What to do next, under the message. */
+  hint?: string
   /** Shown as a warning (amber), not an error. */
   warning?: boolean
 }
@@ -78,6 +113,7 @@ const ACTION_LABEL: Record<ErrorAction, string> = {
   storageSettings: 'Storage settings',
   retry: 'Retry',
   joinAgain: 'Join again',
+  joinNew: 'Join with a new code',
   stopSyncing: 'Stop syncing',
   reload: 'Reload app',
   rejoin: 'Rejoin',
@@ -86,7 +122,7 @@ const ACTION_LABEL: Record<ErrorAction, string> = {
 /** Engine-provided sentences (with a device name or an amount) win for the parameterised codes. */
 const sentence = (e: LibSyncError) => (e.message && e.message !== e.code && /\s/.test(e.message.trim()) ? e.message.trim() : undefined)
 
-const FIXED: Record<LibSyncErrorCode, Omit<ErrorText, 'actionLabel'>> = {
+const FIXED: Record<LibSyncErrorCode, Omit<ErrorText, 'actionLabel' | 'secondaryLabel'>> = {
   auth: { message: 'Your storage rejected the access key. It may have expired or been revoked.', action: 'updateKeys' },
   cors: { message: 'Your bucket doesn’t allow this site yet.', action: 'showCors' },
   quota: { message: 'Your storage is full.', action: 'openProvider' },
@@ -94,7 +130,12 @@ const FIXED: Record<LibSyncErrorCode, Omit<ErrorText, 'actionLabel'>> = {
   clock: { message: 'This device’s clock is wrong, so the storage refused the request.', action: 'retry' },
   clockAhead: { message: 'Another device has its clock set ahead. Edits from it may win over newer ones.', warning: true },
   wrongSecret: { message: 'This code doesn’t match the data in that storage.', action: 'joinAgain' },
-  libraryGone: { message: 'The synced library was deleted from storage.', action: 'stopSyncing' },
+  libraryGone: {
+    message: 'The synced library was reset or deleted from another device.',
+    hint: 'To keep syncing, get a new pairing code from a device that’s still syncing and join again. Your songs stay on this device.',
+    action: 'joinNew',
+    secondary: 'stopSyncing',
+  },
   newerFormat: { message: 'Another device uses a newer OpenStand. Update this one to keep syncing.', action: 'reload' },
   rejoin: { message: 'This device needs to rejoin the synced library.', action: 'rejoin' },
   corrupt: { message: 'This device needs to rejoin the synced library.', action: 'rejoin' },
@@ -115,7 +156,21 @@ export function errorText(e: Pick<LibSyncError, 'code' | 'message' | 'detail'>):
     const own = sentence(e as LibSyncError)
     if (own) base.message = own
   }
-  return { ...base, actionLabel: base.action && ACTION_LABEL[base.action] }
+  return { ...base, actionLabel: base.action && ACTION_LABEL[base.action], secondaryLabel: base.secondary && ACTION_LABEL[base.secondary] }
+}
+
+/**
+ * Toast wording for a failed action: the §12.3 sentence for a `LibSyncFailure`, an engine sentence as is,
+ * and never a bare identifier ("unknown", "libraryGone").
+ */
+export function failureText(e: unknown, fallback = 'Something went wrong. Try again.'): string {
+  if (e instanceof LibSyncFailure || (e as Error)?.name === 'LibSyncFailure') {
+    const f = e as LibSyncFailure
+    const own = sentence({ code: f.code, message: f.message, at: 0 })
+    return f.code === 'unknown' || f.code === 'corrupt' ? (own ?? FIXED.unknown.message) : errorText(f).message
+  }
+  const m = (e as Error)?.message?.trim()
+  return m && /\s/.test(m) ? m : fallback
 }
 
 /** Non-fatal wording per code: the engine's own sentence (with the device name) wins when it has one. */
@@ -156,6 +211,50 @@ export function syncProblem(s: LibSyncStatus): { error?: LibSyncError; warning?:
       action,
       actionLabel: action && ACTION_LABEL[action],
     },
+  }
+}
+
+export interface Controls {
+  /** "Sync now" is shown; `syncNowOff` is why it's disabled, if it is. */
+  syncNow: boolean
+  syncNowOff?: string
+  /** "Add a device" (a pairing code for this library). */
+  addDevice: boolean
+  /** "Update storage keys". */
+  storageKeys: boolean
+  /** The "Pause sync" switch. */
+  pause: boolean
+  /** "Re-check files". */
+  recheck: boolean
+  /** "Delete synced data from storage…". */
+  deleteRemote: boolean
+  /** Renaming this device (rewrites its record in the library). */
+  rename: boolean
+}
+
+/**
+ * Which controls make sense in this state. When the library is gone or this device can't read it, the
+ * banner's actions are the only way on: syncing can't succeed, and a pairing code would point other
+ * devices at a deleted library or one this device can't read.
+ */
+export function controls(s: LibSyncStatus): Controls {
+  const code = s.phase === 'error' ? s.error?.code : undefined
+  // The library is deleted, or this code doesn't open it.
+  const gone = code === 'libraryGone' || code === 'wrongSecret'
+  // This device has to join (again) before anything else works.
+  const broken = gone || code === 'rejoin' || code === 'corrupt'
+  const syncNowOff =
+    s.phase === 'paused' ? 'Sync is paused.' : s.phase === 'starting' ? 'Sync is starting.' : undefined
+  return {
+    // A newer OpenStand elsewhere: only reloading helps.
+    syncNow: !broken && code !== 'newerFormat',
+    syncNowOff,
+    addDevice: !broken,
+    storageKeys: !gone,
+    pause: !broken,
+    recheck: !broken,
+    deleteRemote: code !== 'libraryGone',
+    rename: !broken,
   }
 }
 

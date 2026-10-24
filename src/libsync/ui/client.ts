@@ -25,6 +25,7 @@ export type Actions = Pick<
   | 'deleteRemoteData'
   | 'repair'
   | 'updateBackend'
+  | 'renameDevice'
 >
 
 const over: Partial<Actions> = {}
@@ -46,6 +47,7 @@ export const leaveSync = () => (over.leaveSync ?? api.leaveSync)()
 export const deleteRemoteData = () => (over.deleteRemoteData ?? api.deleteRemoteData)()
 export const repair = () => (over.repair ?? api.repair)()
 export const updateBackend = (cfg: BackendConfig) => (over.updateBackend ?? api.updateBackend)(cfg)
+export const renameDevice = (name: string) => (over.renameDevice ?? api.renameDevice)(name)
 
 /** Dev mocks only: a fake blob state per id (undefined = ask the engine). */
 export const useMockBlobs = create<{ state?: (blobId: string) => BlobState | undefined }>(() => ({}))

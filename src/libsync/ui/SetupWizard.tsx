@@ -5,6 +5,7 @@ import { corsRule, useLibSync } from '../api'
 import type { BackendCheck, S3Config } from '../backends/types'
 import { Button, Dialog, Input, Toggle, cx } from '../../ui/primitives'
 import { checkBackend, enableSync } from './client'
+import { failureText, initialLine } from './format'
 import { PairingQr } from './PairingQr'
 import { Bar, CopyBox, Note } from './parts'
 import {
@@ -264,7 +265,7 @@ export function SetupWizard({ open, onClose }: { open: boolean; onClose: () => v
       await enableSync({ backend: cfg })
       dispatch({ type: 'startDone' })
     } catch (e) {
-      dispatch({ type: 'startFailed', message: (e as Error).message || 'Sync couldn’t start.' })
+      dispatch({ type: 'startFailed', message: failureText(e, 'Sync couldn’t start.') })
     }
   }
 
@@ -399,7 +400,7 @@ export function SetupWizard({ open, onClose }: { open: boolean; onClose: () => v
             {s.failure ? (
               <Note tone="danger">{s.failure}</Note>
             ) : (
-              <Bar value={initial?.total ? initial.done / initial.total : undefined} label={initial ? `${initial.step} · ${initial.done.toLocaleString()} of ${initial.total.toLocaleString()}` : 'Creating the synced library…'} />
+              <Bar value={initial && initial.total > 1 ? initial.done / initial.total : undefined} label={initial ? initialLine(initial) : 'Creating the synced library…'} />
             )}
           </>
         )}
@@ -409,7 +410,7 @@ export function SetupWizard({ open, onClose }: { open: boolean; onClose: () => v
             <Note tone="ok">
               Sync is on. {initial ? 'Your library is uploading in the background; you can keep using OpenStand.' : 'Your library is uploaded.'}
             </Note>
-            {initial && <Bar value={initial.total ? initial.done / initial.total : undefined} label={`${initial.step} · ${initial.done.toLocaleString()} of ${initial.total.toLocaleString()}`} />}
+            {initial && <Bar value={initial.total > 1 ? initial.done / initial.total : undefined} label={initialLine(initial)} />}
             <p className="text-sm text-muted">You can pair other devices now. They see your songs first, and files as they finish uploading.</p>
             <PairingQr />
           </>

@@ -118,7 +118,7 @@ export function Welcome() {
     </button>
   )
   return (
-    <Dialog open onClose={finish} size="md">
+    <Dialog open onClose={finish} size="md" label="Welcome to OpenStand">
       <div className="flex flex-col gap-6 px-6 py-7">
         <div className="flex flex-col items-center gap-3 text-center">
           <div className="flex size-14 items-center justify-center rounded-2xl bg-accent text-accent-fg shadow-lg">

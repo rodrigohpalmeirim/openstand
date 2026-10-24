@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { LibSyncErrorCode, LibSyncStatus } from '../api'
 
@@ -6,6 +6,11 @@ vi.mock('../api', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../api')>()),
   syncNow: vi.fn(async () => {}),
   setPaused: vi.fn(async () => {}),
+  leaveSync: vi.fn(async () => {
+    const m = await import('../api')
+    m.useLibSync.setState(m.offStatus(), true)
+  }),
+  renameDevice: vi.fn(async () => {}),
   pairingCode: vi.fn(async () => {
     throw new Error('no code')
   }),
@@ -51,8 +56,7 @@ describe('LibrarySyncSettings', () => {
     expect(screen.getByText('Encrypted on the device')).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Set up sync' })).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: 'Join from another device' }))
-    expect(screen.getByRole('dialog', { name: undefined })).toBeTruthy()
-    expect(screen.getByText('Join a synced library')).toBeTruthy()
+    expect(screen.getByRole('dialog', { name: 'Join a synced library' })).toBeTruthy()
   })
 
   it('on: status, offline readiness, devices', () => {
@@ -81,7 +85,7 @@ describe('LibrarySyncSettings', () => {
     ['cors', 'Your bucket doesn’t allow this site yet.', 'Show CORS rule'],
     ['clock', 'This device’s clock is wrong, so the storage refused the request.', 'Retry'],
     ['wrongSecret', 'This code doesn’t match the data in that storage.', 'Join again'],
-    ['libraryGone', 'The synced library was deleted from storage.', 'Stop syncing'],
+    ['libraryGone', 'The synced library was reset or deleted from another device.', 'Join with a new code'],
     ['newerFormat', 'Another device uses a newer OpenStand. Update this one to keep syncing.', 'Reload app'],
     ['rejoin', 'This device needs to rejoin the synced library.', 'Rejoin'],
   ]
@@ -91,6 +95,72 @@ describe('LibrarySyncSettings', () => {
     const alert = screen.getByRole('alert')
     expect(alert.textContent).toContain(message)
     if (action) expect(within(alert).getByRole('button', { name: action })).toBeTruthy()
+  })
+
+  it('library gone: explains what happened and offers to join with a new code, keeping the songs', async () => {
+    set(on({ phase: 'error', error: { code: 'libraryGone', message: 'libraryGone', at: NOW } }))
+    render(<LibrarySyncSettings />)
+    const alert = screen.getByRole('alert')
+    expect(alert.textContent).toContain('get a new pairing code from a device that’s still syncing and join again')
+    expect(within(alert).getByRole('button', { name: 'Stop syncing' })).toBeTruthy()
+    fireEvent.click(within(alert).getByRole('button', { name: 'Join with a new code' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Join with a new code' })
+    expect(api.leaveSync).toHaveBeenCalledTimes(1)
+    expect(dialog.textContent).toContain('Your songs are still here.')
+  })
+
+  it('library gone: Sync now, Add a device and storage keys are hidden (in the popover too)', () => {
+    set(on({ phase: 'error', error: { code: 'libraryGone', message: 'libraryGone', at: NOW } }))
+    render(<LibrarySyncSettings />)
+    for (const name of ['Sync now', 'Add a device', 'Update storage keys', 'Re-check files', 'Delete synced data from storage…'])
+      expect(screen.queryByRole('button', { name })).toBeNull()
+    expect(screen.queryByRole('switch', { name: 'Pause sync' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Rename this device' })).toBeNull()
+    expect(screen.getByText(/Not syncing/)).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Reset sync…' })).toBeTruthy()
+    cleanup()
+    render(<SyncIndicator />)
+    fireEvent.click(screen.getByRole('button', { name: /^Library sync:/ }))
+    const pop = screen.getByRole('dialog', { name: 'Library sync status' })
+    expect(within(pop).queryByRole('button', { name: 'Sync now' })).toBeNull()
+    expect(within(pop).getByRole('button', { name: 'Open settings' })).toBeTruthy()
+  })
+
+  it('rejoin: no pairing code; paused: Sync now disabled with a reason', () => {
+    set(on({ phase: 'error', error: { code: 'rejoin', message: 'rejoin', at: NOW } }))
+    render(<LibrarySyncSettings />)
+    expect(screen.queryByRole('button', { name: 'Add a device' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Sync now' })).toBeNull()
+    cleanup()
+    set(on({ phase: 'paused' }))
+    render(<LibrarySyncSettings />)
+    const sync = screen.getByRole('button', { name: 'Sync now' }) as HTMLButtonElement
+    expect(sync.disabled).toBe(true)
+    expect(sync.title).toBe('Sync is paused.')
+    expect(screen.getByRole('button', { name: 'Add a device' })).toBeTruthy()
+  })
+
+  it('renames this device from the devices list', async () => {
+    set(on())
+    render(<LibrarySyncSettings />)
+    // Only this device has a rename button.
+    expect(screen.getAllByRole('button', { name: 'Rename this device' })).toHaveLength(1)
+    fireEvent.click(screen.getByRole('button', { name: 'Rename this device' }))
+    const dialog = screen.getByRole('dialog', { name: 'Rename this device' })
+    const input = within(dialog).getByRole('textbox', { name: /Device name/ }) as HTMLInputElement
+    expect(input.value).toBe('Laptop')
+    fireEvent.change(input, { target: { value: '  Studio laptop ' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(api.renameDevice).toHaveBeenCalledWith('Studio laptop'))
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Rename this device' })).toBeNull())
+  })
+
+  it('shows friendly wording for the first upload after a reset', () => {
+    set(on({ phase: 'starting', initial: { kind: 'upload', step: 'publish', done: 0, total: 1 } }))
+    render(<LibrarySyncSettings />)
+    expect(screen.getByText('Uploading your library…')).toBeTruthy()
+    expect(screen.getByText('Uploading songs and files…')).toBeTruthy()
+    expect(document.body.textContent).not.toMatch(/publish|(^|[^\d,])0 of 1\b/)
   })
 
   it('no banner for network errors (shown as offline)', () => {

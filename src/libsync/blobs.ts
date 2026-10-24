@@ -83,6 +83,8 @@ export interface BlobQueueDeps {
   onDownloaded?: (hash: string) => void
   onError?: (e: unknown, row: TransferRow) => void
   onProgress?: () => void
+  /** Before an upload writes anything (the engine confirms the library still exists; throwing fails the row). */
+  beforeUpload?: () => Promise<void>
   timers?: { setTimeout: typeof setTimeout; clearTimeout: typeof clearTimeout }
 }
 
@@ -310,6 +312,7 @@ export class BlobQueue {
     if (!(await this.remoteMatches(key, src, signal))) {
       // Never put other content under this hash's name (a legacy row with a wrong hash, say).
       if ((await sha256Blob(rec.data)) !== r.hash) throw new FormatError('corrupt', 'the local file does not match its hash; not uploaded')
+      await this.d.beforeUpload?.()
       const fresh = r.upload && r.upload.createdAt > this.d.now() - MULTIPART_STALE ? r.upload : undefined
       // Our own session that is too old to trust: abort it at the provider and start over.
       if (r.upload && !fresh) await backend.abortUpload?.(r.upload, { signal }).catch(() => {})

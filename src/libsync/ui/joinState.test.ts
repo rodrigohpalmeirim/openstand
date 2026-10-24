@@ -45,7 +45,7 @@ describe('wording', () => {
   })
   it('uses the §12.3 wording for facade failures', () => {
     expect(joinErrorText(new LibSyncFailure('wrongSecret'))).toBe('This code doesn’t match the data in that storage.')
-    expect(joinErrorText(new LibSyncFailure('libraryGone'))).toBe('The synced library was deleted from storage.')
+    expect(joinErrorText(new LibSyncFailure('libraryGone'))).toBe('The synced library was reset or deleted from another device.')
     expect(joinErrorText(new LibSyncFailure('network'))).toMatch(/Can’t reach/)
   })
   it('previews and merge lines', () => {

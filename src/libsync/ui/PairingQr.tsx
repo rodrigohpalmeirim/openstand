@@ -7,6 +7,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { Button, confirmDialog } from '../../ui/primitives'
 import { clearClipboardLater, copyText } from './clipboard'
 import { pairingCode } from './client'
+import { failureText } from './format'
 import { drawQr } from './qr'
 
 const SHOW_MS = 2 * 60_000
@@ -75,7 +76,7 @@ export function PairingQr() {
       setCovered(false)
       setCode(c)
     } catch (e) {
-      setError((e as Error).message || 'Couldn’t create the pairing code.')
+      setError(failureText(e, 'Couldn’t create the pairing code.'))
     } finally {
       setLoading(false)
     }

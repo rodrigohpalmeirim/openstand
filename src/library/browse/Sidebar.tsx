@@ -219,7 +219,7 @@ export function Drawer() {
   }, [open])
   if (!open) return null
   return (
-    <div className="fixed inset-0 z-40 md:hidden">
+    <div className="fixed inset-0 z-40 md:hidden" role="dialog" aria-modal="true" aria-label="Navigation">
       <div className="absolute inset-0 bg-black/40 animate-fade-in" onClick={close} />
       <div className="absolute inset-y-0 left-0 w-[min(300px,85vw)] border-r border-line shadow-2xl" style={{ animation: 'os-drawer-in 200ms cubic-bezier(0.2,0.9,0.3,1)' }}>
         <Sidebar onClose={close} />

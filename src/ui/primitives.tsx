@@ -5,6 +5,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useId,
   useLayoutEffect,
   useRef,
   useState,
@@ -263,6 +264,7 @@ export function Dialog({
   footer,
   size = 'md',
   className,
+  label,
 }: {
   open: boolean
   onClose: () => void
@@ -271,8 +273,11 @@ export function Dialog({
   footer?: ReactNode
   size?: 'sm' | 'md' | 'lg' | 'xl' | 'full'
   className?: string
+  /** Accessible name when there's no `title` (with a title, the dialog is labelled by it). */
+  label?: string
 }) {
   useEscape(open, onClose)
+  const titleId = useId()
   if (!open) return null
   return createPortal(
     <div
@@ -284,6 +289,8 @@ export function Dialog({
       <div
         role="dialog"
         aria-modal="true"
+        aria-labelledby={title !== undefined ? titleId : undefined}
+        aria-label={title === undefined ? label : undefined}
         className={cx(
           'flex max-h-[92dvh] w-full flex-col overflow-hidden bg-surface text-fg shadow-2xl animate-pop-in',
           'rounded-t-2xl sm:rounded-2xl border border-line',
@@ -297,7 +304,9 @@ export function Dialog({
       >
         {title !== undefined && (
           <div className="flex items-center gap-3 border-b border-line px-5 py-3.5">
-            <h2 className="flex-1 truncate text-base font-semibold">{title}</h2>
+            <h2 id={titleId} className="flex-1 truncate text-base font-semibold">
+              {title}
+            </h2>
             <IconButton label="Close" size="sm" onClick={onClose}>
               <X className="size-4.5" />
             </IconButton>

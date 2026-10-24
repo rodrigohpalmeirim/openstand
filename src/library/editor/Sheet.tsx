@@ -1,5 +1,5 @@
 import { X } from 'lucide-react'
-import { useEffect, useLayoutEffect, useRef, type ReactNode } from 'react'
+import { useEffect, useId, useLayoutEffect, useRef, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { cx, IconButton, Toggle } from '../../ui/primitives'
 
@@ -42,6 +42,8 @@ export function Sheet({
   labelledBy?: string
 }) {
   const ref = useRef<HTMLDivElement>(null)
+  const ownId = useId()
+  const titleId = labelledBy ?? ownId
   const closeRef = useRef(onClose)
   useLayoutEffect(() => {
     closeRef.current = onClose
@@ -79,7 +81,7 @@ export function Sheet({
         ref={ref}
         role="dialog"
         aria-modal="true"
-        aria-labelledby={labelledBy}
+        aria-labelledby={titleId}
         tabIndex={-1}
         className={cx(
           'flex h-full w-full flex-col overflow-hidden shadow-2xl outline-none animate-pop-in sm:h-[min(92dvh,940px)] sm:rounded-2xl sm:border',
@@ -95,7 +97,7 @@ export function Sheet({
             <X className="size-5" />
           </IconButton>
           <div className="min-w-0 flex-1 py-2">
-            <h2 id={labelledBy} className="truncate text-base font-semibold leading-tight">
+            <h2 id={titleId} className="truncate text-base font-semibold leading-tight">
               {title}
             </h2>
             {subtitle && <div className="truncate text-xs text-muted">{subtitle}</div>}

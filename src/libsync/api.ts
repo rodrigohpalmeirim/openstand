@@ -259,6 +259,9 @@ export const deleteRemoteData = guarded(async (): Promise<void> => {
   await svc.withEngineStopped(async () => (await flows()).deleteRemote(db))
 })
 
+/** Rename this device ('' = back to its default name). The device record is overwritten at once (§2). */
+export const renameDevice = guarded(async (name: string): Promise<void> => (await service()).renameDevice(name))
+
 /** §3.2 repair pass ("Re-check files"). */
 export const repair = guarded(async (): Promise<void> => {
   const e = (await service()).currentEngine()

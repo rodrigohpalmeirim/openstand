@@ -42,6 +42,7 @@ import { blobKey, blobsPrefix, deviceKey, devicesPrefix, headKey, headsPrefix, l
 import { NoticeChannel, type NoticeChannelOptions, type RelayState } from './relay'
 import { realTimers, type Timers } from './timers'
 import { getConfig, getState, putState, TABLE_OF } from './state'
+import { defaultDeviceName, thisDevice, uniqueDeviceName } from '../sync/deviceName'
 import type { LibSyncError, LibSyncErrorCode, LibSyncPhase, TransferProgress } from './api'
 
 const DAY = 24 * 60 * 60_000
@@ -65,6 +66,8 @@ const DEVICE_RECHECK = 10 * 60_000
 const SNAP_HEADERS = 8
 /** Candidate snapshots tried before giving up on bootstrap or gap recovery. */
 const SNAP_TRIES = 3
+/** How long a blob upload trusts the last check that the library (`meta`) still exists. */
+const LIBRARY_CHECK_UPLOADS = 30_000
 
 /** A sync failure with a `LibSyncErrorCode` (backend and format errors are mapped by `toSyncError`). */
 export class SyncError extends Error {
@@ -84,7 +87,7 @@ const MESSAGES: Partial<Record<LibSyncErrorCode, string>> = {
   quota: 'Your storage is full.',
   clock: 'This device’s clock is wrong, so the storage refused the request.',
   wrongSecret: 'This code doesn’t match the data in that storage.',
-  libraryGone: 'The synced library was deleted from storage.',
+  libraryGone: 'The synced library was reset or deleted from another device.',
   newerFormat: 'Another device uses a newer OpenStand. Update this one to keep syncing.',
   rejoin: 'This device needs to rejoin the synced library.',
   corrupt: 'This device needs to rejoin the synced library.',
@@ -218,7 +221,11 @@ export interface EngineOptions {
   timers?: EngineTimers
   env?: EngineEnv
   hooks?: EngineHooks
-  deviceName?: () => string
+  /**
+   * This device's name: the user's own, or a default made unique against `taken` (names of devices that
+   * joined earlier). Without it the engine uses `defaultDeviceName()`.
+   */
+  deviceName?: (ctx: { taken: string[] }) => string | Promise<string>
   /** Relay transport factory override (tests). */
   relayTransport?: NoticeChannelOptions['transport']
   log?: (msg: string, extra?: unknown) => void
@@ -282,11 +289,7 @@ function fmtAhead(ms: number) {
   return ms >= 3_600_000 ? `${Math.round(ms / 3_600_000)} h` : `${Math.round(ms / 60_000)} min`
 }
 
-export function platformName(): string {
-  if (typeof navigator === 'undefined') return 'node'
-  const ua = navigator.userAgent ?? ''
-  return /iPad|iPhone|iPod/.test(ua) ? 'iOS' : /Android/.test(ua) ? 'Android' : /Mac/.test(ua) ? 'macOS' : /Windows/.test(ua) ? 'Windows' : /Linux/.test(ua) ? 'Linux' : 'Web'
-}
+export const platformName = (): string => thisDevice().platform
 export const APP_VERSION = '0.1.0'
 
 export class Engine {
@@ -318,6 +321,8 @@ export class Engine {
   private aheadWarning?: LibSyncError
   /** A stream hit its per-pull budget: pull again soon. */
   private more = false
+  /** When `meta` was last seen (undefined: not yet in this write cycle; every locked run starts a new one). */
+  private libraryOkAt?: number
 
   private constructor(core: Core, o: EngineOptions) {
     this.core = core
@@ -343,7 +348,7 @@ export class Engine {
       now: core.now,
       timers: this.timers,
       canRun: ({ prioritized }) =>
-        !this.stopped && !this.core.config.paused && this.env.online() && this.env.visible() && (prioritized || !this.env.performing()),
+        !this.stopped && !this.fatal() && !this.core.config.paused && this.env.online() && this.env.visible() && (prioritized || !this.env.performing()),
       onUploaded: (hash) => this.blobUploaded(hash),
       onDownloaded: (hash) => {
         this.hooks.blobReady?.(hash)
@@ -357,6 +362,7 @@ export class Engine {
         this.core.log?.('transfer failed', e)
       },
       onProgress: () => this.scheduleStatus(),
+      beforeUpload: () => this.ensureLibrary(LIBRARY_CHECK_UPLOADS),
     })
   }
 
@@ -389,7 +395,11 @@ export class Engine {
 
   /** Run `fn` exclusively with capture, push, pull and maintenance. */
   locked<T>(fn: () => Promise<T>): Promise<T> {
-    const run = this.mutexTail.then(fn, fn)
+    const go = () => {
+      this.libraryOkAt = undefined
+      return fn()
+    }
+    const run = this.mutexTail.then(go, go)
     this.mutexTail = run.catch(() => {})
     return run
   }
@@ -397,6 +407,25 @@ export class Engine {
   private setStatus(p: Partial<EngineStatus>) {
     this.status = { ...this.status, ...p }
     this.hooks.status?.(this.status)
+  }
+
+  /**
+   * Writes go only into a library that still exists: another device may have reset or deleted it (meta goes
+   * first, §10.5), and a write into the old prefix would leave an orphan nothing cleans up. One HEAD on
+   * `meta` per write cycle (`maxAge` lets blob uploads share a recent answer). When it's gone, sync stops
+   * with `libraryGone` instead of writing.
+   */
+  private async ensureLibrary(maxAge = Infinity) {
+    const now = this.core.now()
+    if (this.libraryOkAt !== undefined && now - this.libraryOkAt <= maxAge) return
+    if (await this.core.backend.head(metaKey(this.core.keys.libraryId))) {
+      this.libraryOkAt = now
+      return
+    }
+    this.libraryOkAt = undefined
+    const err = toSyncError(new SyncError('libraryGone'), now)
+    if (this.status.error?.code !== 'libraryGone') this.setStatus({ phase: 'error', error: err })
+    throw new SyncError('libraryGone')
   }
 
   private scheduleStatus() {
@@ -479,6 +508,7 @@ export class Engine {
     for (;;) {
       const row = await db.syncOutbox.orderBy('seq').first()
       if (!row) break
+      await this.ensureLibrary()
       let bytes = row.bytes
       if (isPlainOutbox(row)) {
         const sealed = await encodeBatch(keys, plainBatch(row))
@@ -924,6 +954,7 @@ export class Engine {
     await this.pushInner()
     const blocking = async () => (await db.syncDirty.filter((r) => !r.deferredSince).count()) > 0 || (await db.syncOutbox.count()) > 0
     if (await blocking()) return null
+    await this.ensureLibrary()
     const now = this.core.now()
     const cursors = (await getState(db, 'cursors')) ?? {}
     const own = (await this.listAll(snapPrefix(lib, me))).map((o) => parseKey(o.key)).flatMap((p) => (p?.type === 'snap' ? [p.seq] : []))
@@ -1048,12 +1079,31 @@ export class Engine {
   // Devices
   // -------------------------------------------------------------------------------------------
 
+  /** This device's name for its record: the user's own, else the default made unique (see `deviceName`). */
+  private async ownName(): Promise<string> {
+    const { config, db } = this.core
+    const me = config.deviceId
+    const earlier = ((await getState(db, 'devices')) ?? []).filter(
+      (d) => d.id !== me && (d.createdAt < config.joinedAt || (d.createdAt === config.joinedAt && d.id < me)),
+    )
+    const taken = earlier.map((d) => d.name)
+    const name = this.o.deviceName ? await this.o.deviceName({ taken }) : uniqueDeviceName(defaultDeviceName(), taken)
+    return name.trim() || 'Device'
+  }
+
+  /**
+   * Write this device's record (§2: the owner overwrites it on a name change, at most daily, on retire). The
+   * library must still exist (a fresh HEAD on `meta`): a device that hasn't noticed a reset would otherwise
+   * leave an orphan record in the old prefix.
+   */
   async putDevice(o: { retired?: boolean } = {}) {
     const { backend, keys, config } = this.core
+    this.libraryOkAt = undefined
+    await this.ensureLibrary()
     const rec: DeviceRecord = {
       v: 1,
       id: config.deviceId,
-      name: this.o.deviceName?.() || config.name || 'Device',
+      name: await this.ownName(),
       platform: platformName(),
       appVersion: APP_VERSION,
       createdAt: config.joinedAt,
@@ -1071,6 +1121,11 @@ export class Engine {
 
   refreshDevices() {
     return this.locked(() => this.refreshDevicesInner())
+  }
+
+  /** The user renamed this device: overwrite its record now. */
+  rename() {
+    return this.locked(() => this.putDevice())
   }
 
   private async refreshDevicesInner(): Promise<DeviceRecord[]> {
