@@ -46,7 +46,9 @@ const EMPTY: Annotation[] = []
 const pages = new Map<string, Entry>()
 const dirty = new Set<string>()
 let writeTimer: ReturnType<typeof setTimeout> | undefined
-const WRITE_DELAY = 700
+// Strokes are committed on pen-up; this only groups quick successive strokes into one write (sync batches
+// further on its own), so keep it short: library sync can't send a stroke before it's written.
+const WRITE_DELAY = 250
 
 function entry(key: string): Entry {
   let e = pages.get(key)

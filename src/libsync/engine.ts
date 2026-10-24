@@ -39,11 +39,11 @@ import {
   type SyncConfig,
 } from './model'
 import { blobKey, blobsPrefix, deviceKey, devicesPrefix, headKey, headsPrefix, latestHeads, logKey, logPrefix, metaKey, parseKey, snapKey, snapPrefix } from './paths'
-import { NoticeChannel, type NoticeChannelOptions, type RelayState } from './relay'
+import { NoticeChannel, type NoticeChannelOptions, type PingResult, type RelayState } from './relay'
 import { realTimers, type Timers } from './timers'
 import { getConfig, getState, putState, TABLE_OF } from './state'
 import { defaultDeviceName, thisDevice, uniqueDeviceName } from '../sync/deviceName'
-import type { LibSyncError, LibSyncErrorCode, LibSyncPhase, TransferProgress } from './api'
+import type { LibSyncError, LibSyncErrorCode, LibSyncPhase, PullTrigger, SyncDiagnostics, TransferProgress } from './api'
 
 const DAY = 24 * 60 * 60_000
 const FETCH_PARALLEL = 4
@@ -54,7 +54,16 @@ const REPAIR_INTERVAL = 7 * DAY
 const RECONCILE_INTERVAL = DAY
 const DEVICE_REFRESH = DAY
 const MAX_BACKOFF = 5 * 60_000
-const NOTICE_DEBOUNCE = 300
+/** Capture this soon after the last change, but at most once per CAPTURE_DEBOUNCE, so bursts still batch. */
+const CAPTURE_FAST = 300
+/** Focus (also pageshow, resume) pulls only if the relay is down or the last pull is this old. */
+const WAKE_FRESH = 30_000
+/** Wake events right after a pull started don't start another. */
+const WAKE_COALESCE = 1_000
+/** A relay (re)open pulls, since notices sent while it was down are lost; at most this soon after the last pull. */
+const RELAY_PULL_GAP = 2_000
+/** Pull triggers that run while the page is hidden (a covered or minimised window still gets changes). */
+const HIDDEN_OK: ReadonlySet<PullTrigger> = new Set(['notice', 'relay'])
 /** Batches one stream may apply per pull; the rest follow in the next round (scheduled at once). */
 const STREAM_BUDGET = 2000
 /** Retry delays for a stalled stream; the last one repeats (a stream that keeps failing is retried hourly). */
@@ -212,6 +221,7 @@ export interface EngineStatus {
   warning?: LibSyncError
   /** Devices whose stream is held back (unreadable entry, clock far ahead, …), by device id. Not fatal. */
   streams?: Record<string, LibSyncError>
+  diag: SyncDiagnostics
 }
 
 export interface EngineOptions {
@@ -307,7 +317,14 @@ export class Engine {
   private failures = 0
   private captureTimer?: ReturnType<typeof setTimeout>
   private pullTimer?: ReturnType<typeof setTimeout>
-  private noticeTimer?: ReturnType<typeof setTimeout>
+  /** The pull started by `pullNow`, and a request that arrived while it ran (it may have listed too early). */
+  private inflight?: Promise<void>
+  private again?: PullTrigger
+  /** When the pending `pullTimer` fires, and what it's for. */
+  private pullDue = 0
+  private pullTrigger: PullTrigger = 'start'
+  private lastPullStart = -Infinity
+  private lastCaptureAt = -Infinity
   private maintTimer?: ReturnType<typeof setInterval>
   private statusTimer?: ReturnType<typeof setTimeout>
   private dirtySub?: Subscription
@@ -340,6 +357,7 @@ export class Engine {
       offlineReady: { have: 0, total: 0 },
       relay: 'off',
       devices: [],
+      diag: { pollMs: POLL.visible },
     }
     this.transfers = new BlobQueue({
       db: core.db,
@@ -537,8 +555,9 @@ export class Engine {
         }
       }
       await backend.put(headKey(lib, me, row.seq), new Uint8Array(0))
-      if (row.seq > 1) await backend.delete(headKey(lib, me, row.seq - 1)).catch(() => {})
+      // Announce before the housekeeping delete: readers take the highest head, so two are harmless.
       void this.relay?.post(row.seq).catch(() => {})
+      if (row.seq > 1) await backend.delete(headKey(lib, me, row.seq - 1)).catch(() => {})
       await db.transaction('rw', db.syncOutbox, db.syncState, async () => {
         await db.syncOutbox.delete(row.seq)
         const cur = (await getState(db, 'cursors')) ?? {}
@@ -1007,11 +1026,19 @@ export class Engine {
     return header
   }
 
+  /** A listing (maintenance) shows another device ahead of our cursor: a notice was missed, pull now. */
+  private async pullIfBehind(heads: Record<string, number>) {
+    const cur = (await getState(this.core.db, 'cursors')) ?? {}
+    const behind = Object.entries(heads).some(([d, h]) => d !== this.config.deviceId && !this.stalls.has(d) && h > (cur[d] ?? 0))
+    if (behind && this.started) this.runSoon(0, 'poll')
+  }
+
   /** §3.1 trigger: ≥ 500 uncovered log entries (or ≥ 8 MiB), at most daily; or no snapshot exists yet. */
   async snapshotDue(): Promise<boolean> {
     const m = await this.maintenanceState()
     const now = this.core.now()
     const { heads } = await this.trustedHeads()
+    await this.pullIfBehind(heads)
     const snaps = (await this.listSnapshots()).filter((s) => !snapshotProblem(s.header, heads, now))
     if (!snaps.length) return (heads[this.config.deviceId] ?? 0) > 0
     if (now - m.snapshotAt < SNAPSHOT_TRIGGER.minInterval) return false
@@ -1269,14 +1296,19 @@ export class Engine {
   // -------------------------------------------------------------------------------------------
 
   /** Capture, push and pull now ("Sync now"). Throws on failure (and sets the status). */
-  async sync(): Promise<Applied> {
+  async sync(trigger: PullTrigger = 'manual'): Promise<Applied> {
     if (this.config.paused) return newApplied()
     this.setStatus({ phase: 'syncing' })
+    let started = this.core.now()
+    const hidden = !this.env.visible()
+    const done = (ok: boolean) => this.setDiag({ lastPull: { at: started, trigger, ms: Math.max(0, this.core.now() - started), ok, hidden } })
     try {
       const applied = await this.locked(async () => {
+        started = this.lastPullStart = this.core.now()
         await capture(this.core)
         await this.pushInner()
         const a = await this.pullInner()
+        done(true)
         // Applying may have rebased dirty records into new ops.
         await capture(this.core)
         await this.pushInner()
@@ -1286,10 +1318,11 @@ export class Engine {
       this.setStatus({ phase: 'idle', error: undefined })
       this.transfers.kick()
       await this.refreshStatus()
-      if (this.more && this.started) this.runSoon(1000)
+      if (this.more && this.started) this.runSoon(1000, 'poll')
       return applied
     } catch (e) {
       const err = toSyncError(e, this.core.now())
+      if (this.status.diag.lastPull?.at !== started) done(false)
       this.failures++
       this.setStatus(err.code === 'network' ? { phase: 'offline' } : { phase: 'error', error: err })
       throw e
@@ -1305,99 +1338,222 @@ export class Engine {
     return !!this.status.error && FATAL.includes(this.status.error.code)
   }
 
-  /** Sync soon; errors are reported through the status and retried with backoff. */
-  private runSoon(delay = 0) {
-    if (this.stopped || this.fatal()) return
+  /**
+   * Pull now, without a timer: hidden pages get their timers throttled (to once a minute after 5 min in
+   * Chrome), but WebSocket messages and visibility events still arrive at once, and these call this directly.
+   * A request while a pull runs queues one more (the running one may have listed before the new head).
+   * After failures the backoff still applies.
+   */
+  private pullNow(trigger: PullTrigger) {
+    if (this.stopped || this.fatal() || this.config.paused) return
+    if (this.failures) return this.runSoon(0, trigger)
+    if (this.inflight) {
+      this.again ??= trigger
+      return
+    }
     if (this.pullTimer) this.timers.clearTimeout(this.pullTimer)
+    this.pullTimer = undefined
+    this.startPull(trigger)
+  }
+
+  private startPull(trigger: PullTrigger) {
+    this.lastPullStart = this.core.now()
+    this.inflight = this.sync(trigger)
+      .then(
+        () => {},
+        () => {},
+      )
+      .finally(() => {
+        this.inflight = undefined
+        const next = this.again
+        this.again = undefined
+        if (next && !this.failures) this.pullNow(next)
+        else this.schedulePoll()
+      })
+  }
+
+  /** Sync soon; errors are reported through the status and retried with backoff. An earlier pending run is kept. */
+  private runSoon(delay = 0, trigger: PullTrigger = 'poll') {
+    if (this.stopped || this.fatal()) return
+    const due = this.core.now() + Math.max(delay, this.backoff)
+    if (this.pullTimer) {
+      if (this.pullDue <= due) return
+      this.timers.clearTimeout(this.pullTimer)
+    }
+    this.pullDue = due
+    this.pullTrigger = trigger
     this.pullTimer = this.timers.setTimeout(() => {
       this.pullTimer = undefined
-      if (!this.env.visible() || this.config.paused) return this.schedulePoll()
-      void this.sync()
-        .catch(() => {})
-        .finally(() => this.schedulePoll())
+      const t = this.pullTrigger
+      if (this.config.paused || (!this.env.visible() && !HIDDEN_OK.has(t))) return this.schedulePoll()
+      if (this.inflight) this.again ??= t
+      else this.startPull(t)
     }, Math.max(delay, this.backoff))
+  }
+
+  /** Poll interval in effect: shorter without the relay. */
+  private get pollEvery() {
+    return this.relay?.state === 'open' ? POLL.relay : POLL.visible
   }
 
   private schedulePoll() {
     if (this.stopped || this.pullTimer || this.fatal()) return
-    const every = this.relay?.state === 'open' ? POLL.relay : POLL.visible
+    const wait = Math.max(this.pollEvery, this.backoff)
+    this.pullDue = this.core.now() + wait
+    this.pullTrigger = 'poll'
     this.pullTimer = this.timers.setTimeout(() => {
       this.pullTimer = undefined
-      this.runSoon()
-    }, Math.max(every, this.backoff))
+      this.runSoon(0, 'poll')
+    }, wait)
   }
 
-  /** Dirty marks changed: capture after the debounce, then push. */
-  scheduleCapture(delay = CAPTURE_DEBOUNCE) {
+  /**
+   * Dirty marks changed: capture CAPTURE_FAST after the last change, but no sooner than CAPTURE_DEBOUNCE after
+   * the previous capture, then push. A single edit goes out at once; a burst becomes one batch per 1.5 s.
+   */
+  scheduleCapture(delay?: number) {
     if (this.stopped || this.config.paused) return
+    delay ??= Math.max(CAPTURE_FAST, this.lastCaptureAt + CAPTURE_DEBOUNCE - this.core.now())
     if (this.captureTimer) this.timers.clearTimeout(this.captureTimer)
     this.captureTimer = this.timers.setTimeout(() => {
       this.captureTimer = undefined
-      void this.locked(async () => {
-        await capture(this.core)
-        await this.pushInner()
-      })
+      this.lastCaptureAt = this.core.now()
+      void this.capturePush()
         .then(() => this.scheduleStatus())
-        .catch(() => this.runSoon(this.backoff || 5000))
+        .catch(() => this.runSoon(this.backoff || 5000, 'retry'))
     }, delay)
+  }
+
+  private capturePush() {
+    return this.locked(async () => {
+      await capture(this.core)
+      await this.pushInner()
+    })
   }
 
   private schedulePush() {
     this.scheduleCapture(CAPTURE_DEBOUNCE)
   }
 
-  /** Visibility changed: capture at once when hidden, pull when visible (§10.1). */
+  /**
+   * Visibility changed: push at once when hidden, check the relay and pull at once when visible (§10.1). The
+   * relay stays connected while hidden: a covered, minimised or background window still gets notices and
+   * pulls (mobile browsers may drop the socket; it's checked when the page comes back).
+   */
   onVisibility(visible: boolean) {
     if (!this.started) return
-    if (visible) {
-      this.connectRelay()
-      this.runSoon()
-    } else {
-      this.scheduleCapture(0)
-      this.relay?.close()
-      this.relay = undefined
-      this.setStatus({ relay: 'off' })
+    if (visible) this.wake('visible')
+    else {
+      if (this.captureTimer) this.timers.clearTimeout(this.captureTimer)
+      this.captureTimer = undefined
+      void this.capturePush()
+        .then(() => this.scheduleStatus())
+        .catch(() => {})
     }
     this.transfers.kick()
   }
 
+  /**
+   * The page was shown, focused (pageshow, resume) or the network came back: reconnect the relay now rather
+   * than after its backoff, check an open socket is still alive, and pull at once. Focus doesn't pull while
+   * the relay is up and a pull ran recently, so switching windows doesn't cost a request each time.
+   */
+  wake(trigger: 'visible' | 'focus' | 'online') {
+    if (!this.started || this.stopped || this.config.paused || !this.env.visible()) return
+    if (this.relay) this.relay.wake()
+    else this.connectRelay()
+    const since = this.core.now() - this.lastPullStart
+    if (this.inflight && since < WAKE_COALESCE) return
+    if (trigger === 'focus' && this.relay?.state === 'open' && since < WAKE_FRESH) return
+    this.pullNow('focus')
+  }
+
+  /** User input after a quiet spell: check the relay socket is alive (a dead one reconnects, then catches up). */
+  checkRelay() {
+    if (this.started && !this.config.paused && this.env.visible()) this.relay?.wake()
+  }
+
   onOnline() {
     this.failures = 0
-    this.runSoon()
+    this.wake('online')
     this.transfers.kick()
   }
 
   /** The viewer closed a song: capture now and pull. */
   onSongClosed() {
     this.scheduleCapture(0)
-    this.runSoon(500)
+    this.runSoon(500, 'local')
+  }
+
+  private setDiag(p: Partial<SyncDiagnostics>) {
+    this.setStatus({ diag: { ...this.status.diag, ...p } })
+  }
+
+  private dropRelay() {
+    this.relay?.close()
+    this.relay = undefined
+    this.setStatus({ relay: 'off', diag: { ...this.status.diag, relaySince: this.core.now(), pollMs: POLL.visible } })
+  }
+
+  /** This device's last pushed seq. */
+  private async ownHead() {
+    return (await getState(this.core.db, 'cursors'))?.[this.config.deviceId] ?? 0
   }
 
   private connectRelay() {
-    if (this.relay || !this.config.relay || this.config.paused || !this.env.visible()) return
+    if (this.relay || !this.config.relay || this.config.paused) return
+    let relay: NoticeChannel | undefined
     try {
-      this.relay = new NoticeChannel({
+      relay = new NoticeChannel({
         base: this.config.relay,
         keys: this.core.keys,
         deviceId: this.config.deviceId,
         transport: this.o.relayTransport,
-        onState: (s) => this.setStatus({ relay: s }),
+        timers: this.timers,
+        head: () => this.ownHead(),
+        log: (m) => this.core.log?.(m),
+        // (The transport reports 'connecting' from inside the constructor, before `relay` is set.)
+        onState: (s) => relay && this.relay === relay && this.onRelayState(relay, s),
+        onSent: (seq) => this.setDiag({ noticeSent: { seq, at: this.core.now() } }),
         onNotice: (p) => void this.onNotice(p),
       })
+      this.relay = relay
+      this.setStatus({ relay: relay.state, diag: { ...this.status.diag, relaySince: relay.since } })
     } catch (e) {
       this.core.log?.('relay failed', e)
       this.setStatus({ relay: 'error' })
     }
   }
 
-  private async onNotice(p: { d: string; s: number }) {
+  private onRelayState(relay: NoticeChannel, s: RelayState) {
+    const pollMs = s === 'open' ? POLL.relay : POLL.visible
+    this.setStatus({ relay: s, diag: { ...this.status.diag, relaySince: relay.since, pollMs } })
+    if (s !== 'open') return
+    // Announce our head (a notice we posted while disconnected never went out) and pull: notices other
+    // devices sent while we were disconnected are lost. Receivers ignore seqs they already have.
+    void this.ownHead()
+      .then((h) => {
+        if (h > 0) void relay.post(h)
+      })
+      .catch(() => {})
+    const wait = this.lastPullStart + RELAY_PULL_GAP - this.core.now()
+    if (wait <= 0) this.pullNow('relay')
+    else this.runSoon(wait, 'relay')
+  }
+
+  /** Straight from the socket's message handler to the pull: no timer in between (see `pullNow`). */
+  private async onNotice(p: { d: string; s: number; k?: 'ping' | 'pong' }) {
+    if (!p.k) this.setDiag({ noticeReceived: { device: p.d, seq: p.s, at: this.core.now(), hidden: !this.env.visible() } })
     const cur = (await getState(this.core.db, 'cursors'))?.[p.d] ?? 0
-    if (p.s <= cur) return
-    if (this.noticeTimer) this.timers.clearTimeout(this.noticeTimer)
-    this.noticeTimer = this.timers.setTimeout(() => {
-      this.noticeTimer = undefined
-      this.runSoon()
-    }, NOTICE_DEBOUNCE)
+    if (p.s > cur) this.pullNow('notice')
+  }
+
+  /** "Test instant sync": a sealed ping through the relay room; other devices answer with a sealed pong. */
+  async testInstantSync(): Promise<PingResult & { relay: RelayState }> {
+    const relay = this.relay
+    if (!relay) return { relay: this.status.relay, sent: false, answers: [] }
+    if (relay.state !== 'open') relay.wake()
+    return { relay: relay.state, ...(await relay.testPing()) }
   }
 
   /** Start timers, triggers, transfers and the relay. */
@@ -1416,14 +1572,14 @@ export class Engine {
     }, MAINTENANCE_TICK)
     this.connectRelay()
     await this.refreshStatus().catch(() => {})
-    this.runSoon()
+    this.runSoon(0, 'start')
   }
 
   stop() {
     this.stopped = true
     this.started = false
-    for (const t of [this.captureTimer, this.pullTimer, this.noticeTimer, this.statusTimer]) if (t) this.timers.clearTimeout(t)
-    this.captureTimer = this.pullTimer = this.noticeTimer = this.statusTimer = undefined
+    for (const t of [this.captureTimer, this.pullTimer, this.statusTimer]) if (t) this.timers.clearTimeout(t)
+    this.captureTimer = this.pullTimer = this.statusTimer = undefined
     if (this.maintTimer) this.timers.clearInterval(this.maintTimer)
     this.dirtySub?.unsubscribe()
     this.relay?.close()
@@ -1435,12 +1591,10 @@ export class Engine {
   setPaused(paused: boolean) {
     this.core.config = { ...this.core.config, paused }
     this.setStatus({ phase: paused ? 'paused' : 'idle' })
-    if (paused) {
-      this.relay?.close()
-      this.relay = undefined
-    } else {
+    if (paused) this.dropRelay()
+    else {
       this.connectRelay()
-      this.runSoon()
+      this.runSoon(0, 'manual')
     }
     this.transfers.kick()
   }

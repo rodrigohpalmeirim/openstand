@@ -78,6 +78,7 @@ function publish(s: EngineStatus | null, configured: boolean) {
         error: s.error ?? (s.warning && s.phase !== 'error' ? s.warning : undefined),
         warning: s.phase !== 'error' ? s.warning : undefined,
         streams: s.streams,
+        diag: s.diag,
       }
     : { ...offStatus(), configured, phase: configured ? 'starting' : 'off', initial }
   useLibSync.setState(next, true)
@@ -203,9 +204,20 @@ registerService(() => {
       }
     }
   }
-  const input = () => (lastInput = Date.now())
+  let checkedAt = 0
+  const input = () => {
+    lastInput = Date.now()
+    // A socket can die silently while the screen stays on (Wi-Fi roaming, NAT timeouts): the first touch
+    // after a while checks it with a ping, so a dead one reconnects before the next keep-alive would notice.
+    if (lastInput - checkedAt > 30_000) {
+      checkedAt = lastInput
+      engine?.checkRelay()
+    }
+  }
   const vis = () => engine?.onVisibility(env.visible())
   const online = () => engine?.onOnline()
+  // Focus, bfcache restore and unfreeze: the relay may have died meanwhile (mobile), so check it and catch up.
+  const wake = () => engine?.wake('focus')
   const offline = () => useLibSync.setState({ phase: 'offline' })
   const hidden = () => {
     if (document.visibilityState === 'hidden') void flushAnnotations()
@@ -216,6 +228,9 @@ registerService(() => {
   document.addEventListener('visibilitychange', hidden)
   window.addEventListener('online', online)
   window.addEventListener('offline', offline)
+  window.addEventListener('focus', wake)
+  window.addEventListener('pageshow', wake)
+  document.addEventListener('resume', wake)
   const offClosed = on('songClosed', () => engine?.onSongClosed())
   const offOpened = on('songOpened', ({ song }) => void prioritizeSongs([song.id]))
   let active = useLibraries.getState().active
@@ -235,6 +250,9 @@ registerService(() => {
     document.removeEventListener('visibilitychange', hidden)
     window.removeEventListener('online', online)
     window.removeEventListener('offline', offline)
+    window.removeEventListener('focus', wake)
+    window.removeEventListener('pageshow', wake)
+    document.removeEventListener('resume', wake)
     channel?.close()
     channel = null
     void stopEngine()

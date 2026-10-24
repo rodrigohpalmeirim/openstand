@@ -131,10 +131,20 @@ export interface SnapshotHeader {
   horizon: { deadFields: number; elementTombs: number }
 }
 
-/** Plaintext of a relay notice (§4.3): device `d` has written up to seq `s`. */
+/**
+ * Plaintext of a relay notice (§4.3): device `d` has written up to seq `s`. A plain notice has no `k`.
+ * `k: 'ping'` asks the room's other devices to answer with a `pong` addressed `to` the pinger, echoing the
+ * nonce `p` ("Test instant sync"). Both still carry the sender's head in `s` (≥ 0), so devices that predate
+ * them read them as plain notices.
+ */
 export interface NoticePayload {
   d: string
   s: number
+  k?: 'ping' | 'pong'
+  /** ping/pong: random nonce (8–32 base64url chars). */
+  p?: string
+  /** pong: the device id that sent the ping. */
+  to?: string
 }
 
 /**
@@ -355,8 +365,8 @@ const DAY = 24 * 60 * 60 * 1000
 export const BATCH_MAX = { ops: 500, bytes: 1 * MiB, opBytes: 16 * MiB } as const
 export const NOTICE_MAX = 1 * KiB
 export const CAPTURE_DEBOUNCE = 1500
-/** Pull interval: `visible` normally, `relay` while the relay is open. */
-export const POLL = { visible: 30_000, relay: 120_000 } as const
+/** Pull interval: `visible` normally, `relay` while the relay is open (a safety net for missed notices). */
+export const POLL = { visible: 30_000, relay: 60_000 } as const
 /** Chunked-container chunk size (log2Chunk = 20). */
 export const CHUNK = 1 * MiB
 /** Ciphertext at or below this goes up in a single PUT; above it, multipart/resumable. */

@@ -301,8 +301,16 @@ wrote the object, not that it is the file the hash names; a mismatch is discarde
 text frame: {"v":1,"n":"<base64url(sealed(JSON {d, s}) with aad = [0x02, epoch] || utf8(`os1|notice|${roomId}`), no gzip)>"}
 ```
 
-Receivers decrypt the notice and ignore their own `d`. If `s > cursor[d]`, they fetch `log/d/(cursor+1..s)`,
-debounced by 300 ms.
+Receivers decrypt the notice and ignore their own `d`. If `s > cursor[d]`, they fetch `log/d/(cursor+1..s)`
+at once, from the socket's message handler rather than through a timer (hidden pages get their timers
+throttled, to once a minute in Chrome after 5 min hidden). A notice during a running pull queues one more.
+
+Connection test ("Test instant sync" in Settings): the same frame and sealing, with the payload
+`{d, s, k: "ping", p}` or `{d, s, k: "pong", p, to}`. `p` is a random nonce (8–32 base64url chars), `to` the
+pinging device; `s` is the sender's head (≥ 0 here, ≥ 1 for plain notices). Every other device answers a
+ping with a pong addressed `to` the pinger echoing `p`; the pinger counts only pongs that decrypt with the
+library key, are addressed to it and carry its current nonce. Both double as notices (`s` is a valid head),
+so devices that predate them treat them as plain notices and never answer.
 
 ### 4.4 Format versions, errors and input validation
 
@@ -701,7 +709,8 @@ The mark is `syncDirty.put({ id: \`${c}/${key}\`, at: Date.now() })`, with `c` d
 
 ### 8.2 Diff: from dirty to ops
 
-The engine runs this 1.5 s after the last dirty change, immediately on `visibilitychange: hidden`, on
+The engine runs this 300 ms after the last dirty change but no sooner than 1.5 s after its previous run (so a
+single edit goes out at once and a burst becomes one batch per 1.5 s), immediately on `visibilitychange: hidden`, on
 `songClosed`, and before every apply that touches a dirty record. In one rw transaction over the record
 tables, `blobs` (read), `syncShadow`, `syncDirty`, `syncOutbox` and `syncState`:
 
@@ -807,9 +816,20 @@ work.
 - Reuses `RelayTransport` from `src/sync/transports.ts`, with the URL `${relayBase}/lib/${roomId}`.
 - `relayBase` comes from `config.relay`: the default is `/relay` when `sameSiteRelayAvailable()`,
   otherwise `null` (polling only). It is included in the pairing payload.
-- Connected only while sync is on and the page is visible.
-- Sends `{"ping":1}` every 45 s.
-- Posts a notice after every `heads/` write.
+- Connected while sync is on, also while the page is hidden: a covered, minimised or background window still
+  gets notices and pulls (mobile browsers may drop the socket; see the wake checks below). Going hidden
+  pushes at once.
+- Sends `{"ping":1}` on open and every 30 s. Once the relay has answered a ping, no frame at all within
+  10 s of a ping (5 s after a wake) means the socket is dead (mobile networks drop connections silently):
+  it reconnects at once.
+- Posts a notice after every `heads/` write. Notices are coalesced (latest seq only) and spaced ≥ 250 ms
+  apart (lib rooms allow 5 msg/s). One posted while the socket is down is sent when it opens, and every
+  (re)open re-announces this device's head.
+- Every (re)open also pulls (at most every 2 s): notices sent while it was down are lost.
+- Focus, `pageshow`, `resume`, `online` and becoming visible reconnect at once (skipping the backoff wait) or
+  check an open socket with a ping. Becoming visible and `online` pull at once (no timer); focus/pageshow/resume
+  pull only if the relay isn't open or the last pull is over 30 s old. A wake within 1 s of a pull starting
+  doesn't start another. The first touch or key press after 30 s also checks the socket with a ping.
 - Detects support through the health JSON, which now includes `features: ['lib']`.
 
 **Worker** (`worker/index.ts`):
@@ -855,9 +875,9 @@ restarts on `switchLibrary` by subscribing to `useLibraries`.
 
 | Task | Trigger |
 | --- | --- |
-| capture (§8.2) | dirty change, debounced 1.5 s; `visibilitychange` → hidden; `songClosed` |
-| push | Seal → `put log/<me>/<seq>` → `put heads/<me>/<seq>` → delete older head → notice → delete the outbox row. Strictly in seq order; retries are idempotent. |
-| pull | Every 30 s while visible (120 s while the relay is open). Also on `visibilitychange` → visible, `online`, `songClosed`, an incoming notice, and "Sync now". Not while hidden. |
+| capture (§8.2) | dirty change, debounced 300 ms, at most once per 1.5 s; `visibilitychange` → hidden; `songClosed` |
+| push | Seal → `put log/<me>/<seq>` → `put heads/<me>/<seq>` → notice → delete older head → delete the outbox row. Strictly in seq order; retries are idempotent. |
+| pull | Every 30 s while visible (60 s while the relay is open). Also on `visibilitychange` → visible, focus/`pageshow`/`resume` (see §9), `online`, a relay (re)open, `songClosed`, an incoming notice, "Sync now", and when an idle maintenance listing shows another device ahead. While hidden only notices and relay reopens pull (no polling). |
 | transfers | Separate pool: 3 downloads, 2 uploads. Paused while performing, except prioritised blobs. Paused while hidden or offline. |
 | maintenance | Snapshot, prune, devices refresh, blob GC (weekly), repair (weekly), reconcile scan (daily). Only when idle: visible, not performing, no user input for 60 s. |
 
@@ -1024,8 +1044,8 @@ export function joinSong(local: Song, remote: Song): Song
 
 | Constant | Value |
 | --- | --- |
-| `CAPTURE_DEBOUNCE` | 1.5 s |
-| `POLL` | 30 s, or 120 s while the relay is open |
+| `CAPTURE_DEBOUNCE` | 1.5 s between captures (each 300 ms after the last change) |
+| `POLL` | 30 s, or 60 s while the relay is open |
 | `BATCH_MAX` | 500 ops / 1 MiB JSON; a single op may be up to 16 MiB |
 | `CHUNK` | 1 MiB |
 | `SINGLE_PUT_MAX` | 16 MiB ciphertext |

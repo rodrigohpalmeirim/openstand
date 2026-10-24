@@ -19,14 +19,14 @@ import {
   WifiOff,
 } from 'lucide-react'
 import { useEffect, useId, useState, type ReactNode } from 'react'
-import { useLibSync, type LibSyncStatus } from '../api'
+import { useLibSync, type InstantSyncTest, type LibSyncStatus, type PullTrigger } from '../api'
 import type { S3Config } from '../backends/types'
 import { useLibraries } from '../../library/browse/libraries'
 import { useNav } from '../../state/nav'
 import { useSettings } from '../../state/settings'
 import { defaultDeviceName } from '../../sync/deviceName'
 import { Button, Dialog, Field, IconButton, Input, confirmDialog, cx, toast } from '../../ui/primitives'
-import { checkBackend, currentPayload, deleteRemoteData, enableSync, leaveSync, renameDevice, repair, setPaused, syncNow, updateBackend } from './client'
+import { checkBackend, currentPayload, deleteRemoteData, enableSync, leaveSync, renameDevice, repair, setPaused, syncNow, testInstantSync, updateBackend } from './client'
 import { active, controls, downloadLine, errorText, failureText, fraction, initialLine, phaseLine, plural, syncProblem, timeAgo, uploadLine, type ErrorAction } from './format'
 import { JoinFlow } from './JoinFlow'
 import { PairingQr } from './PairingQr'
@@ -204,6 +204,104 @@ function StatusCard({ s }: { s: LibSyncStatus }) {
         </div>
       )}
     </div>
+  )
+}
+
+const TRIGGER: Record<PullTrigger, string> = {
+  start: 'when sync started',
+  notice: 'after a change notice',
+  poll: 'regular check',
+  focus: 'when the app came back',
+  online: 'when back online',
+  relay: 'after reconnecting',
+  manual: 'Sync now',
+  local: 'after closing a song',
+  retry: 'retry',
+}
+
+/** Clock time with seconds; the date too when it isn't today. */
+function clock(at: number) {
+  const d = new Date(at)
+  const t = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+  return d.toDateString() === new Date().toDateString() ? t : `${d.toLocaleDateString()} ${t}`
+}
+
+const seconds = (ms: number) => (ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(ms < 10_000 ? 1 : 0)} s`)
+
+function testText(r: InstantSyncTest): { tone: 'ok' | 'warn'; text: string } {
+  if (!r.sent) return { tone: 'warn', text: r.relay === 'off' ? 'Instant updates are off on this device.' : 'Not connected to the relay right now. Try again in a moment.' }
+  if (!r.answers.length)
+    return { tone: 'warn', text: 'No other device answered within 5 s. Open OpenStand on another device of this library, keep it on screen, and try again.' }
+  return { tone: 'ok', text: r.answers.map((a) => `“${a.name}” answered in ${seconds(a.rtt)}`).join(' · ') }
+}
+
+/** Settings → Library sync → Connection details: what the relay and the pull scheduler are doing. */
+function ConnectionDetails({ s }: { s: LibSyncStatus }) {
+  const [test, setTest] = useState<{ busy: boolean; result?: InstantSyncTest; error?: string }>({ busy: false })
+  const d = s.diag
+  const name = (id: string) => s.devices.find((x) => x.id === id)?.name ?? 'another device'
+  const relay =
+    s.relay === 'open'
+      ? 'Connected'
+      : s.relay === 'connecting'
+        ? 'Connecting…'
+        : s.relay === 'error'
+          ? 'Not connected, retrying'
+          : s.phase === 'paused'
+            ? 'Off while paused'
+            : 'Off'
+  const run = async () => {
+    setTest({ busy: true })
+    try {
+      setTest({ busy: false, result: await testInstantSync() })
+    } catch (e) {
+      setTest({ busy: false, error: failureText(e) })
+    }
+  }
+  const out = test.result ? testText(test.result) : test.error ? { tone: 'warn' as const, text: test.error } : null
+  const rows: [string, ReactNode][] = [
+    ['Instant updates', `${relay}${d?.relaySince ? ` since ${clock(d.relaySince)}` : ''}`],
+    ['Last notice sent', d?.noticeSent ? `${clock(d.noticeSent.at)} (change ${d.noticeSent.seq})` : 'None yet'],
+    [
+      'Last notice received',
+      d?.noticeReceived
+        ? `${clock(d.noticeReceived.at)} from “${name(d.noticeReceived.device)}”${d.noticeReceived.hidden ? ', while this window was hidden' : ''}`
+        : 'None yet',
+    ],
+    [
+      'Last check for changes',
+      d?.lastPull
+        ? `${clock(d.lastPull.at)}, ${TRIGGER[d.lastPull.trigger]}${d.lastPull.hidden ? ' (window hidden)' : ''}, took ${seconds(d.lastPull.ms)}${d.lastPull.ok ? '' : ' (failed)'}`
+        : 'None yet',
+    ],
+    ['Regular checks', d ? `Every ${Math.round(d.pollMs / 1000)} s while this window is visible` : '—'],
+  ]
+  return (
+    <details className="group rounded-xl border border-line px-4 py-2 text-sm">
+      <summary className="-mx-4 -my-2 flex min-h-11 cursor-pointer select-none items-center px-4 py-2 font-medium text-muted hover:text-fg">Connection details</summary>
+      <div className="grid gap-3 pb-2 pt-3">
+        <dl className="grid gap-x-4 gap-y-1.5 sm:grid-cols-[max-content_1fr]">
+          {rows.map(([k, v]) => (
+            <div key={k} className="contents">
+              <dt className="text-xs text-muted sm:text-sm">{k}</dt>
+              <dd className="mb-1 tabular-nums sm:mb-0">{v}</dd>
+            </div>
+          ))}
+        </dl>
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+          <Button size="sm" onClick={() => void run()} disabled={test.busy || s.phase === 'paused'}>
+            {test.busy && <Loader2 className="size-4 animate-spin" />}
+            Test instant sync
+          </Button>
+          <span className="text-xs text-muted">Asks your other open devices to answer through the relay.</span>
+        </div>
+        {out && (
+          <p role="status" className={cx('text-sm', out.tone === 'ok' ? 'text-ok' : 'text-warn')}>
+            {out.text}
+          </p>
+        )}
+      </div>
+    </details>
   )
 }
 
@@ -716,6 +814,7 @@ export function LibrarySyncSettings() {
               )}
             </div>
           )}
+          <ConnectionDetails s={s} />
         </div>
 
         <Block title="Devices" icon={<MonitorSmartphone className="size-4" />} description="Every device keeps a full copy of the library.">

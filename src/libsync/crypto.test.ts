@@ -286,6 +286,32 @@ describe('notices', () => {
     const sealed = fromB64url(JSON.parse(frame).n)
     await expect(open(k, { kind: 'meta' }, sealed)).rejects.toBeInstanceOf(FormatError)
   })
+
+  it('carry ping/pong for the connection test, validated, and plain notices still need s ≥ 1', async () => {
+    const k = await keysP
+    const d = '0123456789abcdef'
+    const to = 'fedcba9876543210'
+    const ping = await sealNotice(k, { d, s: 0, k: 'ping', p: 'nonce-1234567' })
+    expect(ping.length).toBeLessThan(300)
+    expect(await openNotice(k, ping)).toEqual({ d, s: 0, k: 'ping', p: 'nonce-1234567' })
+    const pong = await sealNotice(k, { d, s: 7, k: 'pong', p: 'nonce-1234567', to })
+    expect(await openNotice(k, pong)).toEqual({ d, s: 7, k: 'pong', p: 'nonce-1234567', to })
+    expect(await openNotice(await otherKeysP, pong)).toBeNull()
+    // Only the documented fields are sealed.
+    expect(await openNotice(k, await sealNotice(k, { d, s: 3, to } as never))).toEqual({ d, s: 3 })
+    // Malformed variants are dropped.
+    const bad = async (p: object) => {
+      const raw = await seal(k, { kind: 'notice' }, new TextEncoder().encode(JSON.stringify(p)))
+      return openNotice(k, JSON.stringify({ v: 1, n: b64url(raw) }))
+    }
+    expect(await bad({ d, s: 0 })).toBeNull()
+    expect(await bad({ d, s: 1, k: 'shout', p: 'nonce-1234567' })).toBeNull()
+    expect(await bad({ d, s: 1, k: 'ping', p: 'short' })).toBeNull()
+    expect(await bad({ d, s: 1, k: 'ping', p: 'has spaces in it' })).toBeNull()
+    expect(await bad({ d, s: -1, k: 'ping', p: 'nonce-1234567' })).toBeNull()
+    expect(await bad({ d, s: 1, k: 'pong', p: 'nonce-1234567' })).toBeNull()
+    expect(await bad({ d, s: 1, k: 'pong', p: 'nonce-1234567', to: 'nope' })).toBeNull()
+  })
 })
 
 describe('chunked container', () => {

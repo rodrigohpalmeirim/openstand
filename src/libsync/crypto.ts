@@ -345,10 +345,12 @@ export async function open(keys: LibraryKeys, ctx: SealContext, sealed: Uint8Arr
 // ---------------------------------------------------------------------------------------------
 
 const DEVICE_ID = /^[0-9a-f]{16}$/
+const PING_NONCE = /^[A-Za-z0-9_-]{8,32}$/
 
 /** The full relay text frame `{"v":1,"n":"…"}` (JSON, not gzipped, ≤ 1 KiB). */
 export async function sealNotice(keys: LibraryKeys, p: NoticePayload): Promise<string> {
-  const sealed = await seal(keys, { kind: 'notice' }, utf8(JSON.stringify({ d: p.d, s: p.s })))
+  const body: NoticePayload = p.k ? { d: p.d, s: p.s, k: p.k, p: p.p, ...(p.k === 'pong' ? { to: p.to } : {}) } : { d: p.d, s: p.s }
+  const sealed = await seal(keys, { kind: 'notice' }, utf8(JSON.stringify(body)))
   const frame: NoticeFrame = { v: 1, n: b64url(sealed) }
   return JSON.stringify(frame)
 }
@@ -363,8 +365,13 @@ export async function openNotice(keys: LibraryKeys, frame: string): Promise<Noti
     const f = JSON.parse(frame) as Partial<NoticeFrame>
     if (!f || f.v !== 1 || typeof f.n !== 'string') return null
     const p = JSON.parse(new TextDecoder().decode(await open(keys, { kind: 'notice' }, fromB64url(f.n)))) as NoticePayload
-    if (typeof p?.d !== 'string' || !DEVICE_ID.test(p.d) || !Number.isSafeInteger(p.s) || p.s < 1) return null
-    return { d: p.d, s: p.s }
+    if (typeof p?.d !== 'string' || !DEVICE_ID.test(p.d) || !Number.isSafeInteger(p.s)) return null
+    if (p.k === undefined) return p.s >= 1 ? { d: p.d, s: p.s } : null
+    // ping/pong (connection test): s may be 0 (nothing written yet); the nonce and addressee are checked.
+    if ((p.k !== 'ping' && p.k !== 'pong') || p.s < 0 || typeof p.p !== 'string' || !PING_NONCE.test(p.p)) return null
+    if (p.k === 'ping') return { d: p.d, s: p.s, k: 'ping', p: p.p }
+    if (typeof p.to !== 'string' || !DEVICE_ID.test(p.to)) return null
+    return { d: p.d, s: p.s, k: 'pong', p: p.p, to: p.to }
   } catch {
     return null
   }

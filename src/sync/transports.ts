@@ -12,6 +12,8 @@ export interface Transport {
   status: TransportStatus
   send(data: string): void
   close(): void
+  /** Drop the current connection (if any) and connect again now, skipping any backoff wait. */
+  reconnect?(): void
 }
 
 export interface TransportEvents {
@@ -110,6 +112,7 @@ export class RelayTransport implements Transport {
 
   private open() {
     if (this.closed) return
+    this.timer = null
     this.set('connecting')
     let ws: WebSocket
     try {
@@ -143,6 +146,28 @@ export class RelayTransport implements Transport {
 
   send(data: string) {
     if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(data)
+  }
+
+  /**
+   * Connect again at once: after a backoff wait (the page came back, the network returned) or when the
+   * socket looks dead (no pong: mobile networks drop connections without telling either end).
+   */
+  reconnect() {
+    if (this.closed) return
+    if (this.timer) clearTimeout(this.timer)
+    this.timer = null
+    const old = this.ws
+    if (old) {
+      old.onopen = old.onmessage = old.onclose = old.onerror = null
+      try {
+        old.close(4000, 'reconnect')
+      } catch {
+        /* already closed */
+      }
+    }
+    this.ws = null
+    this.attempt = 0
+    this.open()
   }
 
   close() {
