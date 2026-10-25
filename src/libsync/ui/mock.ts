@@ -66,6 +66,8 @@ const ERRORS: Record<LibSyncErrorCode, string> = {
   rejoin: 'rejoin',
   server: 'InternalError',
   unknown: 'unknown',
+  reauth: 'reauth',
+  wrongAccount: 'wrongAccount',
 }
 
 function on(over: Partial<LibSyncStatus> = {}): LibSyncStatus {

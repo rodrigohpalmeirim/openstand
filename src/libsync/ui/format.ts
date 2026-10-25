@@ -151,6 +151,9 @@ const FIXED: Record<LibSyncErrorCode, Omit<ErrorText, 'actionLabel' | 'secondary
   network: { message: OFFLINE_LINE, warning: true },
   server: { message: 'Your storage had a problem answering. Sync will try again.', action: 'retry' },
   unknown: { message: 'Something went wrong while syncing.', action: 'retry' },
+  // Cloud drives (SYNC-DRIVES.md §7.4). Step-0 placeholders: WP-U adds the provider name and the sign-in actions.
+  reauth: { message: 'Sign in to your storage again to keep syncing. Your changes are kept on this device until then.' },
+  wrongAccount: { message: 'This library isn’t in the account you signed in with.' },
 }
 
 /** §12.3: fixed wording and action per error code. */

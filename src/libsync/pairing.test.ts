@@ -73,3 +73,43 @@ describe('pairing codes', () => {
     await expect(encodePairing({ ...r2, s: 'nope' })).rejects.toBeInstanceOf(PairingError)
   })
 })
+
+describe('pairing codes for cloud drives (SYNC-DRIVES.md §2.1, §11)', () => {
+  const s = b64url(new Uint8Array(32).map((_, i) => i + 1))
+  const drives: PairingPayload['b'][] = [
+    { kind: 'dropbox', root: '', account: 'rod@example.com', accountId: 'dbid:AAH4f99T0taONIb-OurWxbNQ6ywGRopQngc' },
+    { kind: 'gdrive', folder: '1Zx9_aBcDeFgHiJkLmNoPqRsTuVwXyZ-0', account: 'rod@example.com', accountId: '01234567890123456789' },
+    { kind: 'onedrive', folder: '', account: 'Rod <rod@outlook.com>', accountId: 'b!AbCdEf0123' },
+    { kind: 'dropbox', root: '' },
+  ]
+
+  it('round-trips the backend kind, folder and account hints, and stays short', async () => {
+    for (const b of drives) {
+      const p: PairingPayload = { v: 1, s, n: 'Gig library', b, r: '/relay' }
+      const c = await encodePairing(p)
+      expect(c.length).toBeLessThanOrEqual(400)
+      expect(await decodePairing(c)).toEqual(p)
+    }
+  })
+
+  it('never carries tokens or other unknown fields', () => {
+    const b = { kind: 'dropbox', root: '', account: 'a@b.c', accessToken: 'secret', refreshToken: 'secret' }
+    expect(validatePayload({ v: 1, s, b })).toEqual({ v: 1, s, b: { kind: 'dropbox', root: '', account: 'a@b.c' } })
+  })
+
+  it('rejects bad account hints and Drive folder ids as format', async () => {
+    const bad: unknown[] = [
+      { kind: 'dropbox', root: '', account: 5 },
+      { kind: 'dropbox', root: '', account: 'x'.repeat(321) },
+      { kind: 'onedrive', folder: '', accountId: 'x'.repeat(201) },
+      { kind: 'onedrive', folder: '', accountId: null },
+      { kind: 'gdrive', folder: '' },
+      { kind: 'gdrive', folder: 'short' },
+      { kind: 'gdrive', folder: '1Zx9 aBcDeFgHiJ' },
+      { kind: 'gdrive', folder: 'x'.repeat(201) },
+      { kind: 'gdrive' },
+    ]
+    for (const b of bad) expect(await code(decodePairing(await rawCode({ v: 1, s, b }))), JSON.stringify(b)).toBe('format')
+    expect(validatePayload({ v: 1, s, b: { kind: 'dropbox', root: '', account: 'x'.repeat(320), accountId: 'y'.repeat(200) } }).b).toMatchObject({ account: 'x'.repeat(320) })
+  })
+})

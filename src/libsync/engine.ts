@@ -11,7 +11,7 @@ import { markRemote } from '../db/capture'
 import type { OpenStandDB } from '../db/db'
 import type { Song } from '../db/schema'
 import { createBackend } from './backends'
-import { BackendError, type ObjectInfo, type StorageBackend, type UploadState } from './backends/types'
+import { BackendError, type BackendKind, type ObjectInfo, type StorageBackend, type UploadState } from './backends/types'
 import { listAll as listAllBounded } from './backends/util'
 import { BlobQueue, localBlob, LocalQuotaError, queueDownload, queueUpload, referencedBlobs, remoteBlobMatches, songPriority } from './blobs'
 import { applyOps, capture, claimedSize, isPlainOutbox, mergeApplied, newApplied, opsAhead, OutboxWriter, plainBatch, projectCtx, syncTxTables, type Applied, type Core } from './apply'
@@ -135,6 +135,7 @@ export function toSyncError(e: unknown, at = Date.now()): LibSyncError {
         server: 'server',
         notFound: 'unknown',
         unknown: 'unknown',
+        reauth: 'reauth',
       } as const
     )[e.code]
   } else if ((e as Error)?.name === 'QuotaExceededError') code = 'localQuota'
@@ -209,6 +210,7 @@ export interface EngineHooks {
 export interface EngineStatus {
   phase: LibSyncPhase
   backendLabel: string
+  backendKind?: BackendKind
   lastSyncAt?: number
   pendingChanges: number
   upload: TransferProgress
@@ -353,6 +355,7 @@ export class Engine {
     this.status = {
       phase: core.config.paused ? 'paused' : 'idle',
       backendLabel: core.backend.label,
+      backendKind: core.backend.kind,
       pendingChanges: 0,
       upload: { files: 0, bytes: 0, doneFiles: 0, doneBytes: 0 },
       download: { files: 0, bytes: 0, doneFiles: 0, doneBytes: 0 },

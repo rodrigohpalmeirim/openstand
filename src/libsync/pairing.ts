@@ -68,6 +68,25 @@ export async function decodePairing(text: string): Promise<PairingPayload> {
 const str = (v: unknown): v is string => typeof v === 'string'
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
 
+/** A Google Drive file id (SYNC-DRIVES.md §11). */
+const DRIVE_FOLDER_ID = /^[A-Za-z0-9_-]{10,200}$/
+
+/**
+ * The optional, non-secret account hints of an OAuth backend (SYNC-DRIVES.md §2.1): `account` (display,
+ * usually the email) ≤ 320 chars, `accountId` ≤ 200 chars. Kept only when present; a wrong type or length
+ * is a malformed code.
+ */
+function accountHints(b: Record<string, unknown>): { account?: string; accountId?: string } {
+  const out: { account?: string; accountId?: string } = {}
+  for (const [f, max] of [['account', 320], ['accountId', 200]] as const) {
+    const v = b[f]
+    if (v === undefined) continue
+    if (!str(v) || v.length > max) throw new PairingError('format')
+    out[f] = v
+  }
+  return out
+}
+
 function validateBackend(b: unknown): BackendConfig {
   if (!isObj(b) || !str(b.kind)) throw new PairingError('format')
   switch (b.kind) {
@@ -95,11 +114,13 @@ function validateBackend(b: unknown): BackendConfig {
     }
     case 'dropbox':
       if (!str(b.root)) throw new PairingError('format')
-      return { kind: 'dropbox', root: b.root }
+      return { kind: 'dropbox', root: b.root, ...accountHints(b) }
     case 'gdrive':
+      if (!str(b.folder) || !DRIVE_FOLDER_ID.test(b.folder)) throw new PairingError('format')
+      return { kind: 'gdrive', folder: b.folder, ...accountHints(b) }
     case 'onedrive':
       if (!str(b.folder)) throw new PairingError('format')
-      return { kind: b.kind, folder: b.folder }
+      return { kind: 'onedrive', folder: b.folder, ...accountHints(b) }
     case 'memory':
       if (!str(b.name)) throw new PairingError('format')
       return { kind: 'memory', name: b.name }

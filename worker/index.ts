@@ -1,8 +1,10 @@
 /**
  * OpenStand on Cloudflare Workers.
  *
- * Static assets (the PWA in dist/) are served by the asset store; the Worker only runs for /relay
- * (see run_worker_first in wrangler.jsonc). Two kinds of room, both one Durable Object each:
+ * Static assets (the PWA in dist/) are served by the asset store; the Worker only runs for /relay and
+ * /api/* (see run_worker_first in wrangler.jsonc). /api/oauth/* is the stateless OAuth token route for
+ * Google Drive and OneDrive (worker/oauth.ts, docs/SYNC-DRIVES.md §6). Two kinds of relay room, both one
+ * Durable Object each:
  *
  * - perf: /relay?room=NAME (performance sync, src/sync/), up to 64 clients, 256 KiB messages.
  * - lib:  /relay/lib/<roomId> (library sync notices, docs/SYNC.md §9), up to 32 clients, 1 KiB, 5 msg/s.
@@ -15,6 +17,7 @@
  * migration is needed.
  */
 import { DurableObject } from 'cloudflare:workers'
+import { OAUTH_PREFIX, handleOAuth, oauthJson } from './oauth'
 
 type RoomKind = 'perf' | 'lib'
 
@@ -26,7 +29,8 @@ const LIMITS: Record<RoomKind, { maxMessage: number; maxRoom: number; perSecond:
 const LIB = /^\/relay\/lib\/([a-z2-7]{26})$/
 
 // The PWA's own security headers (CSP etc.) come from public/_headers, which Workers assets applies to every
-// asset response; this Worker only answers /relay (run_worker_first), whose responses are JSON or 101s.
+// asset response; this Worker only answers /relay and /api/* (run_worker_first), whose responses are JSON or
+// 101s. `json` sends `access-control-allow-origin: *`: relay only; the OAuth route has its own headers.
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), {
     status,
@@ -57,6 +61,9 @@ function tooBig(message: string, max: number): boolean {
 export default {
   async fetch(request, env): Promise<Response> {
     const url = new URL(request.url)
+    if (url.pathname.startsWith(OAUTH_PREFIX)) return handleOAuth(request, env)
+    // Other /api/* paths run the Worker too (run_worker_first); answer them as an API, not with index.html.
+    if (url.pathname.startsWith('/api/')) return oauthJson({ error: 'not_found' }, 404)
     if (url.pathname !== '/relay' && !url.pathname.startsWith('/relay/')) return env.ASSETS.fetch(request)
 
     if (request.headers.get('upgrade')?.toLowerCase() !== 'websocket') return json({ service: 'openstand-relay', features: ['lib'] })

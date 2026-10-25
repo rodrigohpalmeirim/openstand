@@ -9,8 +9,13 @@ import { liveQuery } from 'dexie'
 import { useCallback, useSyncExternalStore } from 'react'
 import { create, type StoreApi, type UseBoundStore } from 'zustand'
 import { db, type OpenStandDB } from '../db/db'
-import type { BackendCheck, BackendConfig } from './backends/types'
+import type { BackendCheck, BackendConfig, BackendDescription, BackendKind, OAuthKind } from './backends/types'
 import { PairingError, type DeviceRecord, type JoinMode, type PairingPayload } from './model'
+import type { SignInIntent, SignInResult } from './oauth/types'
+
+export type { AccountInfo, BackendDescription, BackendKind, OAuthKind } from './backends/types'
+export type { SignInErrorCode, SignInIntent, SignInResult } from './oauth/types'
+export { signInReturnPending } from './oauth/callback'
 
 export type LibSyncPhase = 'off' | 'starting' | 'idle' | 'syncing' | 'offline' | 'paused' | 'error'
 
@@ -30,6 +35,10 @@ export type LibSyncErrorCode =
   | 'rejoin'
   | 'server'
   | 'unknown'
+  /** Cloud drives (SYNC-DRIVES.md §7.4, §8): this device must sign in to its drive again. */
+  | 'reauth'
+  /** Cloud drives (§7.3): the signed-in account doesn't hold this library. */
+  | 'wrongAccount'
 
 export interface LibSyncError {
   code: LibSyncErrorCode
@@ -52,6 +61,8 @@ export interface LibSyncStatus {
   configured: boolean
   /** `StorageBackend.label`. */
   backendLabel?: string
+  /** `StorageBackend.kind` (picks the drive wording and the "Sign in again" action). */
+  backendKind?: BackendKind
   /** Wall ms of the last time fully caught up. */
   lastSyncAt?: number
   /** Local changes not yet uploaded (dirty records + outbox ops). */
@@ -298,6 +309,47 @@ export const updateBackend = guarded(async (cfg: BackendConfig): Promise<void> =
   await (await flows()).openPairing({ v: 1, s: config.secret, b: cfg })
   const svc = await service()
   await svc.withEngineStopped(() => putState(db, 'config', { ...config, backend: cfg }))
+})
+
+// ---------------------------------------------------------------------------------------------
+// Cloud-drive sign-in (docs/SYNC-DRIVES.md §2.2). STEP-0 STUBS: WP-O replaces the bodies (oauth/flow.ts,
+// oauth/tokens.ts); the signatures are the contract WP-U builds against. `signInReturnPending` is real
+// (re-exported from oauth/callback.ts above).
+// ---------------------------------------------------------------------------------------------
+
+const notYet = (what: string) => new LibSyncFailure('unknown', `${what} isn't available yet.`)
+
+/**
+ * OAuth providers usable here: a client id is configured, and for gdrive/onedrive the Worker route answers
+ * with the same client id (§6.4). Stub: none yet, so the wizard offers S3 only.
+ */
+export async function oauthProviders(): Promise<OAuthKind[]> {
+  return []
+}
+
+/** Saves the pending sign-in (§5.2) and navigates away. Never resolves when it works. */
+export const startSignIn = guarded(
+  async (kind: OAuthKind, intent: SignInIntent, o?: { chooseAccount?: boolean; loginHint?: string }): Promise<void> => {
+    void [kind, intent, o]
+    throw notYet('Signing in to a cloud drive')
+  },
+)
+
+/** Exchanges the code, stores the tokens in `syncState.oauth` of the pending library DB, identifies the account. */
+export const completeSignIn = guarded(async (): Promise<SignInResult> => {
+  throw notYet('Signing in to a cloud drive')
+})
+
+/** After sign-in: the BackendConfig for setup. gdrive finds or creates the OpenStand folder (§4.3). */
+export const driveBackendConfig = guarded(async (kind: OAuthKind): Promise<BackendConfig> => {
+  void kind
+  throw notYet('Syncing through a cloud drive')
+})
+
+/** `backend.describe()` with this device's tokens (wizard and settings). */
+export const describeBackend = guarded(async (cfg: BackendConfig): Promise<BackendDescription> => {
+  void cfg
+  throw notYet('Syncing through a cloud drive')
 })
 
 const LOCAL: BlobState = { state: 'local' }

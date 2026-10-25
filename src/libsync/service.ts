@@ -67,6 +67,7 @@ function publish(s: EngineStatus | null, configured: boolean) {
         phase: s.phase,
         configured,
         backendLabel: s.backendLabel,
+        backendKind: s.backendKind,
         lastSyncAt: s.lastSyncAt,
         pendingChanges: s.pendingChanges,
         upload: s.upload,

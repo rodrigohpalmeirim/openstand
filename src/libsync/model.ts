@@ -4,7 +4,7 @@
  * CONTRACT. Frozen after step 0: change only by agreement, and only additively.
  * Type-only apart from the §10.6 constants and `PairingError`; safe to import from anywhere.
  */
-import type { BackendConfig, TokenSet, UploadState } from './backends/types'
+import type { BackendConfig, OAuthKind, TokenSet, UploadState } from './backends/types'
 import type { AudioTrack, KV, PageAnnotations, Setlist, Song, SongFile } from '../db/schema'
 
 // ---------------------------------------------------------------------------------------------
@@ -163,7 +163,9 @@ export interface NoticeFrame {
 
 /**
  * What a QR / text pairing code carries. Text form: `"OSJ1." + base64url(deflateRaw(JSON))`.
- * OAuth backends only carry `{kind, root/folder}`; tokens are per device (§7.2).
+ * OAuth backends carry `{kind, root | folder, account?, accountId?}` in `b`: the account fields are
+ * non-secret hints for "sign in with the same account" (SYNC-DRIVES.md §7.2). Never OAuth tokens: each
+ * device signs in by itself.
  */
 export interface PairingPayload {
   v: 1
@@ -344,8 +346,8 @@ export interface SyncStateValues {
   devices: DeviceRecord[]
   maintenance: MaintenanceState
   join: JoinCheckpoint
-  /** Phase 2/3 OAuth tokens. Per device, never shared or synced. */
-  oauth: Partial<Record<'dropbox' | 'gdrive' | 'onedrive', TokenSet>>
+  /** OAuth tokens (SYNC-DRIVES.md §5.4). Per device and library, never shared, synced or backed up. */
+  oauth: Partial<Record<OAuthKind, TokenSet>>
 }
 
 export type SyncStateKey = keyof SyncStateValues

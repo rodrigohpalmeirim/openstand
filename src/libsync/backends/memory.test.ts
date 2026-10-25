@@ -100,7 +100,7 @@ describe('MemoryBackend', () => {
 })
 
 describe('createBackend', () => {
-  it('builds memory and s3 backends and rejects unimplemented kinds', () => {
+  it('builds memory, s3 and the cloud-drive backends', () => {
     expect(createBackend({ kind: 'memory', name: 'f' })).toBeInstanceOf(MemoryBackend)
     const s3 = createBackend({
       kind: 's3', provider: 'r2', endpoint: 'https://acc.r2.cloudflarestorage.com', region: 'auto', bucket: 'b',
@@ -108,7 +108,10 @@ describe('createBackend', () => {
     })
     expect(s3.kind).toBe('s3')
     expect(s3.label).toBe('Cloudflare R2 · b/openstand')
-    expect(() => createBackend({ kind: 'dropbox', root: '/Apps/OpenStand' })).toThrow(BackendError)
+    expect(createBackend({ kind: 'dropbox', root: '' }).kind).toBe('dropbox')
+    expect(createBackend({ kind: 'gdrive', folder: '1AbCdEfGhIjK', account: 'rod@example.com' }).label).toBe('Google Drive · rod@example.com')
+    expect(createBackend({ kind: 'onedrive', folder: '' }).kind).toBe('onedrive')
+    expect(() => createBackend({ kind: 'icloud' } as never)).toThrow(BackendError)
   })
 })
 

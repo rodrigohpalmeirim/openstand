@@ -1,7 +1,8 @@
 /**
- * Cloudflare Workers deployment: the built PWA (dist/) is served as static assets, and /relay is a
+ * Cloudflare Workers deployment: the built PWA (dist/) is served as static assets, /relay is a
  * WebSocket sync relay backed by one Durable Object per room (worker/index.ts), so devices can sync
- * through the same origin with no separate server.
+ * through the same origin with no separate server, and /api/oauth/* exchanges Google Drive and OneDrive
+ * sign-in tokens (worker/oauth.ts).
  *
  *   npm run deploy        build + wrangler deploy
  *   npm run cf:dev        build + run the Worker locally (http://localhost:8787)
@@ -16,7 +17,7 @@
     "binding": "ASSETS",
     "not_found_handling": "single-page-application",
     // Everything else is served straight from the asset store without invoking the Worker.
-    "run_worker_first": ["/relay", "/relay/*"]
+    "run_worker_first": ["/relay", "/relay/*", "/api/*"]
   },
   "durable_objects": {
     "bindings": [{ "name": "RELAY", "class_name": "RelayRoom" }]
@@ -28,8 +29,16 @@
   "vars": {
     // Comma-separated extra origins allowed to use the relay (the site's own origin always is). Empty =
     // any origin; the protocol carries no secrets, but this stops other sites from using your relay.
-    "ALLOWED_ORIGINS": "https://openstand.rodlabs.dev"
+    // The OAuth route uses the same list, but there empty means the site's own origin only.
+    "ALLOWED_ORIGINS": "https://openstand.rodlabs.dev",
+    // OAuth client ids for the token route /api/oauth/<provider>/token (docs/SYNC-DRIVES.md §6). Public;
+    // "" = off. Must equal the app's ids (src/libsync/oauth/config.ts), or the app hides the provider. The
+    // secrets are set with `npx wrangler secret put GDRIVE_CLIENT_SECRET` / `ONEDRIVE_CLIENT_SECRET`.
+    "GDRIVE_CLIENT_ID": "",
+    "ONEDRIVE_CLIENT_ID": ""
   },
+  // Abuse limit for the OAuth token route: 30 requests per minute per IP and provider (per location).
+  "ratelimits": [{ "name": "OAUTH_LIMITER", "namespace_id": "1001", "simple": { "limit": 30, "period": 60 } }],
   // No per-request invocation logs (they'd record IPs and URLs, e.g. relay room names); errors and
   // console output can still be inspected live with `wrangler tail`.
   "observability": { "enabled": true, "logs": { "invocation_logs": false } }

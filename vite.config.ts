@@ -30,8 +30,10 @@ export default defineConfig({
         maximumFileSizeToCacheInBytes: 8 * 1024 * 1024,
         // Face gestures load MediaPipe on demand; don't precache it for everyone.
         globIgnores: ['**/vision_bundle-*.js'],
-        // The Cloudflare Worker serves the sync relay's health check here; don't answer it with index.html.
-        navigateFallbackDenylist: [/^\/relay/],
+        // The Cloudflare Worker serves the sync relay's health check and the OAuth token route
+        // (/api/oauth/*) here; don't answer them with index.html. /oauth/callback stays on the fallback: the
+        // app shell is the callback handler (docs/SYNC-DRIVES.md §6.3).
+        navigateFallbackDenylist: [/^\/relay/, /^\/api\//],
       },
       manifest: {
         name: 'OpenStand',
@@ -65,6 +67,8 @@ export default defineConfig({
     // library-sync notices) when `node server/relay.mjs` runs; without it sync falls back to polling.
     proxy: {
       '/relay': { target: process.env.OPENSTAND_RELAY ?? 'http://127.0.0.1:8787', ws: true },
+      // The OAuth token route for Google Drive and OneDrive (worker/oauth.ts) when `npm run cf:dev` runs.
+      '/api': { target: process.env.OPENSTAND_API ?? 'http://127.0.0.1:8787' },
     },
   },
   test: {

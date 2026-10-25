@@ -24,17 +24,34 @@ export type BackendConfig =
       /** `endpoint/bucket/key` when true; virtual-hosted (the AWS default) when false. */
       pathStyle: boolean
     }
-  /** Phase 2. Tokens are per device in `syncState.oauth`. */
-  | { kind: 'dropbox'; root: string }
-  /** Phase 3. */
-  | { kind: 'gdrive'; folder: string }
-  /** Phase 3. */
-  | { kind: 'onedrive'; folder: string }
+  /**
+   * OAuth backends (docs/SYNC-DRIVES.md). Tokens are per device in `syncState.oauth`, never here.
+   * `account` = display hint, usually the email (≤ 320 chars). `accountId` = the provider's stable id:
+   * Dropbox `account_id`, Google `about.user.permissionId`, OneDrive `approot.parentReference.driveId`
+   * (≤ 200 chars). Both are non-secret hints that let a joining device detect a wrong account (§7.3);
+   * neither is ever a credential.
+   */
+  /** `root`: sub-path inside the app folder; '' = the app folder itself (the UI always uses ''). */
+  | { kind: 'dropbox'; root: string; account?: string; accountId?: string }
+  /** `folder`: Drive file id of the visible OpenStand folder. Required, non-empty. */
+  | { kind: 'gdrive'; folder: string; account?: string; accountId?: string }
+  /** `folder`: sub-path inside approot; '' = approot (the UI always uses ''). */
+  | { kind: 'onedrive'; folder: string; account?: string; accountId?: string }
   /** Tests (`backends/memory.ts`). */
   | { kind: 'memory'; name: string }
 
 export type BackendKind = BackendConfig['kind']
 export type S3Config = Extract<BackendConfig, { kind: 's3' }>
+
+/** The cloud drives signed into with OAuth (docs/SYNC-DRIVES.md). */
+export type OAuthKind = 'dropbox' | 'gdrive' | 'onedrive'
+export type OAuthConfig = Extract<BackendConfig, { kind: OAuthKind }>
+export type DropboxConfig = Extract<BackendConfig, { kind: 'dropbox' }>
+export type GDriveConfig = Extract<BackendConfig, { kind: 'gdrive' }>
+export type OneDriveConfig = Extract<BackendConfig, { kind: 'onedrive' }>
+
+export const OAUTH_KINDS: readonly OAuthKind[] = ['dropbox', 'gdrive', 'onedrive']
+export const isOAuthKind = (k: unknown): k is OAuthKind => k === 'dropbox' || k === 'gdrive' || k === 'onedrive'
 
 export interface ObjectInfo {
   /** Relative to the backend root. */
@@ -129,6 +146,25 @@ export interface StorageBackend {
   abortUpload?(state: UploadState, o?: { signal?: AbortSignal }): Promise<void>
   /** Connection test (§7.1 for the S3 order). Never throws; failures are reported in the result. */
   check(): Promise<BackendCheck>
+  /** Who is signed in and where the data lives. OAuth backends implement it; S3/memory omit it. */
+  describe?(o?: { signal?: AbortSignal }): Promise<BackendDescription>
+}
+
+/** Who a drive account is (SYNC-DRIVES.md §2.1). `id` has the meaning of `BackendConfig.accountId`. */
+export interface AccountInfo {
+  id: string
+  email?: string
+  name?: string
+}
+
+/** `StorageBackend.describe()` (SYNC-DRIVES.md §2.1). */
+export interface BackendDescription {
+  account: AccountInfo
+  /** For people: "Dropbox › Apps › OpenStand", "Google Drive › OpenStand", "OneDrive › Apps › OpenStand". */
+  location: string
+  /** Opens the folder in the provider's web UI. */
+  openUrl?: string
+  freeBytes?: number
 }
 
 export type BackendCheckStepId =
@@ -170,6 +206,11 @@ export type BackendErrorCode =
   | 'tokenExpired'
   | 'server'
   | 'unknown'
+  /**
+   * This device must sign in to its drive again: no tokens, refresh refused (`invalid_grant`), consent
+   * revoked, a required scope not granted, or a fresh token still gets 401 (SYNC-DRIVES.md §2.1).
+   */
+  | 'reauth'
 
 /** Every backend failure is normalised to this (error mapping for S3 in §7.1). */
 export class BackendError extends Error {
@@ -204,27 +245,44 @@ export interface BackendContext {
   fetch?: typeof fetch
   /** Wall clock; defaults to `Date.now`. */
   now?: () => number
-  /** Phase 2/3: this device's OAuth tokens (`syncState.oauth`). */
+  /** @deprecated never used; OAuth backends take `auth`. */
   tokens?: { get(): Promise<TokenSet | undefined>; set(t: TokenSet): Promise<void> }
+  /** Required for dropbox/gdrive/onedrive; a missing one makes every call throw `BackendError('reauth')`. */
+  auth?: AccessTokenSource
 }
 
 // ---------------------------------------------------------------------------------------------
-// §7.2 Phases 2 and 3 (interface only)
+// OAuth (docs/SYNC-DRIVES.md §2.1)
 // ---------------------------------------------------------------------------------------------
 
-export interface OAuthProvider {
-  kind: 'dropbox' | 'gdrive' | 'onedrive'
-  authorizeUrl(p: { codeChallenge: string; state: string; redirectUri: string }): string
-  /** gdrive/onedrive go through the Worker route `POST /api/oauth/token`. */
-  exchange(code: string, verifier: string, redirectUri: string): Promise<TokenSet>
-  refresh(t: TokenSet): Promise<TokenSet>
+/** Per-device OAuth access for one backend (implemented in oauth/tokens.ts, faked in tests). */
+export interface AccessTokenSource {
+  readonly kind: OAuthKind
+  /** A valid access token; refreshes first if it expires within 5 min. Throws `BackendError('reauth' | 'network')`. */
+  token(o?: { signal?: AbortSignal }): Promise<string>
+  /** `rejected` got a 401: refresh (once per rejected token, across tabs) and return the new token. */
+  refreshAfter401(rejected: string, o?: { signal?: AbortSignal }): Promise<string>
 }
 
+/** Stored per device and library in `syncState.oauth[kind]`. Never in pairing codes, backups or sync. */
 export interface TokenSet {
   accessToken: string
   refreshToken?: string
   /** Wall ms. */
   expiresAt: number
-  /** Account label for display. */
+  /** Display (email). */
   account?: string
+  /** Same meaning as `BackendConfig.accountId`. */
+  accountId?: string
+  /** Granted scopes, as returned by the token endpoint. */
+  scope?: string
+}
+
+/** @deprecated SYNC.md §7.2 sketch, superseded by `oauth/config.ts` (`PROVIDERS`) and `oauth/providers.ts`. */
+export interface OAuthProvider {
+  kind: OAuthKind
+  authorizeUrl(p: { codeChallenge: string; state: string; redirectUri: string }): string
+  /** gdrive/onedrive go through the Worker route `POST /api/oauth/<provider>/token`. */
+  exchange(code: string, verifier: string, redirectUri: string): Promise<TokenSet>
+  refresh(t: TokenSet): Promise<TokenSet>
 }
