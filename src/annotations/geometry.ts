@@ -43,24 +43,34 @@ export const round = (v: number, d = 5) => {
 
 /* -------------------------------------------------------------- Smoothing */
 
-/** Ramer–Douglas–Peucker simplification (iterative). Keeps the first and last points. */
-export function simplify<T extends Vec>(points: T[], tolerance: number): T[] {
+/**
+ * Ramer–Douglas–Peucker simplification (iterative). Keeps the first and last points. With
+ * `pressureTol`, a point also stays when its pressure differs from the value interpolated between the
+ * kept neighbours by more than that, so pressure strokes keep their swells and taper.
+ */
+export function simplify<T extends Vec>(points: T[], tolerance: number, pressureTol = 0): T[] {
   if (points.length < 3 || tolerance <= 0) return points.slice()
   const keep = new Uint8Array(points.length)
   keep[0] = keep[points.length - 1] = 1
   const stack: [number, number][] = [[0, points.length - 1]]
   while (stack.length) {
     const [s, e] = stack.pop()!
+    // Deviation in tolerances: > 1 means the point must stay.
     let maxD = 0
     let idx = -1
+    const ps = points[s].p
+    const pe = points[e].p
     for (let i = s + 1; i < e; i++) {
-      const d = distToSegment(points[i], points[s], points[e])
+      let d = distToSegment(points[i], points[s], points[e]) / tolerance
+      const pi = points[i].p
+      if (pressureTol > 0 && pi !== undefined && ps !== undefined && pe !== undefined)
+        d = Math.max(d, Math.abs(pi - (ps + ((pe - ps) * (i - s)) / (e - s))) / pressureTol)
       if (d > maxD) {
         maxD = d
         idx = i
       }
     }
-    if (idx >= 0 && maxD > tolerance) {
+    if (idx >= 0 && maxD > 1) {
       keep[idx] = 1
       stack.push([s, idx], [idx, e])
     }
@@ -239,7 +249,7 @@ export function bboxLocal(it: Annotation, aspect: number): Rect {
     case 'crescendo':
     case 'decrescendo':
     case 'staff': {
-      const extra = it.type === 'arrow' ? arrowHeadLen(it.width) : it.type === 'crescendo' || it.type === 'decrescendo' ? (it.height ?? 0.018) / 2 : 0
+      const extra = it.type === 'arrow' ? arrowHeadLen(it.width) : it.type === 'crescendo' || it.type === 'decrescendo' ? (it.height ?? HAIRPIN_HEIGHT) / 2 : 0
       const pad = it.width / 2 + extra
       grow(r, it.a.x, it.a.y * aspect, pad)
       grow(r, it.b.x, it.b.y * aspect, pad)
@@ -311,6 +321,9 @@ function ellipseDist(p: Vec, c: Vec, rx: number, ry: number): number {
   return best
 }
 
+/** Hairpin opening (fraction of page width) when an item has no `height`. */
+export const HAIRPIN_HEIGHT = 0.018
+
 /** Geometry outline of a shape in local units (used for hit testing and erasing). */
 export function shapeLines(it: Extract<Annotation, { a: Point; b: Point }>, aspect: number): Vec[][] {
   const a = toLocal(it.a, aspect)
@@ -331,7 +344,7 @@ export function shapeLines(it: Extract<Annotation, { a: Point; b: Point }>, aspe
     case 'crescendo':
     case 'decrescendo': {
       const [apex, open] = it.type === 'crescendo' ? [a, b] : [b, a]
-      const [u1, u2] = hairpinEnds(apex, open, it.height ?? 0.018)
+      const [u1, u2] = hairpinEnds(apex, open, it.height ?? HAIRPIN_HEIGHT)
       return [[u1, apex, u2]]
     }
   }
@@ -595,6 +608,58 @@ export function itemSize(it: Annotation): number | undefined {
       return undefined
     default:
       return it.width * 1000
+  }
+}
+
+/**
+ * Turn an item with its page by `quarterTurns` × 90° clockwise. `aspect` is the page's height / width
+ * before turning. Lines, ink and boxes turn with the music; text, stamps, pictures and staves stay
+ * upright, centred where they were. Pixel sizes are kept, so widths (fractions of page width) and text
+ * and stamp sizes (fractions of page height) are rescaled to the turned page.
+ */
+export function rotateItem<T extends Annotation>(it: T, quarterTurns: number, aspect: number): T {
+  let out: Annotation = it
+  let a = aspect
+  for (let k = ((Math.round(quarterTurns) % 4) + 4) % 4; k > 0; k--) {
+    out = rotateItem90(out, a)
+    a = 1 / a
+  }
+  return out as T
+}
+
+function rotateItem90(it: Annotation, a: number): Annotation {
+  // (x, y) on a W×H page → (H − y·H, x·W) on the H×W page, normalised.
+  const rp = (p: Point): Point => ({ ...p, x: round(1 - p.y), y: round(p.x) })
+  /** Upright box of local size w×h (old page: width 1, height a) centred at normalised c, after the turn. */
+  const recentre = (c: Vec, w: number, h: number) => {
+    const n = rp(c as Point)
+    // Old local units are old-width fractions; the new page is `a` old widths wide and 1 tall.
+    return { x0: n.x - w / a / 2, y0: n.y - h / 2, x1: n.x + w / a / 2, y1: n.y + h / 2 }
+  }
+  switch (it.type) {
+    case 'pen':
+    case 'highlighter':
+      return { ...it, points: it.points.map(rp), width: it.width / a }
+    case 'text': {
+      const b = textBoxLocal(it, a)
+      const r = recentre({ x: it.at.x + b.w / 2, y: it.at.y + b.h / a / 2 }, b.w, b.h)
+      return { ...it, at: { ...it.at, x: round(r.x0), y: round(r.y0) }, size: it.size * a }
+    }
+    case 'stamp':
+      return { ...it, at: rp(it.at), size: it.size * a }
+    case 'image':
+    case 'staff': {
+      const w = Math.abs(it.b.x - it.a.x)
+      const h = Math.abs(it.b.y - it.a.y) * a
+      const r = recentre({ x: (it.a.x + it.b.x) / 2, y: (it.a.y + it.b.y) / 2 }, w, h)
+      const corners = { a: { x: round(r.x0), y: round(r.y0) }, b: { x: round(r.x1), y: round(r.y1) } }
+      return it.type === 'staff' ? { ...it, ...corners, width: it.width / a } : { ...it, ...corners }
+    }
+    default: {
+      // Hairpins without a height use the default opening, which would not follow the turned page.
+      const h = it.height ?? (it.type === 'crescendo' || it.type === 'decrescendo' ? HAIRPIN_HEIGHT : undefined)
+      return { ...it, a: rp(it.a), b: rp(it.b), width: it.width / a, ...(h !== undefined ? { height: h / a } : {}) }
+    }
   }
 }
 

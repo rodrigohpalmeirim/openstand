@@ -2,6 +2,7 @@ import { Hand, Minus, Play, Plus, Square, X } from 'lucide-react'
 import { useState } from 'react'
 import { updateSong } from '../db/db'
 import type { MetronomeSettings } from '../db/schema'
+import { useTerms } from '../library/browse/terms'
 import { useSettings } from '../state/settings'
 import { cx, Segmented, Select, Slider, Toggle } from '../ui/primitives'
 import type { PanelProps } from '../viewer/panels'
@@ -11,7 +12,7 @@ import { metronome, songMetronome, useMetronome } from './metronome/engine'
 import { SOUNDS } from './metronome/sounds'
 import { tempoMarking } from './metronome/tempo'
 import { PanelBody, PanelButton, Row, ScopeLine, Section, Stepper } from './ui'
-import { startMetronomeFor, tap } from './useToolActions'
+import { saveTempo, startMetronomeFor, tap } from './useToolActions'
 
 const SUBDIVISIONS = [
   { value: 1, label: '♩', title: 'Beats only' },
@@ -41,10 +42,18 @@ export function MetronomePanel(props: PanelProps) {
   )
 }
 
+/** "2 bars", or beats when the value no longer fits the meter (it was set for another time signature). */
+function pageEvery(beats: number, perBar: number) {
+  if (!beats) return 'Off'
+  const bars = beats / perBar
+  return Number.isInteger(bars) ? `${bars} bar${bars === 1 ? '' : 's'}` : `${beats} beats`
+}
+
 function MetronomeControls({ song }: PanelProps) {
   const m = useMetronome()
   const prefs = useSettings((st) => st.s.metronome)
   const setIn = useSettings((st) => st.setIn)
+  const terms = useTerms()
   // Settings follow the song record; the engine's bpm can differ temporarily (tap, song tempo list).
   const cfg: MetronomeSettings = { ...songMetronome(song), bpm: metronome.songId === song.id ? m.bpm : songMetronome(song).bpm }
   const tempos = (song.tempos ?? []).filter((t) => t > 0)
@@ -54,7 +63,12 @@ function MetronomeControls({ song }: PanelProps) {
     metronome.configure(next, song.id)
     void updateSong(song.id, { metronome: { ...song.metronome, ...patch } })
   }
-  const setBpm = (bpm: number) => save({ bpm: clampBpm(bpm) })
+  const setBpm = (v: number) => {
+    const bpm = clampBpm(v)
+    if (bpm === cfg.bpm) return
+    metronome.configure({ ...cfg, bpm }, song.id)
+    saveTempo(song.id, cfg.bpm, bpm)
+  }
 
   return (
     <PanelBody>
@@ -84,17 +98,16 @@ function MetronomeControls({ song }: PanelProps) {
             {m.running ? 'Stop' : 'Start'}
           </PanelButton>
         </div>
-        {m.running && (
-          <div className="flex gap-1.5" aria-hidden>
-            {Array.from({ length: cfg.beatsPerBar }, (_, i) => (
-              <span key={i} className="size-3 rounded-full" style={{ background: i === m.beat ? (i === 0 ? 'var(--os-accent)' : '#fff') : 'rgb(255 255 255 / 0.15)' }} />
-            ))}
-          </div>
-        )}
+        {/* Always laid out (hidden while stopped) so starting doesn't shift the panel. */}
+        <div className={cx('flex gap-1.5', !m.running && 'invisible')} aria-hidden>
+          {Array.from({ length: cfg.beatsPerBar }, (_, i) => (
+            <span key={i} className="size-3 rounded-full" style={{ background: m.running && i === m.beat ? (i === 0 ? 'var(--os-accent)' : '#fff') : 'rgb(255 255 255 / 0.15)' }} />
+          ))}
+        </div>
       </section>
 
       <Section
-        title="Song tempos"
+        title={`${terms.Song} tempos`}
         action={
           <button className="text-xs text-[var(--os-accent)]" onClick={() => !tempos.includes(cfg.bpm) && updateSong(song.id, { tempos: [...tempos, cfg.bpm] })}>
             + Add {cfg.bpm}
@@ -138,7 +151,7 @@ function MetronomeControls({ song }: PanelProps) {
           <Row label="Accent first beat">
             <Toggle checked={cfg.accentFirst} onChange={(v) => save({ accentFirst: v })} />
           </Row>
-          <Row label="Count-in" hint="Bars counted before the song">
+          <Row label="Count-in" hint={`Bars counted before the ${terms.song}`}>
             <Stepper label="count-in bars" min={0} max={4} value={cfg.countIn} onChange={(v) => save({ countIn: v })} format={(v) => (v ? `${v} bar${v > 1 ? 's' : ''}` : 'Off')} />
           </Row>
         </div>
@@ -190,11 +203,11 @@ function MetronomeControls({ song }: PanelProps) {
 
       <Section title="Automation">
         <div className="divide-y divide-white/10">
-          <Row label="Start when song opens">
+          <Row label={`Start when ${terms.song} opens`}>
             <Toggle checked={!!cfg.autoStart} onChange={(v) => save({ autoStart: v })} />
           </Row>
           <Row label="Turn page every" hint="Beats per page while running">
-            <Stepper label="beats per page" min={0} max={256} step={cfg.beatsPerBar} value={cfg.beatsPerPage ?? 0} onChange={(v) => save({ beatsPerPage: v })} format={(v) => (v ? `${v / cfg.beatsPerBar} bars` : 'Off')} />
+            <Stepper label="beats per page" min={0} max={256} step={cfg.beatsPerBar} value={cfg.beatsPerPage ?? 0} onChange={(v) => save({ beatsPerPage: v })} format={(v) => pageEvery(v, cfg.beatsPerBar)} />
           </Row>
           {cfg.countIn > 0 && (
             <>
@@ -215,7 +228,7 @@ function MetronomeControls({ song }: PanelProps) {
               </Row>
             </>
           )}
-          <Row label="Keep running between songs">
+          <Row label={`Keep running between ${terms.songs}`}>
             <Toggle checked={prefs.keepRunning} onChange={(v) => setIn('metronome', { keepRunning: v })} />
           </Row>
         </div>

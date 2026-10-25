@@ -43,6 +43,9 @@ GABc|
   })
   it('transposes plain text chord lines', () => {
     expect(transposePlainText('Key: D\n\nD    A    Bm\nPlain text sheets\n', -2)).toBe('Key: C\n\nC    G    Am\nPlain text sheets\n')
+    // Windows line endings: the key line is still rewritten and the result has one line ending style.
+    expect(transposePlainText('Key: E\r\n\r\nE   B/D#\r\nWalking\r\n', 2)).toBe('Key: F#\n\nF#  C#/F\nWalking\n')
+    expect(transposeChordProText('{key: G}\r\n[G]x\r\n', 2)).toBe('{key: A}\n[A]x\n')
   })
   it('computes chord tap insertions', () => {
     expect(chordInsertion('Amazing grace', 3, 'G')).toEqual({ start: 0, end: 0, insert: '[G]' })

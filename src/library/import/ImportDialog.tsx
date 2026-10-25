@@ -6,6 +6,7 @@ import {
   collectDirectory,
   FILE_PATTERN_PRESETS,
   FOLDER_PATTERN_PRESETS,
+  ignoredFilesMessage,
   importFiles,
   previewWithContent,
   readSourceText,
@@ -17,10 +18,10 @@ import {
   type SourceContent,
 } from '../../files/import'
 import { ACCEPT, kindOf } from '../../files/kinds'
-import { importPackagesIn, PACKAGE_ACCEPT } from './packages'
+import { importPackagesIn, isPackageFile, PACKAGE_ACCEPT } from './packages'
 import { pdfMetaTitle, withPdf } from '../../files/pdf'
 import { useSettings } from '../../state/settings'
-import { Button, cx, Empty, Field, IconButton, Input, Segmented, Select } from '../../ui/primitives'
+import { Button, cx, Empty, Field, IconButton, Input, Segmented, Select, toast } from '../../ui/primitives'
 import { ChipInput } from '../editor/ChipInput'
 import { KindIcon } from '../editor/FilesTab'
 import { Section, Sheet, ToggleRow } from '../editor/Sheet'
@@ -169,7 +170,10 @@ function FilesImport({
   const COLLAPSED = 5
   const collapsible = sources.length > COLLAPSED + 1 && !showAll
 
-  const addSources = (more: ImportSource[], fromFolder = false) => {
+  /** Add picked files; `ignored` names files left out for their type, which the user is told about. */
+  const addSources = (more: ImportSource[], fromFolder = false, ignored: string[] = []) => {
+    const msg = ignoredFilesMessage(ignored)
+    if (msg) toast(msg)
     const list = fromFolder ? stripCommonRoot(more) : more
     setSources((prev) => {
       const seen = new Set(prev.map(srcKey))
@@ -181,7 +185,8 @@ function FilesImport({
     if (w.showDirectoryPicker) {
       try {
         const dir = await w.showDirectoryPicker()
-        addSources(await collectDirectory(dir))
+        const ignored: string[] = []
+        addSources(await collectDirectory(dir, '', ignored), false, ignored)
       } catch {
         /* cancelled */
       }
@@ -204,6 +209,10 @@ function FilesImport({
         onProgress: (done, total, name) => setProgress({ done, total, name }),
       })
       onDone(r)
+    } catch (e) {
+      // The picked files stay listed so the import can be retried.
+      console.error(e)
+      toast(`Import failed: ${(e as Error).message ?? e}`, 'error')
     } finally {
       setProgress(null)
     }
@@ -220,7 +229,9 @@ function FilesImport({
       onDrop={async (e) => {
         e.preventDefault()
         setDragOver(false)
-        addSources(await sourcesFromDataTransfer(e.dataTransfer), true)
+        const ignored: string[] = []
+        const more = await sourcesFromDataTransfer(e.dataTransfer, ignored)
+        addSources(more, true, ignored.filter((n) => !isPackageFile(n)))
       }}
     >
       <input
@@ -233,7 +244,8 @@ function FilesImport({
           const input = e.currentTarget
           const files = await importPackagesIn([...(input.files ?? [])])
           input.value = ''
-          if (files.length) addSources(sourcesFromFileList(files))
+          const ignored: string[] = []
+          if (files.length) addSources(sourcesFromFileList(files, ignored), false, ignored)
         }}
       />
       <input
@@ -241,7 +253,11 @@ function FilesImport({
         type="file"
         hidden
         {...({ webkitdirectory: '' } as object)}
-        onChange={(e) => (e.target.files && addSources(sourcesFromFileList(e.target.files), true), (e.target.value = ''))}
+        onChange={(e) => {
+          const ignored: string[] = []
+          if (e.target.files) addSources(sourcesFromFileList(e.target.files, ignored), true, ignored)
+          e.target.value = ''
+        }}
       />
       <div className="flex min-h-0 flex-1 flex-col overflow-y-auto lg:flex-row lg:overflow-hidden">
         <div className="flex shrink-0 flex-col gap-3 p-4 sm:p-5 lg:min-h-0 lg:flex-1 lg:shrink lg:overflow-y-auto">
@@ -392,7 +408,7 @@ function FilesImport({
         </aside>
       </div>
 
-      <footer className="flex shrink-0 items-center justify-end gap-2 border-t border-line px-3 py-2.5 sm:px-4" style={{ paddingBottom: 'max(0.625rem, env(safe-area-inset-bottom))' }}>
+      <footer data-bottom-bar className="flex shrink-0 items-center justify-end gap-2 border-t border-line px-3 py-2.5 sm:px-4" style={{ paddingBottom: 'max(0.625rem, env(safe-area-inset-bottom))' }}>
         <Button variant="ghost" onClick={onCancel}>
           Cancel
         </Button>
@@ -485,7 +501,7 @@ function Results({ result, onMore, onDone, onEdit }: { result: ImportResult; onM
           )}
         </div>
       </div>
-      <footer className="flex shrink-0 items-center justify-end gap-2 border-t border-line px-3 py-2.5 sm:px-4" style={{ paddingBottom: 'max(0.625rem, env(safe-area-inset-bottom))' }}>
+      <footer data-bottom-bar className="flex shrink-0 items-center justify-end gap-2 border-t border-line px-3 py-2.5 sm:px-4" style={{ paddingBottom: 'max(0.625rem, env(safe-area-inset-bottom))' }}>
         <Button variant="ghost" onClick={onMore}>
           Import more
         </Button>

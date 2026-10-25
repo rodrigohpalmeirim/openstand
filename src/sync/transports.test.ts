@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { relayUrl, sameSiteRelayAvailable } from './transports'
+import { RelayTransport, relayUrl, sameSiteRelayAvailable } from './transports'
 
 describe('relayUrl', () => {
   it('adds a scheme and the room to bare addresses', () => {
@@ -59,5 +59,85 @@ describe('sameSiteRelayAvailable', () => {
     const g = stub()
     expect(await sameSiteRelayAvailable({ attempts: 2 })).toBe(false)
     expect(g.urls).toHaveLength(2)
+  })
+})
+
+class FakeSocket {
+  static OPEN = 1
+  static all: FakeSocket[] = []
+  readyState = 0
+  sent: string[] = []
+  onopen: (() => void) | null = null
+  onmessage: ((e: { data: unknown }) => void) | null = null
+  onclose: ((e: { reason: string }) => void) | null = null
+  onerror: (() => void) | null = null
+  url: string
+  constructor(url: string) {
+    this.url = url
+    FakeSocket.all.push(this)
+  }
+  send(d: string) {
+    this.sent.push(d)
+  }
+  close() {
+    this.readyState = 3
+  }
+  open() {
+    this.readyState = 1
+    this.onopen?.()
+  }
+  drop(reason = '') {
+    this.readyState = 3
+    this.onclose?.({ reason })
+  }
+}
+
+describe('RelayTransport', () => {
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+    FakeSocket.all = []
+  })
+  const make = () => {
+    vi.useFakeTimers()
+    vi.stubGlobal('WebSocket', FakeSocket)
+    const statuses: [string, string | undefined][] = []
+    const got: string[] = []
+    const t = new RelayTransport('ws://relay.test', 'r', { onMessage: (d) => got.push(d), onStatus: (s, d) => statuses.push([s, d]) })
+    return { t, statuses, got, sock: () => FakeSocket.all.at(-1)! }
+  }
+
+  it('calls a relay it never reached unreachable, and a dropped one lost', () => {
+    const { statuses, sock } = make()
+    sock().drop()
+    expect(statuses.at(-1)).toEqual(['error', 'Relay unreachable'])
+    vi.advanceTimersByTime(1000)
+    sock().open()
+    sock().drop()
+    expect(statuses.at(-1)).toEqual(['error', 'Connection lost'])
+  })
+
+  it('pings, keeps pongs from the app, and reconnects when the relay stops answering', () => {
+    const { t, got, sock } = make()
+    const first = sock()
+    first.open()
+    vi.advanceTimersByTime(25_000)
+    expect(first.sent).toEqual(['{"ping":1}'])
+    first.onmessage?.({ data: '{"pong":1}' })
+    first.onmessage?.({ data: 'hello' })
+    expect(got).toEqual(['hello'])
+    // Next ping goes unanswered: a new socket replaces the dead one.
+    vi.advanceTimersByTime(25_000 + 10_000)
+    expect(FakeSocket.all.length).toBe(2)
+    expect(t.status).toBe('connecting')
+    t.close()
+  })
+
+  it('retries at once when the page comes back during a backoff wait', () => {
+    const { t, sock } = make()
+    sock().drop() // now waiting out the backoff
+    t.wake()
+    expect(FakeSocket.all.length).toBe(2)
+    t.close()
   })
 })

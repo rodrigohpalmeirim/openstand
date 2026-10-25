@@ -428,7 +428,10 @@ export class S3Backend implements StorageBackend {
         'start-after': o.cursor === undefined && o.startAfter ? this.prefix + o.startAfter : undefined,
       },
     })
-    const r = parseListObjects(await readXml(res))
+    const xml = await readXml(res)
+    // A web page answering 200 (a wrong endpoint, a captive portal) must not read as an empty bucket.
+    if (!/<ListBucketResult[\s>]/.test(xml)) throw new BackendError('unknown', 'This address doesn’t look like S3 storage', { providerCode: 'NotS3' })
+    const r = parseListObjects(xml)
     const items = r.items
       .filter((i) => i.key.startsWith(this.prefix + prefix))
       .map((i) => ({ ...i, key: this.stripPrefix(i.key) }))

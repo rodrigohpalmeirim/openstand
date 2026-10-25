@@ -17,13 +17,14 @@ import {
   Type,
   X,
 } from 'lucide-react'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { AnnotationToolbar } from '../annotations/AnnotationToolbar'
 import { chordContext } from '../chordpro/render'
 import { formatKey, makeTransposer } from '../music/chords'
 import type { DisplayMode, Song } from '../db/schema'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { db } from '../db/db'
+import { terms } from '../library/browse/terms'
 import { useSettings } from '../state/settings'
 import { useViewer, type Panel } from '../state/viewer'
 import { SyncStatus } from '../sync/SyncStatus'
@@ -32,6 +33,7 @@ import { cx, useMenu } from '../ui/primitives'
 import { DARK_VARS, DarkMenu } from './dark'
 import { isFullscreen, onFullscreenChange } from './fullscreen'
 import { askGoToPage } from './askPage'
+import { LinkBackChip, SongTitleBadge, ZonesHint } from './hints'
 import { PagePreview } from './PagePreview'
 import { runAction } from './actions'
 import type { Stop } from './layout'
@@ -105,6 +107,7 @@ export function ViewerChrome(props: Props) {
   const { song, pages, pos, paged, stops, currentPage, goToPage } = props
   const v = useViewer()
   const s = useSettings((st) => st.s)
+  const words = terms(s)
   const setlist = useLiveQuery(() => (v.setlistId ? db.setlists.get(v.setlistId) : undefined), [v.setlistId])
   const nextSong = useLiveQuery(() => (v.queue[v.index + 1] ? db.songs.get(v.queue[v.index + 1]) : undefined), [v.queue, v.index])
   const [fs, setFs] = useState(isFullscreen)
@@ -115,13 +118,28 @@ export function ViewerChrome(props: Props) {
   // While annotating on small screens the drawing area matters more than the title row.
   const compactAnnot = useMedia('(max-width: 639px), (max-height: 500px)') && v.annotating
   const keyText = useMemo(() => keyLabel(song, pages), [song, pages])
+  const showChrome = v.toolbar || v.annotating
 
   useEffect(() => onFullscreenChange(() => setFs(isFullscreen())), [])
+
+  // A focused page slider would keep Space/PageDown/End for itself; the bars don't keep focus once hidden.
+  const bottomBar = useRef<HTMLDivElement>(null)
+  const slider = useRef<HTMLInputElement>(null)
+  useEffect(() => {
+    const el = slider.current
+    if (!el) return
+    const commit = () => el.blur()
+    el.addEventListener('change', commit)
+    return () => el.removeEventListener('change', commit)
+  }, [v.annotating])
+  useEffect(() => {
+    const a = document.activeElement
+    if (!showChrome && a instanceof HTMLElement && (bottomBar.current?.contains(a) || a.closest('[data-viewer-top]'))) a.blur()
+  }, [showChrome])
 
   const togglePanel = (p: Panel) => v.set({ panel: v.panel === p ? null : p })
   const panelProps: PanelProps = { ...props, close: () => v.set({ panel: null }) }
   const panel = v.panel && v.panel !== 'goto' && v.panel !== 'pages' ? PANELS[v.panel] : null
-  const showChrome = v.toolbar || v.annotating
   // Two-page spreads show both page numbers ("3–4 / 9").
   const stop = paged ? stops[pos] : undefined
   const shown = stop?.kind === 'spread' && stop.pages.length > 1 ? `${Math.min(...stop.pages) + 1}–${Math.max(...stop.pages) + 1}` : `${currentPage + 1}`
@@ -138,6 +156,9 @@ export function ViewerChrome(props: Props) {
           {pageLabel}
         </div>
       )}
+      {!showChrome && <SongTitleBadge title={song.title} />}
+      <ZonesHint songId={song.id} />
+      <LinkBackChip stops={stops} paged={paged} />
       {!showChrome && s.display.showNextSongHint && atLastStop && nextSong && (
         <div className="pointer-events-none absolute bottom-2 left-1/2 z-10 -translate-x-1/2 rounded-full bg-black/55 px-3 py-1 text-xs text-white/85 backdrop-blur">
           Next: <span className="font-semibold">{nextSong.title}</span>
@@ -164,7 +185,7 @@ export function ViewerChrome(props: Props) {
                 (v.queue.length > 1 ? `${v.index + 1} of ${v.queue.length}` : '')}
             </div>
           </div>
-          {!v.annotating && <SyncStatus className="mr-1 hidden sm:inline-flex" />}
+          {!v.annotating && <SyncStatus className="mr-1 max-sm:hidden" />}
           {v.annotating ? null : (
             <div className="flex items-center gap-0.5">
               <ChromeButton label="Annotate" onClick={() => runAction('toggleAnnotate')}>
@@ -225,7 +246,7 @@ export function ViewerChrome(props: Props) {
                         { divider: true, label: '' },
                       ]
                     : []),
-                  { label: 'Song notes', icon: <StickyNote className="size-4" />, onSelect: () => togglePanel('notes') },
+                  { label: `${words.Song} notes`, icon: <StickyNote className="size-4" />, onSelect: () => togglePanel('notes') },
                   { label: 'Link points', icon: <Link2 className="size-4" />, onSelect: () => togglePanel('links') },
                   { label: 'MIDI', icon: <Music2 className="size-4" />, onSelect: () => togglePanel('midi') },
                   { label: 'Auto-scroll settings', icon: <ScrollText className="size-4" />, onSelect: () => togglePanel('autoscroll') },
@@ -244,16 +265,19 @@ export function ViewerChrome(props: Props) {
       {/* Bottom bar: page scrubber + song navigation */}
       {!v.annotating && (
         <div
+          ref={bottomBar}
+          data-bottom-bar
           className={cx(
             'absolute inset-x-0 bottom-0 z-20 transition-all duration-200',
             showChrome ? 'translate-y-0 opacity-100' : 'pointer-events-none translate-y-full opacity-0',
           )}
         >
           <div className="flex items-center gap-2 bg-gradient-to-t from-black/85 to-black/60 px-2 py-1.5 backdrop-blur-md pb-[max(0.375rem,env(safe-area-inset-bottom))]">
-            <ChromeButton label="Previous song" onClick={() => runAction('prevSong')} className={v.index === 0 ? 'opacity-30' : ''}>
+            <ChromeButton label={`Previous ${words.song}`} onClick={() => runAction('prevSong')} className={v.index === 0 ? 'opacity-30' : ''}>
               <ChevronLeft className="size-5" />
             </ChromeButton>
             <input
+              ref={slider}
               type="range"
               aria-label="Page"
               min={0}
@@ -265,7 +289,10 @@ export function ViewerChrome(props: Props) {
                 setScrub({ index: i, left: r.left + (r.width * i) / Math.max(1, pages.length - 1) })
                 goToPage(i)
               }}
-              onPointerUp={() => setScrub(null)}
+              onPointerUp={(e) => {
+                setScrub(null)
+                e.currentTarget.blur()
+              }}
               onBlur={() => setScrub(null)}
               className="h-10 min-w-0 flex-1 cursor-pointer accent-[var(--os-accent)] disabled:cursor-default disabled:opacity-40"
               disabled={pages.length < 2}
@@ -278,7 +305,7 @@ export function ViewerChrome(props: Props) {
             >
               {pageLabel}
             </button>
-            <ChromeButton label="Next song" onClick={() => runAction('nextSong')} className={v.index >= v.queue.length - 1 ? 'opacity-30' : ''}>
+            <ChromeButton label={`Next ${words.song}`} onClick={() => runAction('nextSong')} className={v.index >= v.queue.length - 1 ? 'opacity-30' : ''}>
               <ChevronRight className="size-5" />
             </ChromeButton>
           </div>

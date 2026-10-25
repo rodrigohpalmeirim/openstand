@@ -188,7 +188,11 @@ export async function deleteSetlist(id: string): Promise<() => Promise<void>> {
   const sl = await db.setlists.get(id)
   await db.setlists.delete(id)
   return async () => {
-    if (sl) await db.setlists.put(sl)
+    if (!sl) return
+    // Songs deleted since then don't come back as "missing" entries.
+    const ids = [...new Set(sl.entries.filter((e) => !e.isBreak && e.songId).map((e) => e.songId))]
+    const alive = new Set((await db.songs.bulkGet(ids)).flatMap((s) => (s ? [s.id] : [])))
+    await db.setlists.put({ ...sl, entries: sl.entries.filter((e) => e.isBreak || alive.has(e.songId)) })
   }
 }
 

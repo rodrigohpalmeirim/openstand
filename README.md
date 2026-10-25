@@ -113,7 +113,7 @@ node server/relay.mjs   # optional: instant updates; the dev server proxies /rel
 ## Page sync between devices
 
 Windows of the same browser sync out of the box (BroadcastChannel). On the Cloudflare deployment, devices
-sync over the internet: in *Settings → Devices & sync* choose *Use this site* (relay address `/relay`) and
+sync over the internet: in *Settings → Page sync* choose *Use this site* (relay address `/relay`) and
 give every device the same room name. Rooms aren't password-protected, so pick an unguessable name.
 Otherwise, run the dependency-free relay on any machine on your network and enter its address there:
 

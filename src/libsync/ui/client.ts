@@ -27,6 +27,7 @@ export type Actions = Pick<
   | 'repair'
   | 'updateBackend'
   | 'renameDevice'
+  | 'refreshDevices'
   | 'oauthProviders'
   | 'startSignIn'
   | 'signInReturnPending'
@@ -56,6 +57,7 @@ export const deleteRemoteData = () => (over.deleteRemoteData ?? api.deleteRemote
 export const repair = () => (over.repair ?? api.repair)()
 export const updateBackend = (cfg: BackendConfig) => (over.updateBackend ?? api.updateBackend)(cfg)
 export const renameDevice = (name: string) => (over.renameDevice ?? api.renameDevice)(name)
+export const refreshDevices = () => (over.refreshDevices ?? api.refreshDevices)()
 export const oauthProviders = () => (over.oauthProviders ?? api.oauthProviders)()
 export const startSignIn = (kind: OAuthKind, intent: SignInIntent, o?: { chooseAccount?: boolean; loginHint?: string }) =>
   (over.startSignIn ?? api.startSignIn)(kind, intent, o)

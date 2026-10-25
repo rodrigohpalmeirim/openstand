@@ -20,7 +20,7 @@ import type { LibraryKeys } from './crypto'
 import { isCollection, syncedKv, validateDelta } from './fields'
 import { canonicalJson } from './hash'
 import { hlcAhead, isDeviceId, maxHlc } from './hlc'
-import { captureRecord, deltaHlcMax, fromShadow, materialize, mergeDelta, project, toShadow, type MaterializeCtx, type ProjectCtx } from './merge'
+import { adoptLocal, captureRecord, withRowValues, deltaHlcMax, fromShadow, materialize, mergeDelta, project, toShadow, type MaterializeCtx, type ProjectCtx } from './merge'
 import {
   BATCH_MAX,
   BLOB_CLAIM_MAX,
@@ -30,7 +30,9 @@ import {
   type Collection,
   type CollectionRows,
   type DirtyRow,
+  type Hlc,
   type HlcClock,
+  type ListDelta,
   type OutboxRow,
   type RecordDelta,
   type ShadowRecord,
@@ -71,8 +73,10 @@ export interface Applied {
   kv: Set<string>
   ops: number
   skipped: number
+  /** Songs a remote delete removed while they had local edits it never saw: id -> title (told to the user). */
+  lostEdits: Map<string, string>
 }
-export const newApplied = (): Applied => ({ songs: new Set(), setlists: new Set(), anns: new Set(), kv: new Set(), ops: 0, skipped: 0 })
+export const newApplied = (): Applied => ({ songs: new Set(), setlists: new Set(), anns: new Set(), kv: new Set(), ops: 0, skipped: 0, lostEdits: new Map() })
 
 const appliedSet = (a: Applied, c: Collection) => (c === 'song' ? a.songs : c === 'setlist' ? a.setlists : c === 'ann' ? a.anns : a.kv)
 
@@ -367,7 +371,8 @@ export async function applyOpsInTx(core: Core, ops: RecordDelta[], applied: Appl
       continue
     }
     applied.ops++
-    const dirty = await db.syncDirty.get(recKey(c, op.id))
+    const key = recKey(c, op.id)
+    const dirty = await db.syncDirty.get(key)
     if (dirty) await captureOne(core, dirty, out)
     const table = db.table(TABLE_OF[c])
     const row = (await table.get(op.id)) as CollectionRows[typeof c] | undefined
@@ -375,19 +380,135 @@ export async function applyOpsInTx(core: Core, ops: RecordDelta[], applied: Appl
     const pctx = await projectCtx(db, c === 'song' ? (row as Song | undefined) : undefined)
     const proj = row ? project(c, row, pctx) : null
     const base = shadow ? fromShadow(shadow, proj) : undefined
-    const state = mergeDelta(base, op)
-    const nextShadow: ShadowRecord = toShadow(state)
+    const remote = mergeDelta(base, op)
+    // A row whose record the library hasn't created here yet (no shadow, or edits that arrived before the
+    // creation) was never synced from here: rejoining after a reset or delete reuses ids. Once the remote
+    // record is complete (its creation is in), the row's version is merged in, not overwritten, and stays
+    // dirty so what only it had is published. Until then the row is left as it is.
+    const unseen = !shadow || (c !== 'ann' && !shadow.a)
+    const adopt = !!proj && unseen && (c === 'ann' || !!remote.a)
+    const nextShadow: ShadowRecord = toShadow(remote)
+    if (proj && unseen && !adopt) {
+      await db.syncShadow.put(nextShadow)
+      continue
+    }
+    const state = adopt ? adoptLocal(remote, proj, core.config.deviceId) : remote
     if (shadow && sameJson(nextShadow, shadow)) continue
     const mctx = await materializeCtx(db, state, pctx)
     const next = materialize(c, state, row ?? null, mctx)
     if (!next) {
       if (row) await table.delete(op.id)
+      // Delete wins over concurrent edits; say so when this device has edits newer than the delete (just
+      // captured above, or pushed after the deleting device last pulled).
+      if (c === 'song' && row && base && op.a && !op.a[1] && ownHlcMax(base, core.config.deviceId) > op.a[0])
+        applied.lostEdits.set(op.id, (row as Song).title)
     } else if (!row || !sameJson(next, row)) await table.put(next)
     await db.syncShadow.put(nextShadow)
+    if (adopt && next && !(await db.syncDirty.get(key))) await db.syncDirty.put({ id: key, at: core.now() })
     appliedSet(applied, c).add(op.id)
     if (c === 'song' && next) await queueMissing(db, next as Song, state)
   }
   return out
+}
+
+/** `op` without counter registers (see `withRowValues`); `null` when nothing else is left. */
+function withoutCounters(op: RecordDelta): RecordDelta | null {
+  const d = { ...op }
+  delete d.n
+  return d.a || d.f || d.m || d.l ? d : null
+}
+
+/** `op`'s registers stamped `hlc` (as a new local edit on top of `base`); counters are left out. */
+function restamp(op: RecordDelta, base: RecordDelta, hlc: Hlc): RecordDelta | null {
+  if (!op.a && !op.f && !op.m && !op.l) return null
+  const d: RecordDelta = { c: op.c, id: op.id }
+  if (op.a) d.a = [hlc, op.a[1]]
+  if (op.f) d.f = Object.fromEntries(Object.entries(op.f).map(([k, r]) => [k, r.length === 2 ? [hlc, r[1]] : [hlc]]))
+  if (op.m) d.m = { ...op.m }
+  for (const [k, ld] of Object.entries(op.l ?? {})) {
+    const out: ListDelta = {}
+    if (ld.o) out.o = [hlc, ld.o[1]]
+    if (ld.e) out.e = Object.fromEntries(Object.entries(ld.e).map(([key, [, v]]) => [key, [hlc, v, base.l?.[k]?.e?.[key]?.[2] ?? hlc]]))
+    ;(d.l ??= {})[k] = out
+  }
+  return d.a || d.f || d.m || d.l ? d : null
+}
+
+/**
+ * Unsynced ops kept by `leave`, rewritten with the rows' values now (`withRowValues`): edits made after
+ * leaving win over the kept values. Run when a join starts, before its bootstrap writes any row.
+ */
+export async function resolveUnsynced(db: OpenStandDB, ops: RecordDelta[]): Promise<RecordDelta[]> {
+  const out: RecordDelta[] = []
+  for (const op of ops) {
+    if (validateDelta(op) || !isCollection(op.c) || (op.c === 'kv' && !syncedKv(op.id))) continue
+    const c = op.c
+    const row = (await db.table(TABLE_OF[c]).get(op.id)) as CollectionRows[typeof c] | undefined
+    const next = withRowValues(op, row ? project(c, row, await projectCtx(db, c === 'song' ? (row as Song) : undefined)) : null)
+    if (next) out.push(next)
+  }
+  return out
+}
+
+/**
+ * Replay this device's unsynced edits from a library it left (`syncState.unsynced`, resolved) onto the
+ * records the joined library has too. Rejoining the same library, they keep their timestamps (plain LWW
+ * against what other devices did meanwhile). Joining another library (the old one was reset or deleted and
+ * set up again with the same record ids), `restamp`: they become new local edits, so the edits the old
+ * library never got win over the re-uploaded versions. Records the joined library lacks are skipped: they
+ * are published whole as local-only records. Returns the ops queued.
+ */
+export async function replayUnsynced(core: Core, ops: RecordDelta[], o: { restamp: boolean }): Promise<number> {
+  const { db } = core
+  let n = 0
+  await db.transaction('rw', syncTxTables(db), async () => {
+    markRemote(Dexie.currentTransaction)
+    const out = new OutboxWriter(core)
+    for (const op of ops) {
+      if (validateDelta(op) || !isCollection(op.c)) continue
+      const c = op.c
+      if ((await db.syncShadow.get(op.id))?.c !== c) continue
+      const dirty = await db.syncDirty.get(recKey(c, op.id))
+      if (dirty) await captureOne(core, dirty, out)
+      const shadow = (await db.syncShadow.get(op.id))!
+      const table = db.table(TABLE_OF[c])
+      const row = (await table.get(op.id)) as CollectionRows[typeof c] | undefined
+      const pctx = await projectCtx(db, c === 'song' ? (row as Song | undefined) : undefined)
+      const base = fromShadow(shadow, row ? project(c, row, pctx) : null)
+      const edit = o.restamp ? restamp(op, base, core.clock.now()) : withoutCounters(op)
+      if (!edit) continue
+      const state = mergeDelta(base, edit)
+      const next = materialize(c, state, row ?? null, await materializeCtx(db, state, pctx))
+      if (!next) {
+        if (row) await table.delete(op.id)
+      } else await table.put(next)
+      await db.syncShadow.put(toShadow(state))
+      await out.add(edit)
+      for (const w of wireHashes(edit)) {
+        const rec = (await db.blobs.get(w.hash)) ?? (await db.blobs.where('hash').equals(w.hash).first())
+        if (rec) await queueUpload(db, w.hash, rec.size, rec.mime)
+      }
+      n++
+    }
+    await out.flush()
+    await putState(db, 'clock', core.clock.last)
+  })
+  return n
+}
+
+/** Latest hlc among the registers of `d` written by device `dev` ('' when none is). */
+function ownHlcMax(d: RecordDelta, dev: string): string {
+  let h = ''
+  const see = (x: string) => {
+    if (x.endsWith(dev) && x > h) h = x
+  }
+  if (d.a) see(d.a[0])
+  for (const r of Object.values(d.f ?? {})) see(r[0])
+  for (const ld of Object.values(d.l ?? {})) {
+    if (ld.o) see(ld.o[0])
+    for (const r of Object.values(ld.e ?? {})) see(r[0])
+  }
+  return h
 }
 
 /** Downloads for files of `song` this device doesn't hold. */
@@ -432,6 +553,7 @@ export async function applyOps(
 /** Merge `b` into `a`. */
 export function mergeApplied(a: Applied, b: Applied) {
   for (const k of ['songs', 'setlists', 'anns', 'kv'] as const) for (const x of b[k]) a[k].add(x)
+  for (const [id, title] of b.lostEdits) a.lostEdits.set(id, title)
   a.ops += b.ops
   a.skipped += b.skipped
   return a

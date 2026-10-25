@@ -692,6 +692,78 @@ export function applyRecord<C extends Collection>(
   return { row: isCollection(c) ? materialize(c, state, row, ctx) : null, shadow: toShadow(state), state }
 }
 
+/**
+ * `op` (an edit this device made but never pushed) with every register it names set to the value the row
+ * (`proj`; `null` = no row) holds now: what it was edited to since wins over the op's own value, and a value
+ * the row lost again is replayed as unset / removed. Hlcs and element births stay; counters are dropped
+ * (a join folds the row's counts in by itself, see `adoptLocal`). A record without a row keeps only a
+ * delete. `null`: nothing left to replay.
+ */
+export function withRowValues(op: RecordDelta, proj: Projection | null): RecordDelta | null {
+  const d: RecordDelta = { c: op.c, id: op.id }
+  if (!proj) {
+    if (!op.a || op.a[1]) return null
+    d.a = op.a
+    return d
+  }
+  if (op.a) d.a = [op.a[0], true]
+  if (op.f) {
+    const f = dict<[Hlc] | [Hlc, Json]>()
+    for (const [k, r] of Object.entries(op.f)) f[k] = own(proj.f, k) ? [r[0], proj.f[k]] : [r[0]]
+    d.f = f
+  }
+  if (op.m) {
+    const m = dict<number>()
+    for (const k of Object.keys(op.m)) if (own(proj.m, k)) m[k] = proj.m[k]
+    if (!isEmpty(m)) d.m = m
+  }
+  if (op.l) {
+    const l = dict<ListDelta>()
+    for (const [k, ld] of Object.entries(op.l)) {
+      const pl = proj.l[k]
+      const out: ListDelta = {}
+      if (ld.o) out.o = [ld.o[0], [...(pl?.keys ?? [])]]
+      if (ld.e) {
+        const e = dict<[Hlc, Json | null, Hlc]>()
+        for (const [key, r] of Object.entries(ld.e)) e[key] = [r[0], pl && own(pl.e, key) ? pl.e[key] : null, r[2]]
+        out.e = e
+      }
+      if (out.o || out.e) l[k] = out
+    }
+    if (!isEmpty(l)) d.l = l
+  }
+  return d.a || d.f || d.m || d.l ? d : null
+}
+
+/**
+ * Fold a row the library has never seen from this device (no shadow) into the remote `state`, as a
+ * concurrent version written at HLC_ZERO: rejoining after the synced library was reset or deleted reuses
+ * record ids, and the local version must not simply be overwritten. Remote registers win where both
+ * have one (value fields, list order); fields, list elements, set members and map entries only the row
+ * has are kept; max/min registers join. A counter keeps the larger total, not the sum: both sides
+ * counted the same history before the reset. The caller keeps the shadow at the remote state and marks
+ * the record dirty, so what only the row had is published as a normal edit.
+ */
+export function adoptLocal(state: RecordDelta, proj: Projection, dev: string): RecordDelta {
+  const local = diff(proj.c, proj, undefined, HLC_ZERO, dev)
+  if (!local) return state
+  // Elements only the row has sort after the remote ones (born last), unless an order register says otherwise.
+  for (const [k, ld] of Object.entries(local.l ?? {}))
+    for (const [key, r] of Object.entries(ld.e ?? {})) if (!own(state.l?.[k]?.e, key)) ld.e![key] = [r[0], r[1], 'f'.repeat(32)]
+  if (local.n) {
+    const n = dict<Record<string, [number, number]>>()
+    for (const [k, v] of Object.entries(proj.n)) {
+      let remote = 0
+      for (const [inc, dec] of Object.values(state.n?.[k] ?? {})) remote += inc - dec
+      const per = state.n?.[k]?.[dev] ?? [0, 0]
+      if (v > remote) n[k] = { [dev]: [per[0] + v - remote, per[1]] }
+    }
+    if (isEmpty(n)) delete local.n
+    else local.n = n
+  }
+  return mergeDelta(state, local)
+}
+
 // ---------------------------------------------------------------------------------------------
 // Horizons
 // ---------------------------------------------------------------------------------------------

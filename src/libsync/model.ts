@@ -140,7 +140,8 @@ export interface SnapshotHeader {
 export interface NoticePayload {
   d: string
   s: number
-  k?: 'ping' | 'pong'
+  /** `devices`: the sender changed its device record (a rename); receivers re-read the device list. */
+  k?: 'ping' | 'pong' | 'devices'
   /** ping/pong: random nonce (8–32 base64url chars). */
   p?: string
   /** pong: the device id that sent the ping. */
@@ -360,6 +361,13 @@ export interface SyncStateValues {
   enable: EnableCheckpoint
   /** OAuth tokens. Per device and library, never shared, synced or backed up. */
   oauth: Partial<Record<OAuthKind, TokenSet>>
+  /**
+   * Edits this device captured but never pushed to library `libraryId` before it left (kept through
+   * `leave`, wall ms `at`): a join into this database replays them onto the records the joined library
+   * shares ids with. `resolved`: a join already rewrote the ops with the rows' values at that time (so a
+   * retried join doesn't take values its own bootstrap wrote).
+   */
+  unsynced: { libraryId: string; at: number; ops: RecordDelta[]; resolved?: boolean }
 }
 
 export type SyncStateKey = keyof SyncStateValues
@@ -396,6 +404,8 @@ export const BLOB_GC_INTERVAL = 7 * DAY
 export const DEAD_FIELDS_TTL = 30 * DAY
 export const ELEMENT_TOMB_TTL = 180 * DAY
 export const DIRTY_DEFER_MAX = DAY
+/** Unsynced edits kept by `leave` older than this aren't replayed by a later join. */
+export const UNSYNCED_MAX_AGE = 30 * DAY
 export const CLOCK_AHEAD_WARN = 5 * 60 * 1000
 /** Remote timestamps further ahead than this never advance the clock; ops carrying them wait (or are dropped). */
 export const CLOCK_AHEAD_MAX = DAY

@@ -31,6 +31,7 @@ export function detectKey(src: string, naming: NoteNaming = 'english'): string |
  */
 export function transposeChordProText(src: string, semitones: number, opts: Opts = {}): string {
   if (!semitones) return src
+  src = src.replace(/\r\n?/g, '\n')
   const naming = opts.naming ?? 'english'
   const tr = makeTransposer({ ...opts, key: detectKey(src, naming), semitones, naming })
   const keyOf = (v: string) => {
@@ -94,6 +95,7 @@ const normalize = (n: number) => ((((n + 6) % 12) + 12) % 12) - 6
 /** Transpose a plain chords-over-lyrics text file: chord lines and a "Key:" header line. */
 export function transposePlainText(src: string, semitones: number, opts: Opts = {}): string {
   if (!semitones) return src
+  src = src.replace(/\r\n?/g, '\n')
   const naming = opts.naming ?? 'english'
   const tr = makeTransposer({ ...opts, key: detectKey(src, naming), semitones, naming })
   return src

@@ -7,6 +7,7 @@ import {
   applyBatch,
   createSetlist,
   deleteGroup,
+  deleteSetlist,
   deleteSongs,
   duplicateSong,
   performSetlist,
@@ -76,5 +77,14 @@ describe('setlists', () => {
     expect(v.queue).toEqual(['a', 'c', 'b'])
     expect(v.index).toBe(1)
     expect(v.setlistId).toBe(id)
+  })
+
+  it('undoing a delete drops entries of songs deleted meanwhile', async () => {
+    const id = await createSetlist('Gig', ['a', 'b', 'a'])
+    await addToSetlist(id, ['c'])
+    const undo = await deleteSetlist(id)
+    await deleteSongs(['a'])
+    await undo()
+    expect((await db.setlists.get(id))!.entries.map((e) => e.songId)).toEqual(['b', 'c'])
   })
 })

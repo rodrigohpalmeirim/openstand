@@ -1,8 +1,12 @@
 import { BookOpen, Columns2, File, GalleryHorizontal, Rows3, SplitSquareVertical } from 'lucide-react'
+import { useState, useSyncExternalStore } from 'react'
 import { updateSong } from '../db/db'
-import type { DisplayMode, FitMode, PageSettings } from '../db/schema'
+import { rotateSongPages } from '../annotations/rotate'
+import type { DisplayMode, FitMode } from '../db/schema'
+import { useTerms } from '../library/browse/terms'
 import { useSettings } from '../state/settings'
-import { Segmented, Slider, Toggle } from '../ui/primitives'
+import { visiblePages } from '../tools/navigation'
+import { Segmented, Slider, toast, Toggle } from '../ui/primitives'
 import type { PanelProps } from './panels'
 import { pageSettingsKey } from './pageSource'
 
@@ -35,21 +39,38 @@ function Row({ label, children }: { label: React.ReactNode; children: React.Reac
   )
 }
 
-export function DisplayPanel({ song, pages, currentPage, mode }: PanelProps) {
+const landscapeQuery = '(orientation: landscape)'
+const subscribeOrientation = (cb: () => void) => {
+  const mq = window.matchMedia?.(landscapeQuery)
+  mq?.addEventListener('change', cb)
+  return () => mq?.removeEventListener('change', cb)
+}
+const isLandscape = () => window.matchMedia?.(landscapeQuery).matches ?? false
+
+export function DisplayPanel({ song, pages, currentPage, mode, stops, pos, paged }: PanelProps) {
   const s = useSettings((st) => st.s)
   const setIn = useSettings((st) => st.setIn)
+  const terms = useTerms()
   const songMode = song.display?.mode
   const fit = song.display?.fit ?? s.display.fit
+  // Performance lock: layout, fit and rotation stay as they are on stage.
+  const locked = s.display.performanceLock
+  const unlocked = (fn: () => void) => () => (locked ? toast('Performance lock is on') : fn())
   const setSongDisplay = (patch: Partial<{ mode: DisplayMode; fit: FitMode }>) =>
-    updateSong(song.id, { display: { ...song.display, ...patch } })
+    unlocked(() => updateSong(song.id, { display: { ...song.display, ...patch } }))()
+  // "Make default" sets the default the viewer is using now: the landscape one when it applies.
+  const landscapeDefault = useSyncExternalStore(subscribeOrientation, isLandscape) && s.display.landscapeMode !== 'same'
+  const defaultMode = landscapeDefault ? s.display.landscapeMode : s.display.mode
 
-  const dp = pages[currentPage]
+  // Spreads show two pages: rotate either.
+  const shown = [...new Set(visiblePages(stops, pos, paged, currentPage))].sort((a, b) => a - b).filter((i) => pages[i]?.type === 'file')
+  const [picked, setPicked] = useState<number | null>(null)
+  const target = picked !== null && shown.includes(picked) ? picked : (shown[0] ?? currentPage)
+  const dp = pages[target]
   const pageKey = dp?.type === 'file' ? pageSettingsKey(dp.file.id, dp.page) : null
-  const ps: PageSettings = pageKey ? song.pageSettings[pageKey] ?? {} : {}
+  // Crop and annotations turn with the page.
   const rotate = (delta: number) => {
-    if (!pageKey) return
-    const rotation = ((((ps.rotation ?? 0) + delta) % 360) + 360) % 360
-    updateSong(song.id, { pageSettings: { ...song.pageSettings, [pageKey]: { ...ps, rotation: rotation as PageSettings['rotation'] } } })
+    if (pageKey) void rotateSongPages(song, [pageKey], delta)
   }
 
   return (
@@ -71,35 +92,41 @@ export function DisplayPanel({ song, pages, currentPage, mode }: PanelProps) {
           ))}
         </div>
         <div className="mt-2 flex items-center justify-between text-xs text-white/50">
-          <span>{songMode ? 'Saved for this song' : 'Using default for all songs'}</span>
-          {songMode ? (
-            <button className="text-[var(--os-accent)]" onClick={() => {
-                const { mode: _omit, ...rest } = song.display ?? {}
-                updateSong(song.id, { display: rest })
-              }}>
-              Use default
-            </button>
-          ) : (
-            <button className="text-[var(--os-accent)]" onClick={() => setIn('display', { mode })}>
-              Make default
-            </button>
-          )}
+          <span>{songMode ? `Saved for this ${terms.song}` : landscapeDefault ? 'Using the landscape default' : `Using default for all ${terms.songs}`}</span>
+          <div className="flex gap-3">
+            {songMode && (
+              <button className="text-[var(--os-accent)]" onClick={unlocked(() => {
+                  const { mode: _omit, ...rest } = song.display ?? {}
+                  updateSong(song.id, { display: rest })
+                })}>
+                Use default
+              </button>
+            )}
+            {mode !== defaultMode && (
+              <button className="text-[var(--os-accent)]" onClick={unlocked(() => setIn('display', landscapeDefault ? { landscapeMode: mode } : { mode }))}>
+                {landscapeDefault ? 'Make landscape default' : 'Make default'}
+              </button>
+            )}
+          </div>
         </div>
       </section>
 
-      <section>
-        <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-white/50">Fit</h3>
-        <Segmented
-          className={`w-full ${DARK_SEG}`}
-          value={fit}
-          onChange={(f) => setSongDisplay({ fit: f })}
-          options={[
-            { value: 'page', label: 'Whole page' },
-            { value: 'width', label: 'Width' },
-            { value: 'height', label: 'Height' },
-          ]}
-        />
-      </section>
+      {/* The horizontal strip always shows whole pages; the vertical one scrolls, so "Height" is "Whole page" there. */}
+      {mode !== 'horizontalScroll' && (
+        <section>
+          <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-white/50">Fit</h3>
+          <Segmented
+            className={`w-full ${DARK_SEG}`}
+            value={mode === 'verticalScroll' && fit === 'height' ? 'page' : fit}
+            onChange={(f) => setSongDisplay({ fit: f })}
+            options={[
+              { value: 'page', label: 'Whole page' },
+              { value: 'width', label: 'Width' },
+              ...(mode === 'verticalScroll' ? [] : [{ value: 'height' as const, label: 'Height' }]),
+            ]}
+          />
+        </section>
+      )}
 
       <section className="divide-y divide-white/10">
         <Row label="Night mode">
@@ -133,6 +160,7 @@ export function DisplayPanel({ song, pages, currentPage, mode }: PanelProps) {
               { value: 'none', label: 'None' },
               { value: 'slide', label: 'Slide' },
               { value: 'fade', label: 'Fade' },
+              { value: 'curl', label: 'Curl' },
             ]}
           />
         </Row>
@@ -183,7 +211,7 @@ export function DisplayPanel({ song, pages, currentPage, mode }: PanelProps) {
             <Toggle checked={s.overlays.clock24h} onChange={(v) => setIn('overlays', { clock24h: v })} />
           </Row>
         )}
-        <Row label={<span>Capo badge<span className="block text-xs text-white/45">Chord songs that use a capo</span></span>}>
+        <Row label={<span>Capo badge<span className="block text-xs text-white/45">Chord {terms.songs} that use a capo</span></span>}>
           <Toggle checked={s.overlays.capo} onChange={(v) => setIn('overlays', { capo: v })} />
         </Row>
       </section>
@@ -191,13 +219,21 @@ export function DisplayPanel({ song, pages, currentPage, mode }: PanelProps) {
       {pageKey && (
         <section>
           <h3 className="mb-2 flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-white/50">
-            <BookOpen className="size-3.5" /> This page
+            <BookOpen className="size-3.5" /> {shown.length > 1 ? 'Page' : 'This page'}
           </h3>
+          {shown.length > 1 && (
+            <Segmented
+              className={`mb-2 w-full ${DARK_SEG}`}
+              value={target}
+              onChange={setPicked}
+              options={shown.map((i) => ({ value: i, label: `Page ${i + 1}` }))}
+            />
+          )}
           <div className="flex gap-2">
-            <button className="flex-1 rounded-lg border border-white/10 py-2 text-sm hover:bg-white/5" onClick={() => rotate(-90)}>
+            <button className="flex-1 rounded-lg border border-white/10 py-2 text-sm hover:bg-white/5" onClick={unlocked(() => rotate(-90))}>
               Rotate ↺
             </button>
-            <button className="flex-1 rounded-lg border border-white/10 py-2 text-sm hover:bg-white/5" onClick={() => rotate(90)}>
+            <button className="flex-1 rounded-lg border border-white/10 py-2 text-sm hover:bg-white/5" onClick={unlocked(() => rotate(90))}>
               Rotate ↻
             </button>
           </div>

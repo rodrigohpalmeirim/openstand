@@ -129,7 +129,7 @@ describe('mergeToPdf', () => {
 
   it('throws instead of dropping pages', async () => {
     const blobs: Record<string, Blob> = { ba: await pdf([100, 200]), bb: new Blob(['not a pdf']) }
-    await expect(mergeToPdf([f('a', 2), f('b', 1)], { load: async (id) => blobs[id] })).rejects.toThrow(/1 pages but the song expects 2/)
+    await expect(mergeToPdf([f('a', 2), f('b', 1)], { load: async (id) => blobs[id] })).rejects.toThrow(/1 pages instead of the expected 2/)
     await expect(mergeToPdf([f('b', 1)], { load: async (id) => blobs[id] })).rejects.toThrow(/Could not read/)
   })
 

@@ -29,7 +29,7 @@ export function normalizeOrderText(text: string): string {
 }
 
 export function parsePageOrder(text: string, files: OrderFile[]): PageOrderParse {
-  if (!files.length) return { ok: false, error: 'This song has no files' }
+  if (!files.length) return { ok: false, error: 'There are no files yet' }
   const tokens = normalizeOrderText(text)
     .split(',')
     .filter((t) => t !== '')
@@ -44,7 +44,7 @@ export function parsePageOrder(text: string, files: OrderFile[]): PageOrderParse
       if (fileNo < 1 || fileNo > files.length)
         return {
           ok: false,
-          error: files.length === 1 ? `This song has only one file ("${tok}")` : `File ${fileNo} does not exist (this song has ${files.length} files)`,
+          error: files.length === 1 ? `There is only one file ("${tok}")` : `File ${fileNo} does not exist (there are ${files.length} files)`,
         }
     }
     const file = files[fileNo - 1]

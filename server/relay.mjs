@@ -14,7 +14,7 @@
  * Env:   PORT, HOST, MAX_MESSAGE (bytes, default 262144), MAX_ROOM (clients per room, default 64),
  *        ALLOWED_ORIGINS (comma-separated list of OpenStand sites; empty = any origin). Library rooms
  *        always require an Origin header (browsers send one), so set this to the site(s) you use.
- * Then in OpenStand: Settings › Devices & sync › Relay address = <this machine's IP>:8787.
+ * Then in OpenStand: Settings › Page sync › Relay address = <this machine's IP>:8787.
  * Health check: GET http://HOST:PORT/ returns a JSON summary.
  *
  * Implements RFC 6455 server side: handshake, masked client frames, fragmentation, ping/pong,

@@ -11,6 +11,7 @@
  *   (mobile networks drop connections without telling either end), so it reconnects.
  * - A sealed ping from another device of the library is answered with a sealed pong addressed to it (older
  *   builds had a "Test instant sync" button that sends them; this build only answers).
+ * - A `devices` notice (a rename) makes the others re-read the device list; older builds drop it.
  */
 import { RelayTransport, type Transport, type TransportEvents, type TransportStatus } from '../sync/transports'
 import { openNotice, sealNotice, type LibraryKeys } from './crypto'
@@ -174,6 +175,14 @@ export class NoticeChannel {
   async post(seq: number) {
     if (this.closed) return
     this.pendingSeq = Math.max(this.pendingSeq, seq)
+    this.pump()
+  }
+
+  /** Ask the other devices to re-read the device list (this device changed its record). */
+  async postDevices() {
+    if (this.closed) return
+    const head = Math.max(0, (await this.o.head?.()) ?? 0)
+    this.queue.push(await sealNotice(this.o.keys, { d: this.o.deviceId, s: head, k: 'devices' }))
     this.pump()
   }
 

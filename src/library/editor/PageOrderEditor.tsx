@@ -6,6 +6,7 @@ import { Button, cx, IconButton, Input, Menu, toast, useMenu } from '../../ui/pr
 import { pageSize, resolvePageRefs } from '../../viewer/pageSource'
 import { defaultPageOrder, formatPageOrder, normalizePageOrder, parsePageOrder } from './pageOrder'
 import { PageThumb } from './PageThumb'
+import { useTerms } from '../browse/terms'
 import { Sheet } from './Sheet'
 import { pageKey, rotatePages, tidySettings } from './songEdit'
 import { moveItem, useDragSort } from './useDragSort'
@@ -47,6 +48,7 @@ export function PageOrderEditor({
   onApply: (p: Pick<Song, 'files' | 'pageOrder' | 'pageSettings'>) => void
   onClose: () => void
 }) {
+  const terms = useTerms()
   const initial = useMemo<State>(() => ({ items: wrap(resolvePageRefs(song)), settings: song.pageSettings, extra: [] }), [song])
   const [st, setSt] = useState<State>(initial)
   const [past, setPast] = useState<State[]>([])
@@ -190,7 +192,7 @@ export function PageOrderEditor({
       size="full"
       onClose={onClose}
       title="Arrange pages"
-      subtitle={`${st.items.length} page${st.items.length === 1 ? '' : 's'} · ${song.title || 'New song'}`}
+      subtitle={`${st.items.length} page${st.items.length === 1 ? '' : 's'} · ${song.title || `New ${terms.song}`}`}
       bodyClassName="flex flex-col overflow-hidden"
       footer={
         <>

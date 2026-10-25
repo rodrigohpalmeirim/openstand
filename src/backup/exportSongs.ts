@@ -5,6 +5,8 @@
 import { PDFDocument, StandardFonts, rgb, type PDFFont } from 'pdf-lib'
 import { db, getBlob } from '../db/db'
 import type { Setlist, SetlistEntry, Song } from '../db/schema'
+import { terms } from '../library/browse/terms'
+import { settings } from '../state/settings'
 import { confirmDialog, toast } from '../ui/primitives'
 import { findTitleConflicts, importPackageArchive, openArchive, restoreArchive, writeArchive, type OnProgress } from './archive'
 import { dateStamp, deliverFiles, safeName } from './deliver'
@@ -13,6 +15,9 @@ import { MemorySink, ZipWriter } from './zip'
 
 export const PACKAGE_EXT = '.ospkg'
 export const PACKAGE_MIME = 'application/x-openstand-package'
+
+/** Song/piece wording for messages, read when they are shown. */
+const words = () => terms(settings())
 
 async function loadSongs(ids: string[]): Promise<Song[]> {
   return (await db.songs.bulkGet(ids)).filter(Boolean) as Song[]
@@ -49,10 +54,10 @@ export async function exportSongsPackage(songIds: string[], opts: PackageOptions
     includeAudio: opts.includeAudio,
     onProgress: opts.onProgress,
   })
-  const name = `${opts.name ? safeName(opts.name) : await defaultName(songs, setlists, 'OpenStand-songs')}${PACKAGE_EXT}`
+  const name = `${opts.name ? safeName(opts.name) : await defaultName(songs, setlists, `OpenStand-${words().songs}`)}${PACKAGE_EXT}`
   const file = new File([sink.blob(PACKAGE_MIME)], name, { type: PACKAGE_MIME })
-  const ok = await deliverFiles([file], { share: opts.share, title: name, description: 'OpenStand song package' })
-  if (ok) toast(`Exported ${manifest.counts.songs} song${manifest.counts.songs === 1 ? '' : 's'}`, 'ok')
+  const ok = await deliverFiles([file], { share: opts.share, title: name, description: `OpenStand ${words().song} package` })
+  if (ok) toast(`Exported ${words().count(manifest.counts.songs)}`, 'ok')
 }
 
 /**
@@ -67,7 +72,7 @@ export async function importPackage(
   if (archive.manifest.kind === 'backup') {
     const ok = await confirmDialog({
       title: 'Merge a full backup?',
-      message: `“${file.name}” is a full library backup (${archive.manifest.counts.songs} songs). Merge it into this library? Newer versions of songs win. To replace the library instead, use Settings › Backup.`,
+      message: `“${file.name}” is a full library backup (${words().count(archive.manifest.counts.songs)}). Merge it into this library? Newer versions of ${words().songs} win. To replace the library instead, use Settings › Export & import.`,
       confirmLabel: 'Merge',
     })
     if (!ok) return { songs: 0, setlists: 0 }
@@ -81,7 +86,7 @@ export async function importPackage(
     if (conflicts.size) {
       const n = conflicts.size
       const update = await confirmDialog({
-        title: `${n} song${n === 1 ? ' is' : 's are'} already in your library`,
+        title: `${words().count(n)} ${n === 1 ? 'is' : 'are'} already in your library`,
         message: `Update ${n === 1 ? 'it' : 'them'} with the version from the package (keeps play history), or import ${n === 1 ? 'a copy' : 'copies'} alongside?`,
         confirmLabel: 'Update existing',
         cancelLabel: n === 1 ? 'Import a copy' : 'Import copies',
@@ -119,18 +124,21 @@ function extOf(name: string) {
 
 /**
  * Export song files: originals, or PDFs with crop/rotation/annotations applied, optionally merged.
- * Called without options (library menus) it first asks the user how to export.
+ * Called without options (library menus) it first asks the user how to export, then applies `defaults`.
+ * `songIds` may repeat a song (setlists): a joined PDF has it once per occurrence, separate files only once.
  */
-export async function exportSongFiles(songIds: string[], options?: FileExportOptions): Promise<void> {
-  const songs = await loadSongs(songIds)
-  if (!songs.length) return
+export async function exportSongFiles(songIds: string[], options?: FileExportOptions, defaults: Pick<FileExportOptions, 'name'> = {}): Promise<void> {
+  const all = await loadSongs(songIds)
+  const distinct = [...new Map(all.map((s) => [s.id, s])).values()]
+  if (!all.length) return
   let opts = options
   if (!opts) {
     const { askFileExportOptions } = await import('./ExportDialog')
-    const picked = await askFileExportOptions(songs.length)
+    const picked = await askFileExportOptions(distinct.length)
     if (!picked) return
-    opts = picked
+    opts = { ...defaults, ...picked }
   }
+  const songs = opts.merge ? all : distinct
   const report = opts.onProgress ?? (() => {})
   const render = !!(opts.withAnnotations || opts.merge || opts.cropRotate)
   const files: File[] = []
@@ -142,6 +150,8 @@ export async function exportSongFiles(songIds: string[], options?: FileExportOpt
     return name
   }
   let textOnly = 0
+  /** Songs whose text files are already shipped: a joined PDF may repeat a song, its files go once. */
+  const shipped = new Set<string>()
 
   if (render) {
     const merged = opts.merge ? await PDFDocument.create() : null
@@ -152,7 +162,9 @@ export async function exportSongFiles(songIds: string[], options?: FileExportOpt
       const doc = merged ?? (await PDFDocument.create())
       const r = await appendSongPages(doc, s, { annotations: opts.withAnnotations, cropRotate: opts.cropRotate ?? true }, fonts ?? undefined)
       // Text/ChordPro/ABC files can't be flattened into PDF here; ship them as they are.
-      for (const f of r.skipped) {
+      const asIs = shipped.has(s.id) ? [] : r.skipped
+      shipped.add(s.id)
+      for (const f of asIs) {
         files.push(new File([await getBlob(f.blobId)], unique(opts.useTitles ? `${safeName(s.title)}${extOf(f.name)}` : f.name)))
         textOnly++
       }
@@ -178,7 +190,7 @@ export async function exportSongFiles(songIds: string[], options?: FileExportOpt
     }
   }
   report({ phase: 'finishing', done: 1, total: 1 })
-  if (!files.length) return void toast('These songs have no files to export')
+  if (!files.length) return void toast(`These ${words().songs} have no files to export`)
 
   let out = files
   const bundle = opts.zip ?? (files.length > 1 && !(opts.share ?? false))
@@ -197,7 +209,7 @@ export async function exportSongFiles(songIds: string[], options?: FileExportOpt
 /* ------------------------------------------------------------- title list */
 
 export interface TitleListOptions {
-  /** Use this setlist's entries (breaks, notes) instead of `songIds` */
+  /** Use this setlist's entries (breaks, notes) instead of `songIds`; its gig date and venue go under the title */
   setlistId?: string
   numbered?: boolean
   /** Show artist, key and duration */
@@ -239,11 +251,18 @@ export function buildListRows(entries: Pick<SetlistEntry, 'songId' | 'isBreak' |
   return rows
 }
 
-export function listToText(heading: string, rows: ListRow[], opts: { numbered?: boolean; details?: boolean } = {}): string {
+/** "Fri 14 March 2025 · Town Hall" for a setlist with a gig date and/or venue. */
+export function gigLine(sl: Pick<Setlist, 'date' | 'venue'>): string {
+  const d = sl.date ? new Date(sl.date + 'T12:00:00') : null
+  const date = d && !isNaN(d.getTime()) ? d.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'long', year: 'numeric' }) : (sl.date ?? '')
+  return [date, sl.venue?.trim()].filter(Boolean).join(' · ')
+}
+
+export function listToText(heading: string, rows: ListRow[], opts: { numbered?: boolean; details?: boolean; subtitle?: string } = {}): string {
   const numbered = opts.numbered ?? true
   const details = opts.details ?? true
   const lines: string[] = []
-  if (heading) lines.push(heading, '='.repeat(Math.min(60, heading.length)), '')
+  if (heading) lines.push(heading, '='.repeat(Math.min(60, heading.length)), ...(opts.subtitle ? [opts.subtitle] : []), '')
   for (const r of rows) {
     if (r.kind === 'break') {
       lines.push('', `— ${r.title} —`, '')
@@ -260,13 +279,13 @@ export function listToText(heading: string, rows: ListRow[], opts: { numbered?: 
   }
   const total = rows.reduce((t, r) => t + (r.duration ?? 0), 0)
   const count = rows.filter((r) => r.kind === 'song').length
-  lines.push('', `${count} song${count === 1 ? '' : 's'}${details && total ? ` · ${fmtDuration(total)}` : ''}`)
+  lines.push('', `${words().count(count)}${details && total ? ` · ${fmtDuration(total)}` : ''}`)
   return lines.join('\n') + '\n'
 }
 
-async function listToPdf(heading: string, rows: ListRow[], opts: { numbered?: boolean; details?: boolean }): Promise<Uint8Array> {
+async function listToPdf(heading: string, rows: ListRow[], opts: { numbered?: boolean; details?: boolean; subtitle?: string }): Promise<Uint8Array> {
   const doc = await PDFDocument.create()
-  doc.setTitle(heading || 'Song list')
+  doc.setTitle(heading || `${words().Song} list`)
   doc.setProducer('OpenStand')
   const font = await doc.embedFont(StandardFonts.Helvetica)
   const bold = await doc.embedFont(StandardFonts.HelveticaBold)
@@ -293,7 +312,7 @@ async function listToPdf(heading: string, rows: ListRow[], opts: { numbered?: bo
   if (heading) {
     text(fit(heading, bold, 20, W - 2 * M), M, 20, bold)
     y -= 18
-    text(new Date().toLocaleDateString(), M, 9, font, muted)
+    text(fit(opts.subtitle || new Date().toLocaleDateString(), font, 9, W - 2 * M), M, 9, font, muted)
     y -= 26
   }
   const rowH = 20
@@ -331,28 +350,31 @@ async function listToPdf(heading: string, rows: ListRow[], opts: { numbered?: bo
   ensure(rowH * 2)
   y -= 8
   page.drawLine({ start: { x: M, y: y + 12 }, end: { x: rightCol, y: y + 12 }, thickness: 0.5, color: rgb(0.85, 0.84, 0.8) })
-  text(`${count} song${count === 1 ? '' : 's'}${details && total ? `  ·  ${fmtDuration(total)}` : ''}`, M, 10, font, muted)
+  // Not count(): its locale digit grouping can use spaces the standard PDF fonts can't encode.
+  text(`${count} ${count === 1 ? words().song : words().songs}${details && total ? `  ·  ${fmtDuration(total)}` : ''}`, M, 10, font, muted)
   return doc.save()
 }
 
 /** Export a list of song titles (in order) as .txt or a simple PDF. */
 export async function exportTitleList(songIds: string[], title: string, format: 'txt' | 'pdf', opts: TitleListOptions = {}): Promise<void> {
   let entries: Pick<SetlistEntry, 'songId' | 'isBreak' | 'breakLabel' | 'note'>[] = songIds.map((songId) => ({ songId }))
+  let subtitle = ''
   if (opts.setlistId) {
     const sl = await db.setlists.get(opts.setlistId)
     if (sl) {
       entries = sl.entries
-      title ||= sl.name
+      title = sl.name || title
+      subtitle = gigLine(sl)
     }
   }
   const ids = [...new Set(entries.filter((e) => !e.isBreak).map((e) => e.songId))]
   const songs = new Map((await loadSongs(ids)).map((s) => [s.id, s]))
   const rows = buildListRows(entries, songs)
-  const base = safeName(title || `Songs-${dateStamp()}`)
+  const base = safeName(title || `${words().Songs}-${dateStamp()}`)
   const file =
     format === 'txt'
-      ? new File([listToText(title, rows, opts)], `${base}.txt`, { type: 'text/plain;charset=utf-8' })
-      : new File([(await listToPdf(title, rows, opts)) as BlobPart], `${base}.pdf`, { type: 'application/pdf' })
+      ? new File([listToText(title, rows, { ...opts, subtitle })], `${base}.txt`, { type: 'text/plain;charset=utf-8' })
+      : new File([(await listToPdf(title, rows, { ...opts, subtitle })) as BlobPart], `${base}.pdf`, { type: 'application/pdf' })
   await deliverFiles([file], { share: opts.share, title, description: format === 'txt' ? 'Text file' : 'PDF document' })
 }
 
@@ -368,7 +390,7 @@ export async function printSongs(songIds: string[], opts: { withAnnotations?: bo
   const fonts = new FontCache(doc)
   let skipped = 0
   for (const s of songs) skipped += (await appendSongPages(doc, s, { annotations: opts.withAnnotations ?? true }, fonts)).skipped.length
-  if (!doc.getPageCount()) return void toast(skipped ? 'Text songs can’t be printed from here yet — open them and use the browser’s print' : 'Nothing to print')
+  if (!doc.getPageCount()) return void toast(skipped ? `Text ${words().songs} can’t be printed from here yet — open them and use the browser’s print` : 'Nothing to print')
   doc.setTitle(opts.title ?? (songs.length === 1 ? songs[0].title : 'OpenStand'))
   const url = URL.createObjectURL(new Blob([(await doc.save()) as BlobPart], { type: 'application/pdf' }))
   // iOS Safari (and some embedded PDF viewers) never print from an iframe: open the PDF instead.

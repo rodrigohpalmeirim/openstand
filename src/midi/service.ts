@@ -5,6 +5,7 @@
 import { liveQuery } from 'dexie'
 import { db } from '../db/db'
 import type { MidiCommand, Song } from '../db/schema'
+import { terms } from '../library/browse/terms'
 import { registerService } from '../services'
 import { settings, useSettings } from '../state/settings'
 import { useViewer } from '../state/viewer'
@@ -12,7 +13,8 @@ import { toast } from '../ui/primitives'
 import { registerActions, runAction, type ActionId } from '../viewer/actions'
 import { on } from '../viewer/events'
 import { commandMatches, isTriggerEvent, matchKey, parseKey, updateBanks, type BankState, type MidiEvent } from './codec'
-import { lastSongSendAt, midiReady, onMidi, sendCommands, stopClock, watchMidiSetting } from './midi'
+import { songBpm } from '../tools/metronome/tempo'
+import { lastSongSendAt, onMidi, sendCommands, stopClock, watchMidiSetting } from './midi'
 
 type Capture = (e: MidiEvent, port: string) => void
 const captures = new Set<Capture>()
@@ -50,6 +52,7 @@ function openSong(id: string, title: string) {
 }
 
 function handle(e: MidiEvent, port: string) {
+  if (!settings().midi.enabled) return
   if (captures.size) {
     captures.forEach((c) => c(e, port))
     return
@@ -71,7 +74,7 @@ function handle(e: MidiEvent, port: string) {
 }
 
 async function sendSong(song: Song, onLoadOnly: boolean) {
-  const bpm = song.metronome?.bpm ?? settings().metronome.bpm
+  const bpm = songBpm(song) ?? settings().metronome.bpm
   await sendCommands(song.midiOnLoad, { bpm, onLoadOnly })
 }
 
@@ -85,7 +88,7 @@ async function currentSong(): Promise<Song | undefined> {
 export async function resendCurrentSong() {
   const s = await currentSong()
   if (!s) return
-  if (!s.midiOnLoad.length) return toast('This song has no MIDI commands')
+  if (!s.midiOnLoad.length) return toast(`This ${terms(settings()).song} has no MIDI commands`)
   await sendSong(s, false)
 }
 
@@ -126,7 +129,7 @@ registerService(() => {
   stops.push(
     registerActions({
       sendMidi: () => {
-        if (!midiReady() && !settings().midi.enabled) return toast('Enable MIDI in Settings first')
+        if (!settings().midi.enabled) return toast('Turn on MIDI in Settings first')
         void resendCurrentSong()
       },
       startAutoScroll: () => !useViewer.getState().autoScrollOn && runAction('toggleAutoScroll', 'midi'),

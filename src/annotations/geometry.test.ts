@@ -5,17 +5,20 @@ import {
   distToSegment,
   eraseStroke,
   fromLocal,
+  HAIRPIN_HEIGHT,
   hitTest,
   hitTopmost,
   itemIntersectsRect,
   lassoSelect,
   pointInPolygon,
   pressureWidth,
+  rotateItem,
   scaleItem,
   simplify,
   smoothPath,
   streamline,
   strokeOutline,
+  textBoxLocal,
   toLocal,
   translateItem,
 } from './geometry'
@@ -247,5 +250,116 @@ describe('transforms', () => {
     const t = scaleItem({ ...base, id: 't', type: 'text', at: { x: 0.5, y: 0.5 }, text: 'x', size: 0.02 } as TextAnnotation, { x: 0, y: 0 }, 0.5)
     expect(t.at).toEqual({ x: 0.25, y: 0.25 })
     expect(t.size).toBeCloseTo(0.01)
+  })
+})
+
+describe('simplify with pressure', () => {
+  // A straight stroke whose pressure swells in the middle.
+  const pts = Array.from({ length: 21 }, (_, i) => ({ x: i / 20, y: 0.5, p: 0.2 + 0.6 * Math.sin((Math.PI * i) / 20) }))
+
+  it('drops straight-line points when pressure is ignored', () => {
+    expect(simplify(pts, 0.001)).toHaveLength(2)
+  })
+
+  it('keeps the points where the pressure changes', () => {
+    const s = simplify(pts, 0.001, 0.06)
+    expect(s.length).toBeGreaterThan(4)
+    // Pressure interpolated between kept points stays within the tolerance.
+    for (let i = 0; i < pts.length; i++) {
+      const j = s.findIndex((q) => q.x >= pts[i].x)
+      if (s[j].x === pts[i].x) continue
+      const a = s[j - 1]
+      const b = s[j]
+      const t = (pts[i].x - a.x) / (b.x - a.x)
+      expect(Math.abs(a.p! + (b.p! - a.p!) * t - pts[i].p)).toBeLessThanOrEqual(0.06 + 1e-9)
+    }
+  })
+
+  it('leaves strokes without pressure alone', () => {
+    const flat = pts.map(({ x, y }) => ({ x, y }))
+    expect(simplify(flat, 0.001, 0.06)).toHaveLength(2)
+  })
+})
+
+describe('rotateItem', () => {
+  // A 600 x 800 portrait page: aspect 4/3.
+  const A = 4 / 3
+  // Pixel comparisons; coordinates are stored rounded to 5 decimals.
+  const close = (a: number, b: number, digits = 2) => expect(a).toBeCloseTo(b, digits)
+
+  it('keeps a hairpin’s default opening in pixels by giving it an explicit height', () => {
+    const h: ShapeAnnotation = { id: 'h', type: 'crescendo', layer: 'default', color: '#000', opacity: 1, createdAt: 0, width: 0.003, a: { x: 0.1, y: 0.5 }, b: { x: 0.4, y: 0.5 } }
+    const r = rotateItem(h, 1, A) as ShapeAnnotation
+    // 0.018 × 600 px = 10.8 px on the 800 px wide turned page.
+    close((r.height ?? 0) * 800, HAIRPIN_HEIGHT * 600)
+    expect(rotateItem({ ...h, type: 'line' }, 1, A)).not.toHaveProperty('height')
+  })
+
+  it('turns ink clockwise and keeps its pixel width', () => {
+    const s = stroke([{ x: 0.1, y: 0.2, p: 0.5 }, { x: 0.4, y: 0.3, p: 0.7 }], 0.006)
+    const r = rotateItem(s, 1, A)
+    expect(r.points[0]).toEqual({ x: 0.8, y: 0.1, p: 0.5 })
+    expect(r.points[1]).toEqual({ x: 0.7, y: 0.4, p: 0.7 })
+    // 0.006 × 600 px = 3.6 px; the turned page is 800 px wide.
+    close(r.width * 800, 3.6)
+    const back = rotateItem(r, -1, 1 / A)
+    expect(back.points).toEqual(s.points)
+    close(back.width, s.width, 8)
+  })
+
+  it('maps a pixel point the way the page bitmap turns', () => {
+    // Pixel (60, 160) on the 600 x 800 page → (800 − 160, 60) on the 800 x 600 page.
+    const s = stroke([{ x: 60 / 600, y: 160 / 800 }])
+    const r = rotateItem(s, 1, A)
+    close(r.points[0].x * 800, 640)
+    close(r.points[0].y * 600, 60)
+    const half = rotateItem(s, 2, A)
+    close(half.points[0].x * 600, 540)
+    close(half.points[0].y * 800, 640)
+  })
+
+  it('returns every kind of item to where it was after a full turn', () => {
+    const items: Annotation[] = [
+      stroke([{ x: 0.1, y: 0.2 }, { x: 0.3, y: 0.6 }]),
+      { ...base, id: 'l', type: 'crescendo', width: 0.003, a: { x: 0.2, y: 0.3 }, b: { x: 0.6, y: 0.35 }, height: 0.02 },
+      { ...base, id: 't', type: 'text', at: { x: 0.2, y: 0.7 }, text: 'rit.', size: 0.025 },
+      { ...base, id: 'st', type: 'stamp', at: { x: 0.5, y: 0.5 }, stamp: 'fermata', size: 0.04 },
+      { ...base, id: 'i', type: 'image', a: { x: 0.1, y: 0.1 }, b: { x: 0.4, y: 0.2 }, src: 'data:,' },
+      { ...base, id: 'p', type: 'staff', width: 0.0012, a: { x: 0.1, y: 0.4 }, b: { x: 0.9, y: 0.55 }, measures: 4 },
+    ]
+    for (const it of items) {
+      let r: Annotation = it
+      let a = A
+      for (let k = 0; k < 4; k++) {
+        r = rotateItem(r, 1, a)
+        a = 1 / a
+      }
+      expect(JSON.parse(JSON.stringify(r), (_, v) => (typeof v === 'number' ? Math.round(v * 1e4) / 1e4 : v))).toEqual(
+        JSON.parse(JSON.stringify(it), (_, v) => (typeof v === 'number' ? Math.round(v * 1e4) / 1e4 : v)),
+      )
+      expect(rotateItem(it, 4, A)).toBe(it)
+    }
+  })
+
+  it('keeps text upright and centred, at the same font size in pixels', () => {
+    const t: TextAnnotation = { ...base, id: 't', type: 'text', at: { x: 0.2, y: 0.7 }, text: 'cresc.', size: 0.025 }
+    const r = rotateItem(t, 1, A)
+    // Font px: 0.025 × 800 before, size × 600 after.
+    close(r.size * 600, 20)
+    const b0 = textBoxLocal(t, A)
+    const b1 = textBoxLocal(r, 1 / A)
+    close(b1.w * 800, b0.w * 600)
+    // The centre moves like a point: (cx, cy) → (1 − cy, cx).
+    const c0 = { x: t.at.x + b0.w / 2, y: t.at.y + b0.h / A / 2 }
+    close(r.at.x + b1.w / 2, 1 - c0.y)
+    close(r.at.y + (b1.h * A) / 2, c0.x)
+  })
+
+  it('swaps a picture box but keeps its pixel size', () => {
+    const img: Annotation = { ...base, id: 'i', type: 'image', a: { x: 0.1, y: 0.1 }, b: { x: 0.4, y: 0.2 }, src: 'data:,' }
+    const r = rotateItem(img, 1, A) as Extract<Annotation, { type: 'image' }>
+    // 180 x 80 px stays 180 x 80 px on the 800 x 600 page.
+    close((r.b.x - r.a.x) * 800, 180)
+    close((r.b.y - r.a.y) * 600, 80)
   })
 })

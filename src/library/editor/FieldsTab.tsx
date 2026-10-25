@@ -1,7 +1,7 @@
 import { Grid3x3, SlidersHorizontal, Star } from 'lucide-react'
 import { useState, type ReactNode } from 'react'
 import type { GroupField, Song } from '../../db/schema'
-import { capitalizeWords, formatDuration, parseDuration } from '../../files/import'
+import { capitalizeWords, formatDuration, isDurationText, parseDuration } from '../../files/import'
 import { ALL_KEYS, KEYS } from '../../music/chords'
 import { useSettings } from '../../state/settings'
 import { cx, Field, IconButton, Input, Popover, Select, Toggle, useMenu } from '../../ui/primitives'
@@ -10,7 +10,7 @@ import { ChipInput } from './ChipInput'
 
 export type SongPatch = Partial<Song> | ((s: Song) => Song)
 
-/** Field keys that can be hidden via "Configure fields" (title is always shown). */
+/** Field keys that can be hidden via "Configure fields" (title is always shown). "Song" follows the terminology setting. */
 export const CONFIGURABLE_FIELDS: { key: string; label: string }[] = [
   { key: 'sortTitle', label: 'Sort title' },
   { key: 'songNumber', label: 'Song number' },
@@ -38,13 +38,29 @@ const SOURCE_TYPES = ['Sheet Music', 'Lead Sheet', 'Chords', 'Lyrics', 'Tab', 'C
 const GENRES = ['Blues', 'Bluegrass', 'Celtic', 'Choral', 'Christmas', 'Classical', 'Country', 'Film', 'Folk', 'Funk', 'Gospel', 'Hymn', 'Jazz', 'Latin', 'Metal', 'Musical', 'Pop', 'R&B', 'Reggae', 'Rock', 'Soul', 'Worship']
 const MINORS = ['Cm', 'C#m', 'Dm', 'Ebm', 'Em', 'Fm', 'F#m', 'Gm', 'G#m', 'Am', 'Bbm', 'Bm']
 
-export function FieldsTab({ song, update, titleError, titleRef }: { song: Song; update: (p: SongPatch) => void; titleError?: string; titleRef?: React.Ref<HTMLInputElement> }) {
+export function FieldsTab({
+  song,
+  update,
+  titleError,
+  titleRef,
+  durationText: durText,
+  onDurationText,
+}: {
+  song: Song
+  update: (p: SongPatch) => void
+  titleError?: string
+  titleRef?: React.Ref<HTMLInputElement>
+  /** Duration as typed while it differs from the stored value (lifted so the editor can refuse to save invalid text). */
+  durationText?: string | null
+  onDurationText?: (t: string | null) => void
+}) {
+  const [localDur, setLocalDur] = useState<string | null>(null)
   const hidden = useSettings((s) => s.s.editor.hiddenFields)
   const capitalize = useSettings((s) => s.s.editor.capitalizeWords)
   const labels = useSettings((s) => s.s.fieldLabels)
   const t = useTerms()
   const show = (k: string) => !hidden.includes(k)
-  const label = (k: string) => labels[k] || CONFIGURABLE_FIELDS.find((f) => f.key === k)?.label || k
+  const label = (k: string) => labels[k] || CONFIGURABLE_FIELDS.find((f) => f.key === k)?.label.replace(/^Song\b/, t.Song) || k
 
   const group = (field: GroupField, extra: { suggestions?: string[]; placeholder?: string; trailing?: ReactNode; validate?: (v: string) => string | null; showAll?: boolean } = {}) =>
     show(field) && (
@@ -54,7 +70,8 @@ export function FieldsTab({ song, update, titleError, titleRef }: { song: Song; 
           field={field}
           value={song[field]}
           onChange={(v) => update({ [field]: v })}
-          capitalize={capitalize && field !== 'keys' && field !== 'signatures' && field !== 'years'}
+          // Tags are free-form labels ("needs work"): kept as typed, like keys, signatures and years.
+          capitalize={capitalize && field !== 'keys' && field !== 'signatures' && field !== 'years' && field !== 'tags'}
           suggestions={extra.suggestions}
           placeholder={extra.placeholder}
           trailing={extra.trailing}
@@ -132,7 +149,15 @@ export function FieldsTab({ song, update, titleError, titleRef }: { song: Song; 
             />
           </Field>
         )}
-        {show('duration') && <DurationField label={label('duration')} value={song.duration} onChange={(duration) => update({ duration })} />}
+        {show('duration') && (
+          <DurationField
+            label={label('duration')}
+            value={song.duration}
+            onChange={(duration) => update({ duration })}
+            text={onDurationText ? (durText ?? null) : localDur}
+            setText={onDurationText ?? setLocalDur}
+          />
+        )}
         {show('rating') && (
           <Field label={label('rating')}>
             <Stars value={song.rating} onChange={(rating) => update({ rating })} />
@@ -167,23 +192,38 @@ export function FieldsTab({ song, update, titleError, titleRef }: { song: Song; 
   )
 }
 
-function DurationField({ label, value, onChange }: { label: string; value: number; onChange: (v: number) => void }) {
-  const [text, setText] = useState<string | null>(null)
+function DurationField({
+  label,
+  value,
+  onChange,
+  text,
+  setText,
+}: {
+  label: string
+  value: number
+  onChange: (v: number) => void
+  text: string | null
+  setText: (t: string | null) => void
+}) {
   const shown = text ?? formatDuration(value)
-  const bad = text !== null && text.trim() !== '' && !/^\d+(:\d{1,2}){0,2}$/.test(text.trim())
+  const bad = text !== null && !isDurationText(text)
   return (
     <Field label={label} hint={bad ? <span className="text-danger">Use m:ss, e.g. 3:45</span> : undefined}>
       <Input
+        id="se-duration"
         inputMode="numeric"
         placeholder="m:ss"
         value={shown}
         aria-invalid={bad}
         className={bad ? 'border-danger' : undefined}
-        onChange={(e) => setText(e.target.value.replace(/[^\d:]/g, ''))}
+        onChange={(e) => {
+          const v = e.target.value.replace(/[^\d:]/g, '')
+          setText(v)
+          // Valid text is stored as it's typed, so saving (e.g. Ctrl+S) never misses it.
+          if (isDurationText(v)) onChange(parseDuration(v))
+        }}
         onBlur={() => {
-          if (text === null || bad) return
-          onChange(parseDuration(text))
-          setText(null)
+          if (text !== null && !bad) setText(null)
         }}
       />
     </Field>
@@ -246,6 +286,7 @@ function KeyGrid({ value, onChange }: { value: string[]; onChange: (v: string[])
 
 function ConfigureFields() {
   const m = useMenu()
+  const t = useTerms()
   const ed = useSettings((s) => s.s.editor)
   const setIn = useSettings((s) => s.setIn)
   const setHidden = (key: string, visible: boolean) =>
@@ -261,7 +302,7 @@ function ConfigureFields() {
           {CONFIGURABLE_FIELDS.map((f) => (
             <label key={f.key} className="flex h-10 cursor-pointer items-center gap-3 rounded-lg px-2 text-sm hover:bg-surface-2">
               <input type="checkbox" className="size-4 accent-[var(--os-accent)]" checked={!ed.hiddenFields.includes(f.key)} onChange={(e) => setHidden(f.key, e.target.checked)} />
-              {f.label}
+              {f.label.replace(/^Song\b/, t.Song)}
             </label>
           ))}
         </div>

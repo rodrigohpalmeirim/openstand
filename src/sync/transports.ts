@@ -3,7 +3,7 @@
  *  - LocalTransport: BroadcastChannel between windows/tabs of this browser (second screen, a laptop
  *    window driven by a foot pedal…). No server needed.
  *  - RelayTransport: WebSocket to a tiny relay (server/relay.mjs) that rebroadcasts to the room, for
- *    separate devices. Reconnects with backoff.
+ *    separate devices. Reconnects with backoff, and when a keep-alive ping goes unanswered.
  */
 export type TransportStatus = 'connecting' | 'open' | 'closed' | 'error'
 
@@ -14,6 +14,8 @@ export interface Transport {
   close(): void
   /** Drop the current connection (if any) and connect again now, skipping any backoff wait. */
   reconnect?(): void
+  /** The page came back or the network returned: check the connection, or retry now. */
+  wake?(): void
 }
 
 export interface TransportEvents {
@@ -111,6 +113,12 @@ export async function sameSiteRelayAvailable(o: { attempts?: number; timeoutMs?:
 }
 
 const BACKOFF = [1000, 2000, 4000, 8000, 15000]
+/** Both relays answer this with `{"pong":1}` and don't forward it. */
+const PING = '{"ping":1}'
+const PING_EVERY = 25_000
+/** No frame at all this long after a ping (from a relay known to answer): the socket is dead. */
+const PONG_TIMEOUT = 10_000
+const WAKE_PONG_TIMEOUT = 5_000
 
 export class RelayTransport implements Transport {
   readonly kind = 'relay'
@@ -121,6 +129,12 @@ export class RelayTransport implements Transport {
   private closed = false
   private url: string
   private ev: TransportEvents
+  private pinger: ReturnType<typeof setInterval> | null = null
+  private pongTimer: ReturnType<typeof setTimeout> | null = null
+  /** Last time anything arrived. */
+  private lastRx = 0
+  /** This relay answers pings (an older self-hosted one might not; it isn't judged then). */
+  private pongSeen = false
 
   constructor(url: string, room: string, ev: TransportEvents) {
     this.ev = ev
@@ -145,20 +159,55 @@ export class RelayTransport implements Transport {
       return this.retry()
     }
     this.ws = ws
+    let opened = false
     ws.onopen = () => {
+      opened = true
       this.attempt = 0
+      this.lastRx = Date.now()
       this.set('open')
+      this.stopPing()
+      this.pinger = setInterval(() => this.ping(PONG_TIMEOUT), PING_EVERY)
     }
-    ws.onmessage = (e) => typeof e.data === 'string' && this.ev.onMessage(e.data)
+    ws.onmessage = (e) => {
+      this.lastRx = Date.now()
+      if (typeof e.data !== 'string') return
+      if (e.data.startsWith('{"pong"')) this.pongSeen = true
+      else this.ev.onMessage(e.data)
+    }
     ws.onerror = () => {
       /* onclose follows with the details */
     }
     ws.onclose = (e) => {
       this.ws = null
+      this.stopPing()
       if (this.closed) return
-      this.set('error', e.reason || (this.attempt ? 'Relay unreachable' : 'Connection lost'))
+      this.set('error', e.reason || (opened ? 'Connection lost' : 'Relay unreachable'))
       this.retry()
     }
+  }
+
+  private stopPing() {
+    if (this.pinger) clearInterval(this.pinger)
+    if (this.pongTimer) clearTimeout(this.pongTimer)
+    this.pinger = this.pongTimer = null
+  }
+
+  /** Ping the relay; if it answers pings but nothing arrives within `timeout`, reconnect. */
+  private ping(timeout: number) {
+    if (this.closed || this.status !== 'open' || this.ws?.readyState !== WebSocket.OPEN) return
+    const sent = Date.now()
+    this.ws.send(PING)
+    if (!this.pongSeen || this.pongTimer) return
+    this.pongTimer = setTimeout(() => {
+      this.pongTimer = null
+      if (!this.closed && this.status === 'open' && this.lastRx < sent) this.reconnect()
+    }, timeout)
+  }
+
+  wake() {
+    if (this.closed) return
+    if (this.status === 'open') this.ping(WAKE_PONG_TIMEOUT)
+    else if (this.status === 'error') this.reconnect()
   }
 
   private retry() {
@@ -179,6 +228,7 @@ export class RelayTransport implements Transport {
     if (this.closed) return
     if (this.timer) clearTimeout(this.timer)
     this.timer = null
+    this.stopPing()
     const old = this.ws
     if (old) {
       old.onopen = old.onmessage = old.onclose = old.onerror = null
@@ -196,6 +246,7 @@ export class RelayTransport implements Transport {
   close() {
     this.closed = true
     if (this.timer) clearTimeout(this.timer)
+    this.stopPing()
     this.ws?.close(1000, 'bye')
     this.ws = null
     this.status = 'closed'

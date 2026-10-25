@@ -1,7 +1,7 @@
 import { lazy, Suspense, useEffect, useRef, useState } from 'react'
 import type { GroupField } from '../db/schema'
-import { sourcesFromFileList, type ImportSource } from '../files/import'
-import { kindOf } from '../files/kinds'
+import { ignoredFilesMessage, isJunkPath, sourcesFromFileList, type ImportSource } from '../files/import'
+import { isAudioFile, kindOf } from '../files/kinds'
 import { useNav, type LibraryRoute, type Route } from '../state/nav'
 import { toast } from '../ui/primitives'
 import { LibraryDataProvider, useLibrary } from './browse/data'
@@ -18,7 +18,7 @@ import { useLibraryUI } from './browse/ui'
 import { BookmarksView, FavoritesView, RecentView, SongsView } from './browse/views'
 import { Welcome } from './browse/Welcome'
 import { ContextMenuHost } from './browse/widgets'
-import { importPackagesIn } from './import/packages'
+import { importPackagesIn, isPackageFile } from './import/packages'
 
 // Editors and the import wizard are big and only needed on demand.
 const SongEditor = lazy(() => import('./editor/SongEditor').then((m) => ({ default: m.SongEditor })))
@@ -123,13 +123,18 @@ function LibraryShell() {
         dragDepth.current = 0
         setDragging(false)
         const dropped = [...e.dataTransfer.files]
-        const hasPackages = dropped.some((f) => /\.(ospkg|osbackup)$/i.test(f.name))
-        const sources = await sourcesFromDrop(e.dataTransfer)
+        const hasPackages = dropped.some((f) => isPackageFile(f.name))
+        const ignored: string[] = []
+        const sources = await sourcesFromDrop(e.dataTransfer, ignored)
         if (hasPackages) await importPackagesIn(dropped)
+        const unsupported = ignored.filter((n) => !isPackageFile(n))
         if (!sources.length) {
-          if (!hasPackages) toast('No supported files found (PDF, images, ChordPro, text, ABC)', 'error')
+          const audio = unsupported.some((n) => isAudioFile(n)) ? ` Audio files can be attached in a ${t.song}’s Audio tab.` : ''
+          if (!hasPackages) toast(`No supported files found (PDF, images, ChordPro, text, ABC).${audio}`, 'error')
           return
         }
+        const msg = ignoredFilesMessage(unsupported)
+        if (msg) toast(msg)
         setUI({ importing: { initial: sources } })
       }}
     >
@@ -168,15 +173,17 @@ function LibraryShell() {
 }
 
 /* Dropped folders: walk them with the (widely supported) FileSystemEntry API, keeping relative paths. */
-async function sourcesFromDrop(dt: DataTransfer): Promise<ImportSource[]> {
+async function sourcesFromDrop(dt: DataTransfer, ignored: string[]): Promise<ImportSource[]> {
   const entries = [...dt.items].map((i) => i.webkitGetAsEntry?.()).filter((e): e is FileSystemEntry => !!e)
-  if (!entries.some((e) => e.isDirectory)) return sourcesFromFileList(dt.files)
+  if (!entries.some((e) => e.isDirectory)) return sourcesFromFileList(dt.files, ignored)
   const out: ImportSource[] = []
   const walk = async (entry: FileSystemEntry, prefix: string): Promise<void> => {
+    if (isJunkPath(entry.name)) return
     const path = prefix ? `${prefix}/${entry.name}` : entry.name
     if (entry.isFile) {
       const file = await new Promise<File>((res, rej) => (entry as FileSystemFileEntry).file(res, rej))
       if (kindOf(file.name, file.type)) out.push({ file, path })
+      else ignored.push(file.name)
     } else if (entry.isDirectory) {
       const reader = (entry as FileSystemDirectoryEntry).createReader()
       // readEntries returns batches; call until empty.

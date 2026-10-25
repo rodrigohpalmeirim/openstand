@@ -34,6 +34,9 @@ describe('chord diagrams', () => {
     expect(lookupDiagram('Gb', 'guitar')).not.toBeNull()
     expect(lookupDiagram('C', 'ukulele')?.shape).toMatchObject({ frets: [0, 0, 0, 3] })
     expect(lookupDiagram('D/F#', 'guitar')?.shape.kind).toBe('frets')
+    expect(lookupDiagram('D/F#', 'guitar')?.approx).toBeUndefined()
+    // A slash chord without its own shape shows the root chord, marked as approximate.
+    expect(lookupDiagram('F7/A', 'guitar')?.approx).toBe(true)
     // Unknown extension falls back to a simpler chord.
     const odd = lookupDiagram('C7sus2', 'guitar')
     expect(odd?.approx).toBe(true)

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { computeStops, fitPage, fitSpread, prefetchPages, SCROLL_MAX_WIDTH, scrollPageSize, stopForPage } from './layout'
+import { anchorOffset, computeStops, fitPage, fitSpread, pageAtOffset, prefetchPages, SCROLL_MAX_WIDTH, scrollPageSize, stopForPage, stripAnchor, type StripItem } from './layout'
 
 describe('layout', () => {
   it('single and double stops', () => {
@@ -71,5 +71,25 @@ describe('scrollPageSize', () => {
     expect(scrollPageSize(portrait, { width: 1600, height: 900 }, 'width').width).toBe(SCROLL_MAX_WIDTH)
     expect(scrollPageSize(portrait, { width: 800, height: 900 }, 'width').width).toBe(800)
     expect(scrollPageSize(portrait, { width: 1600, height: 900 }, 'width', 1.5).width).toBe(SCROLL_MAX_WIDTH * 1.5)
+  })
+})
+
+describe('scroll strip anchor', () => {
+  // Three pages after a 50px top pad, 8px seams.
+  const strip = (h: number): StripItem[] => [0, 1, 2].map((page) => ({ page, start: 50 + page * (h + 8), size: h }))
+  it('keeps the same spot of the same page when page sizes change', () => {
+    const before = strip(1000)
+    const a = stripAnchor(before, 50 + 1008 + 250)
+    expect(a).toEqual({ page: 1, frac: 0.25 })
+    // Rotated to landscape: pages fit a shorter screen.
+    expect(anchorOffset(strip(400), a!)).toBe(50 + 408 + 100)
+  })
+  it('stays at the top when at the top', () => {
+    expect(stripAnchor(strip(1000), 0)).toBeNull()
+  })
+  it('reports the page at an offset', () => {
+    expect(pageAtOffset(strip(1000), 20)).toBe(0)
+    expect(pageAtOffset(strip(1000), 1100)).toBe(1)
+    expect(pageAtOffset([], 10)).toBe(0)
   })
 })

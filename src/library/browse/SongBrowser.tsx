@@ -36,6 +36,7 @@ import {
   queryTerms,
   SEARCH_FIELDS,
   searchText,
+  sortArtist,
   sortSongs,
   sortTitle,
   type SearchField,
@@ -97,7 +98,7 @@ function SortMenu({ sort, onChange }: { sort: SortSpec; onChange: (s: SortSpec) 
   )
 }
 
-const CAPTION_CHOICES = ['artists', 'composers', 'albums', 'genres', 'collections', 'sources', 'years', 'tags', 'custom']
+const CAPTION_CHOICES = ['artists', 'composers', 'albums', 'genres', 'collections', 'signatures', 'sources', 'years', 'tags', 'custom', 'custom2']
 
 export function ViewMenu() {
   const m = useMenu()
@@ -294,7 +295,7 @@ export function SongBrowser(p: SongBrowserProps) {
     if (!showAlphabet || !sortable) return null
     const src = indexSource(sort)
     if (!src) return null
-    return buildLetterIndex(list.map((s) => (src === 'title' ? sortTitle(s, o) : (s.artists[0] ?? s.composers[0] ?? ''))))
+    return buildLetterIndex(list.map((s) => (src === 'title' ? sortTitle(s, o) : (sortArtist(s, o) ?? ''))))
   }, [list, sort, o, showAlphabet, sortable])
 
   const onOpen = useCallback((i: number) => (loadEntire ? perform(ids, i) : perform([ids[i]])), [ids, loadEntire])

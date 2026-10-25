@@ -1,6 +1,7 @@
 import { Minus, Plus } from 'lucide-react'
-import type { ReactNode } from 'react'
-import { cx } from '../ui/primitives'
+import { cloneElement, isValidElement, type ReactNode } from 'react'
+import { useTerms } from '../library/browse/terms'
+import { cx, Toggle } from '../ui/primitives'
 import { DARK_VARS } from './util'
 
 
@@ -25,13 +26,15 @@ export function Section({ title, action, children, className }: { title: ReactNo
 }
 
 export function Row({ label, hint, children }: { label: ReactNode; hint?: ReactNode; children: ReactNode }) {
+  // A lone switch takes the row's text as its accessible name.
+  const control = isValidElement<{ label?: string }>(children) && children.type === Toggle && !children.props.label && typeof label === 'string' ? cloneElement(children, { label }) : children
   return (
     <div className="flex min-h-11 items-center justify-between gap-4 py-1.5">
       <div className="min-w-0">
         <div className="text-sm text-white/85">{label}</div>
         {hint && <div className="text-xs text-white/45">{hint}</div>}
       </div>
-      <div className="flex shrink-0 items-center gap-2">{children}</div>
+      <div className="flex shrink-0 items-center gap-2">{control}</div>
     </div>
   )
 }
@@ -116,9 +119,10 @@ export function PanelButton({
 
 /** Hint line under a section, e.g. "Saved for this song · Use default". */
 export function ScopeLine({ perSong, onReset, onMakeDefault }: { perSong: boolean; onReset: () => void; onMakeDefault: () => void }) {
+  const terms = useTerms()
   return (
     <div className="mt-2 flex items-center justify-between gap-2 text-xs text-white/50">
-      <span>{perSong ? 'Saved for this song' : 'Using your defaults'}</span>
+      <span>{perSong ? `Saved for this ${terms.song}` : 'Using your defaults'}</span>
       {perSong ? (
         <span className="flex gap-3">
           <button className="text-[var(--os-accent)]" onClick={onMakeDefault}>

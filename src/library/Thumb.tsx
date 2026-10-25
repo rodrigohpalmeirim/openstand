@@ -79,6 +79,8 @@ export function Thumb({ song, page = 0, className = 'h-12 w-9' }: { song: Song; 
   const [url, setUrl] = useState<string | null>(urls.get(key) ?? null)
   // Library sync: the file may still be downloading; retry once it arrives.
   const [arrived, setArrived] = useState(0)
+  // Portrait pages fill the box (cropped at the bottom); landscape pages are shown whole instead of a sliver.
+  const [landscape, setLandscape] = useState(false)
   const blob = usePendingFile(shownBlobId(song, page), () => setArrived((n) => n + 1))
   useEffect(() => {
     if (urls.has(key)) return setUrl(urls.get(key)!)
@@ -102,7 +104,14 @@ export function Thumb({ song, page = 0, className = 'h-12 w-9' }: { song: Song; 
   return (
     <div className={cx(className, 'shrink-0 overflow-hidden rounded-md border border-line shadow-sm', url ? 'bg-white' : 'bg-surface')}>
       {url ? (
-        <img src={url} alt="" className="size-full object-cover object-top" loading="lazy" draggable={false} />
+        <img
+          src={url}
+          alt=""
+          className={cx('size-full', landscape ? 'object-contain' : 'object-cover object-top')}
+          loading="lazy"
+          draggable={false}
+          onLoad={(e) => setLandscape(e.currentTarget.naturalWidth > e.currentTarget.naturalHeight)}
+        />
       ) : (
         <div
           className={cx(

@@ -3,6 +3,7 @@ import { GripVertical, ListPlus, MoreVertical, Plus, Search, Trash2, X } from 'l
 import { useRef, useState } from 'react'
 import { db } from '../db/db'
 import type { Song } from '../db/schema'
+import { useTerms } from '../library/browse/terms'
 import { useSettings } from '../state/settings'
 import { useViewer } from '../state/viewer'
 import { cx, Input, Menu, toast, useMenu } from '../ui/primitives'
@@ -18,6 +19,7 @@ export function SetlistPanel(_props: PanelProps) {
   const index = useViewer((v) => v.index)
   const setlistId = useViewer((v) => v.setlistId)
   const locked = useSettings((st) => st.s.display.performanceLock)
+  const terms = useTerms()
   const setlist = useLiveQuery(() => (setlistId ? db.setlists.get(setlistId) : undefined), [setlistId])
   const songs = useLiveQuery(async () => {
     const list = await db.songs.bulkGet(queue)
@@ -69,7 +71,7 @@ export function SetlistPanel(_props: PanelProps) {
               {next.keys[0] && <span className="text-white/45"> · {next.keys[0]}</span>}
             </>
           ) : (
-            'Last song'
+            `Last ${terms.song}`
           )}
         </div>
       </div>
@@ -102,7 +104,7 @@ export function SetlistPanel(_props: PanelProps) {
               onPlayNext={() => guard() && apply(reorderQueue(queue, index, r.qi, r.qi < index ? index : index + 1))}
               onRemove={() => {
                 if (!guard()) return
-                if (r.qi === index) return toast("Can't remove the song that's playing")
+                if (r.qi === index) return toast(`Can't remove the ${terms.song} that's playing`)
                 apply(removeFromQueue(queue, index, r.qi))
               }}
             />
@@ -123,7 +125,7 @@ export function SetlistPanel(_props: PanelProps) {
         />
       ) : (
         <button className="mx-2 flex min-h-11 w-[calc(100%-1rem)] items-center justify-center gap-2 rounded-xl border border-dashed border-white/15 text-sm text-white/70 hover:bg-white/5" onClick={() => guard() && setAdding(true)}>
-          <Plus className="size-4" /> Add a song for this performance
+          <Plus className="size-4" /> Add a {terms.song} for this performance
         </button>
       )}
       <p className="mx-2 text-xs text-white/40">Changes here only affect this performance{setlist ? ', not the saved setlist' : ''}.</p>
@@ -157,6 +159,7 @@ function QueueRow({
   onRemove: () => void
 }) {
   const menu = useMenu()
+  const terms = useTerms()
   return (
     <li
       style={{ height: ROW_H, ...style }}
@@ -172,7 +175,7 @@ function QueueRow({
           <span className="block truncate text-xs text-white/45">{[song?.artists[0], song?.keys[0], note].filter(Boolean).join(' · ')}</span>
         </span>
       </button>
-      <button ref={menu.ref} onClick={menu.toggle} aria-label="Song options" className="flex size-11 shrink-0 items-center justify-center rounded-xl text-white/50 hover:bg-white/10">
+      <button ref={menu.ref} onClick={menu.toggle} aria-label={`${terms.Song} options`} className="flex size-11 shrink-0 items-center justify-center rounded-xl text-white/50 hover:bg-white/10">
         <MoreVertical className="size-4" />
       </button>
       <Menu
@@ -190,6 +193,7 @@ function QueueRow({
 
 function AddSong({ onAdd, onClose }: { onAdd: (id: string, where: 'next' | 'end') => void; onClose: () => void }) {
   const [q, setQ] = useState('')
+  const terms = useTerms()
   const inputRef = useRef<HTMLInputElement>(null)
   const results = useLiveQuery(async () => {
     const t = q.trim().toLowerCase()
@@ -203,7 +207,7 @@ function AddSong({ onAdd, onClose }: { onAdd: (id: string, where: 'next' | 'end'
     <div className="mx-2 rounded-2xl border border-white/10 bg-white/[0.03] p-2">
       <div className="relative">
         <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-white/40" />
-        <Input ref={inputRef} autoFocus value={q} onChange={(e) => setQ(e.target.value)} placeholder="Find a song…" className="!bg-white/5 pl-9 pr-10" aria-label="Find a song" />
+        <Input ref={inputRef} autoFocus value={q} onChange={(e) => setQ(e.target.value)} placeholder={`Find a ${terms.song}…`} className="!bg-white/5 pl-9 pr-10" aria-label={`Find a ${terms.song}`} />
         <button className="absolute right-1 top-1/2 flex size-8 -translate-y-1/2 items-center justify-center rounded-lg text-white/50 hover:bg-white/10" aria-label="Close search" onClick={onClose}>
           <X className="size-4" />
         </button>
@@ -223,7 +227,7 @@ function AddSong({ onAdd, onClose }: { onAdd: (id: string, where: 'next' | 'end'
             </button>
           </li>
         ))}
-        {q.trim() && results?.length === 0 && <li className="px-2 py-3 text-sm text-white/45">No songs found</li>}
+        {q.trim() && results?.length === 0 && <li className="px-2 py-3 text-sm text-white/45">No {terms.songs} found</li>}
       </ul>
     </div>
   )

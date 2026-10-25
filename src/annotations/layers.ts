@@ -34,9 +34,16 @@ export function isVisible(it: Annotation, layers: SongLayers): boolean {
   return !l || l.visible
 }
 
-async function mutate(songId: string, fn: (v: SongLayers) => SongLayers) {
-  const v = await getLayers(songId)
-  await saveLayers(songId, normalizeLayers(fn(v)))
+let mutating: Promise<void> = Promise.resolve()
+
+/** Read-modify-write of a song's layers, one at a time (a quick undo + redo must not interleave). */
+function mutate(songId: string, fn: (v: SongLayers) => SongLayers): Promise<void> {
+  const run = mutating.then(async () => {
+    const v = await getLayers(songId)
+    await saveLayers(songId, normalizeLayers(fn(v)))
+  })
+  mutating = run.catch(() => {})
+  return run
 }
 
 export function nextLayerName(layers: Layer[]): string {
@@ -48,6 +55,7 @@ export function nextLayerName(layers: Layer[]): string {
 
 export async function addLayer(songId: string, name?: string): Promise<string> {
   const id = uid()
+  // Appended: later in the list draws on top (the Layers popover shows the list reversed).
   await mutate(songId, (v) => ({ layers: [...v.layers, { id, name: name?.trim() || nextLayerName(v.layers), visible: true }], current: id }))
   return id
 }
@@ -61,6 +69,7 @@ export const setLayerVisible = (songId: string, id: string, visible: boolean) =>
 export const setCurrentLayer = (songId: string, id: string) =>
   mutate(songId, (v) => ({ layers: v.layers.map((l) => (l.id === id ? { ...l, visible: true } : l)), current: id }))
 
+/** Move a layer in the stored list: +1 = later = drawn above the next layer ("up" in the popover). */
 export const moveLayer = (songId: string, id: string, dir: -1 | 1) =>
   mutate(songId, (v) => {
     const i = v.layers.findIndex((l) => l.id === id)
@@ -77,19 +86,34 @@ export async function countLayerItems(songId: string, id: string): Promise<numbe
   return keys.reduce((n, k) => n + getItems(k).filter((i) => i.layer === id).length, 0)
 }
 
-/** Delete a layer and its annotations (the annotation removal is undoable). */
+const withoutLayer = (v: SongLayers, id: string): SongLayers => {
+  if (v.layers.length <= 1) return v
+  const layers = v.layers.filter((l) => l.id !== id)
+  return { layers, current: v.current === id ? layers[0].id : v.current }
+}
+
+/** Delete a layer and its annotations, as one undo step. */
 export async function deleteLayer(songId: string, id: string) {
   const v = await getLayers(songId)
-  if (v.layers.length <= 1) return
+  const index = v.layers.findIndex((l) => l.id === id)
+  if (v.layers.length <= 1 || index < 0) return
+  const layer = v.layers[index]
+  const wasCurrent = v.current === id
   const keys = await loadSong(songId)
   const changes: PageChange[] = []
   for (const key of keys) {
     const before = getItems(key)
     if (before.some((i) => i.layer === id)) changes.push({ key, before, after: before.filter((i) => i.layer !== id) })
   }
-  if (changes.length) commit('Delete layer', changes)
-  const layers = v.layers.filter((l) => l.id !== id)
-  await saveLayers(songId, { layers, current: v.current === id ? layers[0].id : v.current })
+  // Undo puts the layer back where it was in the list as it is then (layers may have changed since).
+  const restore = (cur: SongLayers): SongLayers => {
+    if (cur.layers.some((l) => l.id === id)) return cur
+    const layers = cur.layers.slice()
+    layers.splice(Math.min(index, layers.length), 0, layer)
+    return { layers, current: wasCurrent ? id : cur.current }
+  }
+  commit('Delete layer', changes, { undo: () => void mutate(songId, restore), redo: () => void mutate(songId, (cur) => withoutLayer(cur, id)) })
+  await mutate(songId, (cur) => withoutLayer(cur, id))
 }
 
 /**

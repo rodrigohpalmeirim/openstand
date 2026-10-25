@@ -1,7 +1,7 @@
 /** Placeholders for files that synced as references but whose data hasn't arrived yet. */
 import { CloudDownload, CloudOff, FileX, Hourglass } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { prioritizeSongs, type BlobState } from '../api'
+import { prioritizeSongs, useLibSync, type BlobState } from '../api'
 import { cx } from '../../ui/primitives'
 import { useBlobRaw, useBlobReady } from './client'
 import { pendingCaption } from './format'
@@ -25,6 +25,7 @@ export function BlobPending({
   onReady?: () => void
 }) {
   const raw = useBlobRaw(blobId)
+  const synced = useLibSync((s) => s.configured)
   const b: BlobState = raw ?? { state: 'queued' }
   // `local` as the first known state means the data is there under another id (or sync is off), so the
   // caller's retry would fail again: show "missing" and don't loop on onReady.
@@ -64,7 +65,9 @@ export function BlobPending({
         {offline
           ? 'Not downloaded yet. Connect to the internet to get it.'
           : missing
-            ? 'This file isn’t on this device yet, and no synced device has uploaded it.'
+            ? synced
+              ? 'This file isn’t on this device yet, and no synced device has uploaded it.'
+              : 'This file is missing. Re-add it in the song editor.'
             : waiting
             ? 'Waiting for the device that added this file to upload it.'
             : `Downloading this file…${pct !== undefined ? ` ${pct}%` : ''}`}

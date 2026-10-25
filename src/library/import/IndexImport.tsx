@@ -265,7 +265,7 @@ export function IndexImport({ onDone, onCancel }: { onDone: (r: ImportResult) =>
           </Section>
         </aside>
       </div>
-      <footer className="flex shrink-0 items-center justify-end gap-2 border-t border-line px-3 py-2.5 sm:px-4" style={{ paddingBottom: 'max(0.625rem, env(safe-area-inset-bottom))' }}>
+      <footer data-bottom-bar className="flex shrink-0 items-center justify-end gap-2 border-t border-line px-3 py-2.5 sm:px-4" style={{ paddingBottom: 'max(0.625rem, env(safe-area-inset-bottom))' }}>
         {busy && entries.length > 0 && <span className="mr-auto text-xs text-muted">{busy}</span>}
         <Button variant="ghost" onClick={onCancel}>
           Cancel

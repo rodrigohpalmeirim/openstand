@@ -282,6 +282,8 @@ export interface Controls {
   pause: boolean
   /** "Re-check files". */
   recheck: boolean
+  /** "Reset sync…" (it deletes the synced copy first: nothing to reset once it's gone). */
+  reset: boolean
   /** "Delete synced data from storage…". */
   deleteRemote: boolean
   /** Renaming this device (rewrites its record in the library). */
@@ -293,7 +295,7 @@ export interface Controls {
  * banner's actions are the only way on: syncing can't succeed, and a pairing code would point other
  * devices at a deleted library or one this device can't read.
  */
-export function controls(s: LibSyncStatus): Controls {
+export function controls(s: LibSyncStatus, online = typeof navigator === 'undefined' || navigator.onLine !== false): Controls {
   const code = s.phase === 'error' ? s.error?.code : undefined
   // The library is deleted, or this code doesn't open it.
   const gone = code === 'libraryGone' || code === 'wrongSecret'
@@ -301,8 +303,15 @@ export function controls(s: LibSyncStatus): Controls {
   const broken = gone || code === 'rejoin' || code === 'corrupt'
   // Cloud drives: nothing reaches the storage until this device signs in (again, or as the right account).
   const signedOut = code === 'reauth' || code === 'wrongAccount'
+  // Offline because the storage didn't answer (the device is online): "Sync now" is the retry.
   const syncNowOff =
-    s.phase === 'paused' ? 'Sync is paused.' : s.phase === 'starting' ? 'Sync is starting.' : undefined
+    s.phase === 'paused'
+      ? 'Sync is paused.'
+      : s.phase === 'starting'
+        ? 'Sync is starting.'
+        : s.phase === 'offline' && !online
+          ? 'This device is offline.'
+          : undefined
   return {
     // A newer OpenStand elsewhere: only reloading helps.
     syncNow: !broken && !signedOut && code !== 'newerFormat',
@@ -311,6 +320,7 @@ export function controls(s: LibSyncStatus): Controls {
     storageKeys: !gone,
     pause: !broken,
     recheck: !broken && !signedOut,
+    reset: !gone,
     deleteRemote: code !== 'libraryGone',
     rename: !broken,
   }

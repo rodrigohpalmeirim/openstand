@@ -2,6 +2,7 @@ import { AudioLines, FilePlus2, MoreVertical, Pause, Play, Repeat, RotateCcw, Ro
 import { useRef } from 'react'
 import { putBlob, uid, updateSong } from '../db/db'
 import type { AudioTrack } from '../db/schema'
+import { useTerms } from '../library/browse/terms'
 import { useSettings } from '../state/settings'
 import { confirmDialog, cx, Menu, promptDialog, Slider, toast, Toggle, useMenu } from '../ui/primitives'
 import type { PanelProps } from '../viewer/panels'
@@ -18,6 +19,7 @@ export function AudioPanel({ song }: PanelProps) {
   const prefs = useSettings((st) => st.s.audio)
   const setIn = useSettings((st) => st.setIn)
   const fileRef = useRef<HTMLInputElement>(null)
+  const terms = useTerms()
   const current = song.audio.find((t) => t.id === a.trackId)
   const saveTracks = (audio: AudioTrack[]) => updateSong(song.id, { audio })
 
@@ -37,7 +39,7 @@ export function AudioPanel({ song }: PanelProps) {
       {/* Transport */}
       <section className="rounded-2xl border border-white/10 bg-white/[0.03] p-3">
         <div className="mb-1 flex items-baseline justify-between gap-2 text-sm">
-          <span className="min-w-0 truncate font-medium">{current?.name ?? (song.audio.length ? 'Choose a track' : 'No tracks')}</span>
+          <span className="min-w-0 truncate font-medium">{current?.name ?? (a.trackId ? a.trackName || `Track from previous ${terms.song}` : song.audio.length ? 'Choose a track' : 'No tracks')}</span>
           <span className="shrink-0 text-xs tabular-nums text-white/55">
             {fmtTime(a.time)} / {fmtTime(a.duration)}
           </span>
@@ -93,7 +95,7 @@ export function AudioPanel({ song }: PanelProps) {
         {song.audio.length === 0 ? (
           <div className="flex flex-col items-center gap-2 py-8 text-center text-sm text-white/50">
             <AudioLines className="size-8 text-white/25" />
-            Add a backing track or reference recording to play along with this song.
+            Add a backing track or reference recording to play along with this {terms.song}.
           </div>
         ) : (
           <ul className="-mx-1">
@@ -121,10 +123,10 @@ export function AudioPanel({ song }: PanelProps) {
           <Row label="Mini player on screen">
             <Toggle checked={visible} onChange={(v) => useTools.setState({ playerVisible: v })} />
           </Row>
-          <Row label="Show player when a song with audio opens">
+          <Row label={`Show player when a ${terms.song} with audio opens`}>
             <Toggle checked={prefs.showPlayerOnLoad} onChange={(v) => setIn('audio', { showPlayerOnLoad: v })} />
           </Row>
-          <Row label="Keep playing on next song">
+          <Row label={`Keep playing on next ${terms.song}`}>
             <Toggle checked={prefs.keepPlayingAcrossSongs} onChange={(v) => setIn('audio', { keepPlayingAcrossSongs: v })} />
           </Row>
         </div>
@@ -135,6 +137,7 @@ export function AudioPanel({ song }: PanelProps) {
 
 function TrackRow({ t, active, playing, onPlay, onChange, onDelete }: { t: AudioTrack; active: boolean; playing: boolean; onPlay: () => void; onChange: (p: Partial<AudioTrack>) => void; onDelete: () => void }) {
   const menu = useMenu()
+  const terms = useTerms()
   return (
     <li className={cx('flex items-center gap-1 rounded-xl', active && 'bg-[var(--os-accent)]/15')}>
       <button className="flex min-h-12 min-w-0 flex-1 items-center gap-3 rounded-xl px-3 text-left hover:bg-white/5" onClick={onPlay} aria-label={`${playing ? 'Pause' : 'Play'} ${t.name}`}>
@@ -156,7 +159,7 @@ function TrackRow({ t, active, playing, onPlay, onChange, onDelete }: { t: Audio
         open={menu.open}
         onClose={menu.close}
         items={[
-          { label: 'Play when song opens', checked: !!t.autoPlay, onSelect: () => onChange({ autoPlay: !t.autoPlay }) },
+          { label: `Play when ${terms.song} opens`, checked: !!t.autoPlay, onSelect: () => onChange({ autoPlay: !t.autoPlay }) },
           {
             label: 'Rename',
             onSelect: async () => {

@@ -21,6 +21,7 @@ function Loading({ dark }: { dark?: boolean }) {
   )
 }
 
+/** Follows the theme setting. public/theme-boot.js applies the saved one before the bundle loads. */
 function useTheme() {
   const theme = useSettings((s) => s.s.theme)
   useEffect(() => {

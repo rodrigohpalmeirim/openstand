@@ -1,15 +1,18 @@
-import { Pause, Square } from 'lucide-react'
+import { Play, Square } from 'lucide-react'
 import { useEffect, useRef } from 'react'
 import type { Song } from '../../db/schema'
+import { terms } from '../../library/browse/terms'
 import { settings, useSettings } from '../../state/settings'
 import { useViewer } from '../../state/viewer'
-import { toast } from '../../ui/primitives'
+import { cx, toast } from '../../ui/primitives'
 import { viewerApi, ZOOM_PREVIEW_ATTR } from '../../viewer/api'
 import type { Stop } from '../../viewer/layout'
 import { stopAutoScroll, useTools } from '../store'
 import { songAutoScroll } from './config'
 import { pageSpeed, scrollSeconds, stripSpeed, turnInterval } from './math'
 
+/** Set while a run is paused by touch: resumes it at once (the "Paused" pill). */
+let resumeNow: (() => void) | null = null
 
 /**
  * Auto-scroll engine (runs while `useViewer.autoScrollOn`).
@@ -36,15 +39,19 @@ export function AutoScroller({ song, stops, pos, paged }: { song: Song; stops: S
       setScroll({ phase: 'idle', progress: 0, countdown: 0 })
       return
     }
-    // Read the song through the ref: saving unrelated fields must not restart the run.
-    const cur = live.current.song
-    const s = songAutoScroll(cur)
-    const seconds = scrollSeconds(cur.duration, s.delay)
-    const skip = useTools.getState().skipScrollDelay
+    // Read the song through the ref: saving unrelated fields must not restart the run. Speed and timing
+    // are re-read every frame, so changing them in the panel applies to the running scroll.
+    const config = () => {
+      const s = songAutoScroll(live.current.song)
+      return { s, seconds: scrollSeconds(live.current.song.duration, s.delay) }
+    }
+    const api0 = viewerApi()
+    // The start delay is for the top of the song; restarting part-way through goes at once.
+    const midSong = live.current.pos > 0 || (api0?.currentPage ?? 0) > 0 || (api0?.scroller?.scrollTop ?? 0) > 2
+    const skip = useTools.getState().skipScrollDelay || midSong
     useTools.setState({ skipScrollDelay: false })
     let last = performance.now()
-    let startAt = last + (skip ? 0 : Math.max(0, s.delay) * 1000)
-    if (!skip && s.delay >= 1) toast(`Auto-scroll starts in ${Math.round(s.delay)} s`)
+    let startAt = last + (skip ? 0 : Math.max(0, config().s.delay) * 1000)
     let acc: number | null = null
     let waitUntil = 0
     let nextTurnAt = 0
@@ -56,6 +63,7 @@ export function AutoScroller({ song, stops, pos, paged }: { song: Song; stops: S
     const finish = () => {
       setScroll({ phase: 'done', progress: 1 })
       stopAutoScroll()
+      toast(`Auto-scroll reached the end of the ${terms(settings()).song}`)
     }
 
     const frame = (now: number) => {
@@ -85,6 +93,7 @@ export function AutoScroller({ song, stops, pos, paged }: { song: Song; stops: S
         setScroll({ phase: 'paused' })
         return
       }
+      const { s, seconds } = config()
       const factor = useTools.getState().scrollFactor
       const el = api.scroller
       const scrollable = !!el && api.mode !== 'horizontalScroll' && api.canScroll()
@@ -144,7 +153,12 @@ export function AutoScroller({ song, stops, pos, paged }: { song: Song; stops: S
     window.addEventListener('pointerdown', onDown, true)
     window.addEventListener('pointerup', onUp, true)
     window.addEventListener('pointercancel', onUp, true)
+    resumeNow = () => {
+      touching = false
+      holdUntil = 0
+    }
     return () => {
+      resumeNow = null
       cancelAnimationFrame(raf)
       window.removeEventListener('pointerdown', onDown, true)
       window.removeEventListener('pointerup', onUp, true)
@@ -158,6 +172,7 @@ export function AutoScroller({ song, stops, pos, paged }: { song: Song; stops: S
 function ScrollIndicator() {
   const on = useViewer((v) => v.autoScrollOn)
   const toolbar = useViewer((v) => v.toolbar || v.annotating)
+  const panel = useViewer((v) => !!v.panel)
   const show = useSettings((st) => st.s.autoScroll.showProgress)
   const scroll = useTools((t) => t.scroll)
   const factor = useTools((t) => t.scrollFactor)
@@ -172,16 +187,20 @@ function ScrollIndicator() {
       {(scroll.phase === 'delay' || scroll.phase === 'paused' || toolbar) && (
         <button
           type="button"
-          onClick={stopAutoScroll}
-          className="absolute right-3 z-20 flex items-center gap-2 rounded-full bg-black/70 px-3 py-1.5 text-xs font-medium text-white shadow-lg backdrop-blur transition hover:bg-black/85"
+          onClick={scroll.phase === 'paused' && resumeNow ? resumeNow : stopAutoScroll}
+          // Left of an open side panel, not under it.
+          className={cx(
+            'absolute right-3 z-20 flex items-center gap-2 rounded-full bg-black/70 px-3 py-1.5 text-xs font-medium text-white shadow-lg backdrop-blur transition hover:bg-black/85',
+            panel && 'sm:right-[25.25rem]',
+          )}
           style={{ top: toolbar ? 64 : 10 }}
-          aria-label="Stop auto-scroll"
+          aria-label={scroll.phase === 'paused' ? 'Resume auto-scroll' : 'Stop auto-scroll'}
         >
-          {scroll.phase === 'paused' ? <Pause className="size-3.5" /> : <Square className="size-3 fill-current" />}
+          {scroll.phase === 'paused' ? <Play className="size-3.5 fill-current" /> : <Square className="size-3 fill-current" />}
           {scroll.phase === 'delay'
             ? `Scrolling in ${scroll.countdown}`
             : scroll.phase === 'paused'
-              ? 'Paused'
+              ? 'Paused · resume'
               : `Auto-scroll${scroll.timed ? ' (page turns)' : ''}${factor !== 1 ? ` · ${Math.round(factor * 100)}%` : ''}`}
         </button>
       )}

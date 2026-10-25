@@ -1,9 +1,11 @@
 import { useLiveQuery } from 'dexie-react-hooks'
 import { AudioLines, FileStack, ListChecks, MoreHorizontal, NotebookPen, SlidersVertical } from 'lucide-react'
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { db, pruneAnnotations, uid } from '../../db/db'
 import { emptySong, type Song } from '../../db/schema'
+import { isDurationText } from '../../files/import'
 import { MidiCommandsEditor } from '../../midi/MidiCommandsEditor'
+import { applyTempoEdit } from '../../tools/metronome/tempo'
 import { rebaseOnLatest } from '../../libsync/state'
 import { Button, confirmDialog, cx, Dialog, Menu, Textarea, toast, useMenu } from '../../ui/primitives'
 import { useTerms } from '../browse/terms'
@@ -64,6 +66,8 @@ export function SongEditor({
   const [base, setBase] = useState<Song | null>(null)
   const [tab, setTab] = useState<EditorTab>(initialTab)
   const [titleError, setTitleError] = useState<string>()
+  // Duration as typed, while it differs from the stored value (invalid text blocks saving).
+  const [durationText, setDurationText] = useState<string | null>(null)
   const [sub, setSub] = useState<null | { kind: 'order' } | { kind: 'crop'; index: number }>(null)
   const [guard, setGuard] = useState<null | (() => void)>(null)
   const [saving, setSaving] = useState(false)
@@ -81,6 +85,7 @@ export function SongEditor({
       setDraft(structuredClone(s))
       setBase(s)
       setTitleError(undefined)
+      setDurationText(null)
     })()
     return () => {
       alive = false
@@ -102,7 +107,8 @@ export function SongEditor({
   }, [])
 
   const original = useMemo(() => fingerprint(base), [base])
-  const dirty = !!draft && fingerprint(draft) !== original
+  const durationBad = durationText !== null && !isDurationText(durationText)
+  const dirty = !!draft && (fingerprint(draft) !== original || durationBad)
 
   useEffect(() => {
     if (!dirty) return
@@ -120,17 +126,23 @@ export function SongEditor({
       requestAnimationFrame(() => titleRef.current?.focus())
       return null
     }
+    if (durationBad) {
+      setTab('fields')
+      requestAnimationFrame(() => document.getElementById('se-duration')?.focus())
+      return null
+    }
     setSaving(true)
     try {
       const now = Date.now()
-      let s: Song = {
+      // An edited Tempo replaces a metronome BPM saved by older versions (which would otherwise win).
+      let s: Song = applyTempoEdit(base ?? undefined, {
         ...draft,
         title,
         sortTitle: draft.sortTitle?.trim() || undefined,
         pageOrder: draft.pageOrder ? normalizePageOrder(draft.pageOrder, draft.files) : undefined,
         pageSettings: tidySettings(draft.pageSettings),
         modifiedAt: now,
-      }
+      })
       if (opts.asNew) Object.assign(s, { id: uid(), createdAt: now, playCount: 0, lastPlayedAt: undefined })
       else if (base && !isNew) {
         // The draft may be minutes old: apply only the user's changes to the song as stored now, so
@@ -145,7 +157,12 @@ export function SongEditor({
           if (!again) return null
         } else s = latest
       }
+      // Annotations are stored relative to the turned page: turn those of pages whose rotation changed.
+      const prev = opts.asNew || isNew ? undefined : await db.songs.get(s.id)
       await db.songs.put(s)
+      const ps = s.pageSettings
+      if (prev && Object.keys({ ...prev.pageSettings, ...ps }).some((k) => (prev.pageSettings[k]?.rotation ?? 0) !== (ps[k]?.rotation ?? 0)))
+        await import('../../annotations/rotate').then((m) => m.rotateAnnotations(s.id, s.files, prev.pageSettings, ps))
       clearGroupValueCache()
       setBase(s)
       setDraft(s)
@@ -188,11 +205,18 @@ export function SongEditor({
     }
   }
 
+  // Ctrl/Cmd+S: fields such as the chip inputs commit typed text on blur, so blur first and save once React
+  // has applied that (through a ref, as this render's closure still holds the old draft).
+  const saveAndCloseRef = useRef(saveAndClose)
+  useLayoutEffect(() => {
+    saveAndCloseRef.current = saveAndClose
+  })
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's' && !sub && !guard) {
         e.preventDefault()
-        void saveAndClose()
+        if (document.activeElement instanceof HTMLElement) document.activeElement.blur()
+        setTimeout(() => void saveAndCloseRef.current())
       }
     }
     window.addEventListener('keydown', onKey)
@@ -238,7 +262,14 @@ export function SongEditor({
                       }
                     },
                   },
-                  { label: 'Discard changes', disabled: !dirty, onSelect: () => base && setDraft(structuredClone(base)) },
+                  {
+                    label: 'Discard changes',
+                    disabled: !dirty,
+                    onSelect: () => {
+                      if (base) setDraft(structuredClone(base))
+                      setDurationText(null)
+                    },
+                  },
                 ]}
               />
             </>
@@ -261,7 +292,7 @@ export function SongEditor({
           </>
         }
       >
-        <nav className="flex shrink-0 gap-1 overflow-x-auto border-b border-line px-2 sm:px-4" role="tablist" aria-label="Song editor sections">
+        <nav className="flex shrink-0 gap-1 overflow-x-auto border-b border-line px-2 sm:px-4" role="tablist" aria-label={`${t.Song} editor sections`}>
           {TABS.map((t) => {
             const count = draft ? (t.id === 'files' ? draft.files.length : t.id === 'audio' ? draft.audio.length : t.id === 'midi' ? draft.midiOnLoad.length : 0) : 0
             return (
@@ -280,7 +311,7 @@ export function SongEditor({
                 <t.icon className="hidden size-4 sm:block" />
                 {t.label}
                 {count > 0 && <span className="rounded-full bg-surface-2 px-1.5 text-[11px] tabular-nums text-muted">{count}</span>}
-                {t.id === 'fields' && titleError && <span className="size-2 rounded-full bg-danger" aria-label="has errors" />}
+                {t.id === 'fields' && (titleError || durationBad) && <span className="size-2 rounded-full bg-danger" aria-label="has errors" />}
                 {tab === t.id && <span className="absolute inset-x-2 bottom-0 h-0.5 rounded-full bg-accent" />}
               </button>
             )
@@ -292,7 +323,7 @@ export function SongEditor({
           ) : !draft ? (
             <div className="p-8 text-center text-sm text-muted">Loading…</div>
           ) : tab === 'fields' ? (
-            <FieldsTab song={draft} update={update} titleError={titleError} titleRef={titleRef} />
+            <FieldsTab song={draft} update={update} titleError={titleError} titleRef={titleRef} durationText={durationText} onDurationText={setDurationText} />
           ) : tab === 'files' ? (
             <FilesTab song={draft} update={update} onPageOrder={() => setSub({ kind: 'order' })} onCrop={(index) => setSub({ kind: 'crop', index })} />
           ) : tab === 'audio' ? (
@@ -309,7 +340,7 @@ export function SongEditor({
           ) : (
             <div className="mx-auto flex h-full max-w-3xl flex-col gap-2 p-4 sm:p-6">
               <label htmlFor="se-notes" className="text-xs font-medium uppercase tracking-wide text-muted">
-                Song notes
+                {t.Song} notes
               </label>
               <Textarea
                 id="se-notes"
@@ -363,6 +394,7 @@ export function SongEditor({
                 const then = guard
                 setGuard(null)
                 setBase(draft)
+                setDurationText(null)
                 then?.()
               }}
             >

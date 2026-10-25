@@ -1,6 +1,6 @@
 import { act, cleanup, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { BlobState } from '../api'
+import { useLibSync, type BlobState } from '../api'
 import { BlobPending, PendingThumb } from './BlobPending'
 import { useMockBlobs } from './client'
 
@@ -35,7 +35,11 @@ describe('BlobPending', () => {
     const onReady = vi.fn()
     render(<BlobPending blobId="b1" onReady={onReady} />)
     expect(onReady).not.toHaveBeenCalled()
+    // Without library sync (a backup that lacked the file) there's nothing to wait for.
+    expect(screen.getByRole('status').textContent).toBe('This file is missing. Re-add it in the song editor.')
+    act(() => useLibSync.setState({ configured: true }))
     expect(screen.getByRole('status').textContent).toMatch(/isn’t on this device yet/)
+    act(() => useLibSync.setState({ configured: false }))
   })
 })
 

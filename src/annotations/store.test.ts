@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import { db } from '../db/db'
 import type { Annotation, StrokeAnnotation } from '../db/schema'
-import { cycleLayer, deleteLayer, getLayers, addLayer } from './layers'
-import { annotationsToSVG } from './render'
-import { commit, flush, getItems, load, pageKey, parseKey, redo, remoteChanged, resetHistory, setItems, undo, update, useAnnotHistory } from './store'
+import { cycleLayer, deleteLayer, getLayers, addLayer, moveLayer, setCurrentLayer } from './layers'
+import { annotationsToSVG, sortByLayer, visibleItems } from './render'
+import { commit, flush, getItems, load, pageKey, parseKey, redo, remoteChanged, replacePage, resetHistory, setItems, undo, update, useAnnotHistory } from './store'
 
 const mk = (id: string, layer = 'default', type: 'pen' | 'highlighter' = 'pen'): StrokeAnnotation => ({
   id,
@@ -19,6 +19,9 @@ const mk = (id: string, layer = 'default', type: 'pen' | 'highlighter' = 'pen'):
     { x: 0.3, y: 0.2 },
   ],
 })
+
+/** Let async undo side effects (layer list writes) finish. */
+const settle = () => new Promise((r) => setTimeout(r, 50))
 
 describe('keys', () => {
   it('round-trips page keys', () => {
@@ -96,6 +99,9 @@ describe('layers', () => {
     update(k, 'x', () => [mk('keep'), mk('gone', id)])
     await flush()
 
+    // New layers are appended (later = drawn on top), as older builds do.
+    expect(L.layers.map((l) => l.name)).toEqual(['Default', 'Fingering'])
+
     // Performance cycling: solo each layer, then all.
     expect(await cycleLayer(songId, 1, false)).toBe('Layer: Default')
     L = await getLayers(songId)
@@ -108,9 +114,78 @@ describe('layers', () => {
     L = await getLayers(songId)
     expect(L.layers).toHaveLength(1)
     expect(L.current).toBe('default')
-    // Annotation removal is undoable.
-    undo()
-    expect(getItems(k)).toHaveLength(2)
+  })
+
+  it('undoing "Delete layer" brings back the layer with its annotations', async () => {
+    resetHistory()
+    const songId = 'layer-undo'
+    const a = await addLayer(songId, 'A')
+    const b = await addLayer(songId, 'B')
+    await setCurrentLayer(songId, a)
+    const k = pageKey(songId, 'f', 0)
+    await load(k)
+    update(k, 'x', () => [mk('d'), mk('in-a', a), mk('in-b', b)])
+
+    await deleteLayer(songId, a)
+    expect(getItems(k).map((i) => i.id)).toEqual(['d', 'in-b'])
+    expect((await getLayers(songId)).layers.map((l) => l.name)).toEqual(['Default', 'B'])
+
+    expect(undo()).toBe('Delete layer')
+    expect(getItems(k).map((i) => i.id)).toEqual(['d', 'in-a', 'in-b'])
+    await settle()
+    let L = await getLayers(songId)
+    expect(L.layers.map((l) => l.name)).toEqual(['Default', 'A', 'B'])
+    expect(L.current).toBe(a)
+
+    expect(redo()).toBe('Delete layer')
+    await settle()
+    L = await getLayers(songId)
+    expect(L.layers.map((l) => l.name)).toEqual(['Default', 'B'])
+    expect(getItems(k).map((i) => i.id)).toEqual(['d', 'in-b'])
+  })
+
+  it('moves layers: +1 = later in the list = drawn higher', async () => {
+    const songId = 'layer-move'
+    const a = await addLayer(songId, 'A')
+    await moveLayer(songId, a, 1)
+    expect((await getLayers(songId)).layers.map((l) => l.name)).toEqual(['Default', 'A'])
+    await moveLayer(songId, a, -1)
+    expect((await getLayers(songId)).layers.map((l) => l.name)).toEqual(['A', 'Default'])
+  })
+
+  it('draws in layer order: later in the stored list on top, creation order within a layer', () => {
+    const layers = [
+      { id: 'off', name: 'Off', visible: false },
+      { id: 'default', name: 'Default', visible: true },
+      { id: 'top', name: 'Top', visible: true },
+    ]
+    const items = [mk('t1', 'top'), mk('d1'), mk('gone', 'deleted-layer'), mk('t2', 'top'), mk('d2'), mk('o', 'off')]
+    expect(sortByLayer(items, layers).map((i) => i.id)).toEqual(['gone', 'o', 'd1', 'd2', 't1', 't2'])
+    expect(visibleItems(items, layers).map((i) => i.id)).toEqual(['gone', 'd1', 'd2', 't1', 't2'])
+    const sorted = [mk('d1'), mk('t1', 'top')]
+    expect(sortByLayer(sorted, layers)).toBe(sorted)
+    const svg = annotationsToSVG([{ ...mk('t'), layer: 'top', color: '#aa0000' }, mk('d')], 100, 100, { layers })
+    expect(svg.indexOf('#123456')).toBeLessThan(svg.indexOf('#aa0000'))
+  })
+})
+
+describe('page rewrites outside the history', () => {
+  it('replacePage drops the page from undo steps and keeps other pages', async () => {
+    resetHistory()
+    const k1 = pageKey('rw', 'f', 0)
+    const k2 = pageKey('rw', 'f', 1)
+    await load(k1)
+    await load(k2)
+    update(k1, 'one', (items) => [...items, mk('a')])
+    commit('both', [
+      { key: k1, before: getItems(k1), after: [...getItems(k1), mk('b')] },
+      { key: k2, before: getItems(k2), after: [mk('c')] },
+    ])
+    replacePage(k1, [mk('a2'), mk('b2')]) // e.g. the page was rotated
+    expect(undo()).toBe('both')
+    expect(getItems(k1).map((i) => i.id)).toEqual(['a2', 'b2'])
+    expect(getItems(k2)).toEqual([])
+    expect(undo()).toBeUndefined() // 'one' only touched the rewritten page
   })
 })
 

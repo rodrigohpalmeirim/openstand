@@ -387,7 +387,7 @@ export const COMMAND_TYPES: { type: MidiMessageType; label: string; hint: string
   { type: 'start', label: 'MIDI start', hint: '' },
   { type: 'continue', label: 'MIDI continue', hint: '' },
   { type: 'stop', label: 'MIDI stop', hint: '' },
-  { type: 'clockStart', label: 'Start clock', hint: 'Sends timing clock at the song tempo' },
+  { type: 'clockStart', label: 'Start clock', hint: 'Sends timing clock at the metronome tempo' },
   { type: 'clockStop', label: 'Stop clock', hint: '' },
   { type: 'pause', label: 'Pause', hint: 'Wait before the next command' },
   { type: 'batch', label: 'Group', hint: 'Several commands as one' },

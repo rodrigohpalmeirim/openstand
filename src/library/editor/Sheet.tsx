@@ -84,7 +84,9 @@ export function Sheet({
         aria-labelledby={titleId}
         tabIndex={-1}
         className={cx(
-          'flex h-full w-full flex-col overflow-hidden shadow-2xl outline-none animate-pop-in sm:h-[min(92dvh,940px)] sm:rounded-2xl sm:border',
+          'flex h-full w-full flex-col overflow-hidden shadow-2xl outline-none animate-pop-in sm:rounded-2xl sm:border',
+          // Full-size sheets (the scanner) use the whole height, also on tall portrait tablets.
+          size === 'full' ? 'sm:h-[min(96dvh,calc(100dvh-2rem))]' : 'sm:h-[min(92dvh,940px)]',
           tone === 'dark' ? 'dark bg-[#121315] text-[#ecebe8] sm:border-white/10' : 'bg-surface text-fg sm:border-line',
           size === 'md' && 'sm:max-w-2xl',
           size === 'lg' && 'sm:max-w-5xl',
@@ -107,6 +109,7 @@ export function Sheet({
         <div className={cx('min-h-0 flex-1', bodyClassName ?? 'overflow-y-auto')}>{children}</div>
         {footer && (
           <footer
+            data-bottom-bar
             className="flex shrink-0 flex-wrap items-center justify-end gap-2 border-t border-line px-3 py-2.5 sm:px-4"
             style={{ paddingBottom: 'max(0.625rem, env(safe-area-inset-bottom))' }}
           >

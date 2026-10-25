@@ -1,6 +1,7 @@
 import { Play, Square } from 'lucide-react'
 import { updateSong } from '../db/db'
 import type { AutoScrollSettings } from '../db/schema'
+import { useTerms } from '../library/browse/terms'
 import { useSettings } from '../state/settings'
 import { useViewer } from '../state/viewer'
 import { Input, Segmented, Toggle } from '../ui/primitives'
@@ -11,7 +12,7 @@ import { DEFAULT_SONG_SECONDS } from './autoScroll/math'
 import { fmtTime } from './audio/player'
 import { stopAutoScroll, startAutoScroll, useTools } from './store'
 import { PanelBody, PanelButton, Row, ScopeLine, Section, Stepper } from './ui'
-import { parseClock } from './util'
+import { parseSongLength } from './util'
 
 /** Auto-scroll settings for the current song (shown as a tab of the metronome panel). */
 export function AutoScrollPanel({ song, paged, mode }: PanelProps) {
@@ -20,13 +21,14 @@ export function AutoScrollPanel({ song, paged, mode }: PanelProps) {
   const prefs = useSettings((st) => st.s.autoScroll)
   const on = useViewer((v) => v.autoScrollOn)
   const factor = useTools((t) => t.scrollFactor)
+  const terms = useTerms()
   const s = songAutoScroll(song)
   const save = (patch: Partial<AutoScrollSettings>) => void updateSong(song.id, { autoScroll: { ...song.autoScroll, ...patch } })
   const canScroll = viewerApi()?.canScroll() && mode !== 'horizontalScroll'
   const how = canScroll
     ? paged
       ? 'Scrolls down each page, pauses at the bottom, then turns the page.'
-      : 'Scrolls the whole song continuously.'
+      : `Scrolls the whole ${terms.song} continuously.`
     : 'This view fits whole pages, so pages turn on a timer instead of scrolling.'
 
   return (
@@ -43,22 +45,27 @@ export function AutoScrollPanel({ song, paged, mode }: PanelProps) {
           value={s.mode}
           onChange={(v) => save({ mode: v })}
           options={[
-            { value: 'duration', label: 'Song length' },
+            { value: 'duration', label: `${terms.Song} length` },
             { value: 'speed', label: 'Fixed speed' },
           ]}
         />
         <div className="mt-2 divide-y divide-white/10">
           {s.mode === 'duration' ? (
-            <Row label="Song length" hint={song.duration ? 'From the song details' : `Not set — using ${fmtTime(DEFAULT_SONG_SECONDS)}`}>
+            <Row label={`${terms.Song} length`} hint={`${song.duration ? `From the ${terms.song} details` : `Not set — using ${fmtTime(DEFAULT_SONG_SECONDS)}`} · m:ss`}>
               <Input
                 key={song.duration}
                 className="!h-10 !w-24 text-center tabular-nums"
                 defaultValue={song.duration ? fmtTime(song.duration) : ''}
                 placeholder={fmtTime(DEFAULT_SONG_SECONDS)}
-                aria-label="Song length (m:ss)"
+                aria-label={`${terms.Song} length (m:ss)`}
+                onKeyDown={(e) => e.key === 'Enter' && e.currentTarget.blur()}
                 onBlur={(e) => {
-                  const v = parseClock(e.target.value)
-                  if (v !== undefined && v !== song.duration) void updateSong(song.id, { duration: Math.round(v) })
+                  const v = parseSongLength(e.target.value)
+                  if (v === undefined) e.target.value = song.duration ? fmtTime(song.duration) : ''
+                  else {
+                    e.target.value = v ? fmtTime(v) : ''
+                    if (v !== song.duration) void updateSong(song.id, { duration: v })
+                  }
                 }}
               />
             </Row>
@@ -85,7 +92,7 @@ export function AutoScrollPanel({ song, paged, mode }: PanelProps) {
           <Row label="Pause at page end">
             <Stepper label="page end pause" min={0} max={30} value={s.pageDelay} onChange={(v) => save({ pageDelay: v })} format={(v) => `${v}s`} />
           </Row>
-          <Row label="Start when song opens">
+          <Row label={`Start when ${terms.song} opens`}>
             <Toggle checked={!!s.startOnLoad} onChange={(v) => save({ startOnLoad: v })} />
           </Row>
         </div>

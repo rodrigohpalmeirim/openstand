@@ -1,6 +1,7 @@
 /** Editing operations used by the toolbar, keyboard shortcuts and the page layer. */
 import { uid } from '../db/db'
 import type { Annotation, ImageAnnotation } from '../db/schema'
+import { terms } from '../library/browse/terms'
 import { settings, useSettings } from '../state/settings'
 import { bboxNorm, resizeItem, round, stretchY, translateItem, unionRect, type Vec } from './geometry'
 import { itemAnchor, snapDelta } from './grid'
@@ -28,17 +29,27 @@ export function patchToolConfig(patch: Partial<ToolConfig>, tool = settings().an
   useSettings.getState().setIn('annotations', { tools: { ...a.tools, [tool]: next }, recentColors })
 }
 
+const rememberColor = (color: string | undefined) => {
+  if (!color) return
+  const a = settings().annotations
+  useSettings.getState().setIn('annotations', { recentColors: pushRecent(a.recentColors, color) })
+}
+
 /**
- * Change style. With a selection, the selected items change (one undo step); otherwise the
- * current tool's settings do. `size` scales selected items proportionally.
+ * Change style. With a selection, the selected items change (one undo step); while re-editing an existing
+ * text, that text's own style does (saved with the text); otherwise the current tool's settings do.
+ * `size` scales selected items proportionally.
  */
 export function applyStyle(patch: Partial<ToolConfig>, opts: { sizeFrom?: number } = {}) {
   const sel = selectedItems()
-  if (!sel) return patchToolConfig(patch)
-  if (patch.color) {
-    const a = settings().annotations
-    useSettings.getState().setIn('annotations', { recentColors: pushRecent(a.recentColors, patch.color) })
+  if (!sel) {
+    const editing = useAnnotUI.getState().editing
+    if (!editing?.id) return patchToolConfig(patch)
+    rememberColor(patch.color)
+    useAnnotUI.setState({ editing: { ...editing, style: { ...editing.style, ...patch } } })
+    return
   }
+  rememberColor(patch.color)
   const ids = new Set(sel.items.map((i) => i.id))
   update(sel.key, 'Change style', (items) =>
     items.map((it) => {
@@ -201,7 +212,7 @@ export async function clearSong(songId: string): Promise<number> {
   const keys = await loadSong(songId)
   const changes: PageChange[] = keys.map((key) => ({ key, before: getItems(key), after: [] }))
   const n = changes.reduce((a, c) => a + c.before.length, 0)
-  if (n) commit('Clear song', changes)
+  if (n) commit(`Clear ${terms(settings()).song}`, changes)
   useAnnotUI.setState({ selection: null })
   return n
 }

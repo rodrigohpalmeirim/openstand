@@ -1,11 +1,14 @@
 import { db, uid, updateSong } from '../db/db'
 import type { LinkPoint, SmartButton, Song } from '../db/schema'
+import { terms } from '../library/browse/terms'
 import { sendCommands } from '../midi/midi'
+import { settings } from '../state/settings'
 import { currentSongId, useViewer } from '../state/viewer'
 import { toast } from '../ui/primitives'
 import { ACTIONS, runAction, type ActionId } from '../viewer/actions'
 import { goToPageWhenReady, viewerApi } from '../viewer/api'
 import { player } from './audio/player'
+import { songBpm } from './metronome/tempo'
 import { useTools, type PagePoint } from './store'
 import { openExternalUrl } from '../util/safeUrl'
 
@@ -67,7 +70,7 @@ export function describeButton(b: SmartButton, song?: Song): string {
     case 'page':
       return `Go to page ${(b.page ?? 0) + 1}`
     case 'song':
-      return 'Open song'
+      return `Open ${terms(settings()).song}`
     case 'audio':
       return `Play ${song?.audio.find((t) => t.id === b.trackId)?.name ?? 'audio'}`
     case 'midi':
@@ -92,13 +95,13 @@ export async function runSmartButton(song: Song, b: SmartButton) {
       return
     case 'audio': {
       const t = song.audio.find((x) => x.id === b.trackId) ?? song.audio[0]
-      if (!t) return toast('This song has no audio tracks')
+      if (!t) return toast(`This ${terms(settings()).song} has no audio tracks`)
       useTools.setState({ playerVisible: true })
       await player.load(song, t, { play: true, at: b.start ?? 0 })
       return
     }
     case 'midi':
-      if (b.midi?.length) await sendCommands(b.midi, { bpm: song.metronome?.bpm })
+      if (b.midi?.length) await sendCommands(b.midi, { bpm: songBpm(song) })
       return
     case 'url':
       // Synced/imported data: only http(s) may be opened (never javascript:, intent:, file:, app protocols).
@@ -110,7 +113,7 @@ export async function runSmartButton(song: Song, b: SmartButton) {
 /** Next/previous smart button in list order (for pedals). */
 export function stepSmartButton(song: Song, dir: 1 | -1) {
   const list = song.smartButtons ?? []
-  if (!list.length) return toast('This song has no smart buttons')
+  if (!list.length) return toast(`This ${terms(settings()).song} has no smart buttons`)
   const p = useTools.getState().buttonPointer
   const i = dir > 0 ? p : p - 2
   if (i < 0 || i >= list.length) return toast(dir > 0 ? 'No more smart buttons' : 'First smart button')

@@ -45,8 +45,9 @@ function TextField({
 }) {
   const id = useId()
   const desc = `${id}-d`
+  // content-start: beside a field showing an error, this one's input stays level with it.
   return (
-    <div className="grid gap-1.5">
+    <div className="grid content-start gap-1.5">
       <label htmlFor={id} className="text-xs font-medium uppercase tracking-wide text-muted">
         {label}
       </label>
@@ -215,16 +216,19 @@ export function CheckList({ check, checking, storage = 's3' }: { check?: Backend
   return (
     <ul className="grid gap-1.5" aria-live="polite" aria-busy={checking}>
       {steps.map((s) => (
-        <li key={s.id} className="flex items-center gap-2.5 text-sm">
+        <li key={s.id} className="flex items-start gap-2.5 text-sm">
           {s.ok ? (
-            <Check className="size-4 shrink-0 text-ok" aria-label="Passed" />
+            <Check className="mt-0.5 size-4 shrink-0 text-ok" aria-label="Passed" />
           ) : OPTIONAL_STEPS.includes(s.id) ? (
-            <CircleDashed className="size-4 shrink-0 text-faint" aria-label="Not supported" />
+            <CircleDashed className="mt-0.5 size-4 shrink-0 text-faint" aria-label="Not supported" />
           ) : (
-            <CircleAlert className="size-4 shrink-0 text-danger" aria-label="Failed" />
+            <CircleAlert className="mt-0.5 size-4 shrink-0 text-danger" aria-label="Failed" />
           )}
-          <span className={cx(!s.ok && !OPTIONAL_STEPS.includes(s.id) && 'font-medium')}>{checkLabel(s.id, storage)}</span>
-          {s.detail && !s.ok && <span className="truncate text-xs text-muted">{s.detail}</span>}
+          {/* A storage's error text can be long (a URL, a whole message): it wraps instead of overflowing. */}
+          <span className="min-w-0">
+            <span className={cx(!s.ok && !OPTIONAL_STEPS.includes(s.id) && 'font-medium')}>{checkLabel(s.id, storage)}</span>
+            {s.detail && !s.ok && <span className="ml-2 break-words text-xs text-muted">{s.detail}</span>}
+          </span>
         </li>
       ))}
       {checking && (
@@ -632,7 +636,7 @@ export function SetupWizard({ open, onClose, resume, storage }: { open: boolean;
 
         {s.step === 'check' && !kind && (
           <>
-            <p className="text-sm text-muted">
+            <p className="break-all text-sm text-muted">
               {p.name} · {s.form.bucket.trim()}/{toConfig(s.form).prefix}
             </p>
             <CheckList check={s.check} checking={s.checking} />

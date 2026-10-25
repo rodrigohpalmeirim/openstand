@@ -4,7 +4,7 @@ import type { GroupField } from '../../db/schema'
 import { useSettings } from '../../state/settings'
 import { Button, confirmDialog, cx, Dialog, Field, IconButton, Input, promptDialog, Segmented, Select, Toggle, toast } from '../../ui/primitives'
 import { useLibrary } from './data'
-import { createLibrary, deleteLibrary, renameLibrary, switchLibrary, useLibraries } from './libraries'
+import { createLibrary, deleteLibrary, libraryName, renameLibrary, switchLibrary, useLibraries } from './libraries'
 import { collator, groupValues, normalize, songHasValue } from './logic'
 import { addToGroup, addToSetlist, batchEdit, createCollection, createSetlist, removeFromGroup, type BatchEdit as BatchEditSpec, type BatchOp } from './ops'
 import { openSetlist } from './songActions'
@@ -33,7 +33,13 @@ function AddTo({ st }: { st: { kind: 'setlist' | 'collection'; ids: string[] } }
       return [...lib.setlists]
         .sort((a, b) => b.modifiedAt - a.modifiedAt)
         .filter((s) => !nq || normalize(s.name).includes(nq))
-        .map((s) => ({ key: s.id, name: s.name, sub: t.count(s.entries.filter((e) => !e.isBreak).length), all: false }))
+        .map((s) => {
+          // Duplicates are allowed in setlists, so this is only a hint.
+          const have = new Set(s.entries.map((e) => e.songId))
+          const n = ids.filter((id) => have.has(id)).length
+          const sub = t.count(s.entries.filter((e) => !e.isBreak).length)
+          return { key: s.id, name: s.name, sub: n ? `${sub} · ${n === ids.length ? 'already in this setlist' : `${n} already in it`}` : sub, all: false }
+        })
     const vals = groupValues(lib.songs, 'collections')
     for (const c of lib.extraCollections) if (!vals.some((v) => normalize(v.name) === normalize(c))) vals.push({ name: c, count: 0, duration: 0 })
     const col = collator()
@@ -58,7 +64,7 @@ function AddTo({ st }: { st: { kind: 'setlist' | 'collection'; ids: string[] } }
       toast(`Added ${what} to “${o.name}”`, 'ok', { label: 'Open', run: () => openSetlist(o.key) })
     } else if (o.all) {
       await removeFromGroup('collections', o.name, ids)
-      toast(`Removed ${what} from “${o.name}”`, 'ok')
+      toast(`Removed ${what} from “${o.name}”`, 'ok', { label: 'Undo', run: () => addToGroup('collections', o.name, ids) })
     } else {
       await addToGroup('collections', o.name, ids)
       toast(`Added ${what} to “${o.name}”`, 'ok')
@@ -313,8 +319,9 @@ export function LibraryPrefsPanel() {
               {g === 'setlists' ? (
                 <span className="flex-1 px-3 text-sm">Setlists</span>
               ) : (
+                // The default name is the placeholder; show it like a value so enabled sections don't look disabled.
                 <Input
-                  className="h-8 flex-1 border-transparent bg-transparent hover:border-line"
+                  className="h-8 flex-1 border-transparent bg-transparent placeholder:text-fg! hover:border-line focus:placeholder:text-faint!"
                   aria-label={`Label for ${g}`}
                   value={s.fieldLabels[g] ?? ''}
                   placeholder={label(g)}
@@ -363,6 +370,7 @@ export function LibraryPrefsDialog() {
 /* ------------------------------------------------------------ Libraries */
 
 export function LibrariesDialog() {
+  const t = useTerms()
   const open = useLibraryUI((u) => u.libraries)
   const { list, active } = useLibraries()
   const close = () => useLibraryUI.getState().set({ libraries: false })
@@ -370,9 +378,10 @@ export function LibrariesDialog() {
     const name = (await promptDialog({ title: 'New library', label: 'Library name' }))?.trim()
     if (!name) return
     const id = createLibrary(name)
+    const used = libraryName(id)
     switchLibrary(id)
     close()
-    toast(`Switched to “${name}”`, 'ok')
+    toast(used === name ? `Switched to “${name}”` : `A library called “${name}” already exists. Switched to the new “${used}”.`, 'ok')
   }
   return (
     <Dialog
@@ -393,7 +402,7 @@ export function LibrariesDialog() {
     >
       <div className="flex flex-col gap-1 p-2">
         <p className="px-3 pb-2 pt-1 text-xs text-muted">
-          Each library keeps its own songs, setlists and annotations — e.g. one per band or per student. Settings are shared.
+          Each library keeps its own {t.songs}, setlists and annotations — e.g. one per band or per student. Settings are shared.
         </p>
         {list.map((l) => (
           <div key={l.id} className={cx('flex items-center gap-2 rounded-xl px-3 py-2', l.id === active ? 'bg-accent-soft' : 'hover:bg-surface-2')}>
@@ -416,7 +425,9 @@ export function LibrariesDialog() {
               label={`Rename ${l.name}`}
               onClick={async () => {
                 const name = (await promptDialog({ title: 'Rename library', label: 'Name', initial: l.name }))?.trim()
-                if (name) renameLibrary(l.id, name)
+                if (!name) return
+                const used = renameLibrary(l.id, name)
+                if (used !== name) toast(`A library called “${name}” already exists, so this one is now “${used}”`, 'info')
               }}
             >
               <Pencil className="size-4" />
@@ -427,15 +438,22 @@ export function LibrariesDialog() {
                 label={`Delete ${l.name}`}
                 className="text-danger!"
                 onClick={async () => {
+                  const synced = await import('../../libsync/service').then((m) => m.syncsLibrary(l.id)).catch(() => false)
                   const ok = await confirmDialog({
                     title: `Delete “${l.name}”?`,
-                    message: 'All songs, files, setlists and annotations in this library will be permanently deleted. Other libraries are not affected.',
+                    message: `All songs, files, setlists and annotations in this library will be permanently deleted. Other libraries are not affected.${
+                      synced ? ' Only this device’s copy is deleted; your other devices keep syncing.' : ''
+                    }`,
                     confirmLabel: 'Delete library',
                     danger: true,
                   })
                   if (!ok) return
-                  await deleteLibrary(l.id)
-                  toast(`Deleted “${l.name}”`, 'ok')
+                  try {
+                    if (await deleteLibrary(l.id)) toast(`Deleted “${l.name}”`, 'ok')
+                    else toast(`Removed “${l.name}”. Its data is erased once other OpenStand tabs or windows close it.`, 'info')
+                  } catch (e) {
+                    toast(`Couldn’t delete “${l.name}”: ${(e as Error).message ?? e}`, 'error')
+                  }
                 }}
               >
                 <Trash2 className="size-4" />

@@ -5,6 +5,7 @@ import type { AudioTrack, Song } from '../../db/schema'
 import { stripExt } from '../../files/kinds'
 import { Button, cx, Empty, IconButton, Input, promptDialog, Toggle, toast } from '../../ui/primitives'
 import { safeExternalUrl } from '../../util/safeUrl'
+import { useTerms } from '../browse/terms'
 import type { SongPatch } from './FieldsTab'
 import { Section } from './Sheet'
 
@@ -86,6 +87,7 @@ export function AudioTab({ song, update }: { song: Song; update: (p: SongPatch) 
 }
 
 function TrackCard({ track, onChange, onRemove }: { track: AudioTrack; onChange: (p: Partial<AudioTrack>) => void; onRemove: () => void }) {
+  const terms = useTerms()
   const audio = useRef<HTMLAudioElement>(null)
   const [src, setSrc] = useState<string | undefined>(() => safeExternalUrl(track.url) ?? undefined)
   const [playing, setPlaying] = useState(false)
@@ -200,8 +202,8 @@ function TrackCard({ track, onChange, onRemove }: { track: AudioTrack; onChange:
         {a !== undefined && b !== undefined && b <= a && <span className="text-xs text-danger">B must be after A</span>}
       </div>
       <label className="flex min-h-11 items-center gap-3 text-sm">
-        <Toggle checked={!!track.autoPlay} onChange={(v) => onChange({ autoPlay: v })} label="Play automatically when the song opens" />
-        Play automatically when the song opens
+        <Toggle checked={!!track.autoPlay} onChange={(v) => onChange({ autoPlay: v })} label={`Play automatically when the ${terms.song} opens`} />
+        Play automatically when the {terms.song} opens
       </label>
     </div>
   )

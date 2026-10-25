@@ -7,6 +7,7 @@ import { viewerApi } from '../../viewer/api'
 import { startAutoScroll } from '../store'
 import { TickClock, type Tick, type TickLevel } from './clock'
 import { renderClick, type SoundId } from './sounds'
+import { parseSignature, songBpm } from './tempo'
 
 /** Live metronome status for visuals. */
 interface MetronomeStatus {
@@ -38,7 +39,10 @@ export const useMetronome = create<MetronomeStatus>(() => ({
   visual: true,
 }))
 
-/** Effective settings for a song: per-song values over the defaults; the first song tempo seeds bpm. */
+/**
+ * Effective settings for a song: per-song values over the defaults. The song's time signature seeds the
+ * meter; the BPM is `songBpm` (an older per-song metronome BPM, else the first tempo).
+ */
 export function songMetronome(song: Song | undefined): MetronomeSettings {
   const d = settings().metronome
   const base: MetronomeSettings = {
@@ -55,8 +59,9 @@ export function songMetronome(song: Song | undefined): MetronomeSettings {
     autoStart: d.autoStart ?? false,
     beatsPerPage: d.beatsPerPage ?? 0,
   }
-  const tempo = song?.tempos?.find((t) => t > 0)
-  return { ...base, ...(tempo ? { bpm: tempo } : {}), ...(song?.metronome ?? {}) }
+  const meter = parseSignature(song?.signatures?.[0])
+  const bpm = songBpm(song)
+  return { ...base, ...meter, ...(song?.metronome ?? {}), ...(bpm ? { bpm } : {}) }
 }
 
 const LOOKAHEAD = 0.12

@@ -6,7 +6,7 @@
  */
 import { db as currentDb, OpenStandDB } from '../db/db'
 import { flush as flushAnnotations, remoteChanged } from '../annotations/store'
-import { useLibraries } from '../library/browse/libraries'
+import { dbNameFor, useLibraries } from '../library/browse/libraries'
 import { registerService } from '../services'
 import { settings, useSettings } from '../state/settings'
 import { useViewer } from '../state/viewer'
@@ -109,12 +109,25 @@ function hooksFor(d: OpenStandDB) {
     beforeApply: async (ops: { c: string }[]) => {
       if (global() && ops.some((o) => o.c === 'ann')) await flushAnnotations()
     },
-    afterApply: async (a: { anns: Set<string> }) => {
+    afterApply: async (a: { anns: Set<string>; lostEdits: Map<string, string> }) => {
       if (global() && a.anns.size) await remoteChanged(a.anns)
+      if (global() && a.lostEdits.size) void tellLostEdits(a.lostEdits)
     },
     blobReady: (hash: string) => emitBlobReady(hash),
     status: (s: EngineStatus) => global() && publish(s, true),
   }
+}
+
+/** A delete from another device won over edits made here (by design): say so rather than let the song vanish. */
+async function tellLostEdits(lost: Map<string, string>) {
+  const { toast } = await import('../ui/primitives')
+  const [title] = lost.values()
+  toast(
+    lost.size === 1
+      ? `“${title || 'Untitled'}” was deleted on another device, along with your recent changes to it.`
+      : `${lost.size} songs you recently changed were deleted on another device.`,
+    'info',
+  )
 }
 
 async function stopEngine() {
@@ -206,12 +219,26 @@ export async function withEngineStopped<T>(fn: () => Promise<T>): Promise<T> {
   }
 }
 
+/** Library sync is set up in library `id` (its database is opened briefly when it isn't the current one). */
+export async function syncsLibrary(id: string): Promise<boolean> {
+  const name = dbNameFor(id)
+  if (name === currentDb.name) return !!(await getConfig(currentDb).catch(() => undefined))
+  const d = new OpenStandDB(name)
+  try {
+    return !!(await getConfig(d))
+  } catch {
+    return false
+  } finally {
+    d.close()
+  }
+}
+
 /** Called by `deleteLibrary` before the database is deleted. */
 export async function beforeLibraryDelete(dbName: string) {
   if (engine && engine.db.name === dbName) await stopEngine()
   const d = new OpenStandDB(dbName)
   try {
-    await (await joinModule()).retireBeforeDelete(d)
+    await (await joinModule()).retireBeforeDelete(d, { deviceName })
   } finally {
     d.close()
   }
@@ -235,7 +262,8 @@ registerService(() => {
       if (m.db !== currentDb.name) return
       if (m.status && !engine) useLibSync.setState(m.status, true)
       if (m.cmd === 'status?' && engine) publish(engine.status, true)
-      if (m.cmd === 'syncNow' && engine) void engine.sync().catch(() => {})
+      if (m.cmd === 'syncNow' && engine) void syncNowHere(engine).catch(() => {})
+      if (m.cmd === 'devices' && engine) void engine.refreshDevicesIfStale()
       // The lock holder restarts (even if its engine failed to start); other tabs have nothing to restart.
       if (m.cmd === 'restart' && releaseLock) void restart()
       if (m.cmd === 'rename' && engine && typeof m.name === 'string') {
@@ -306,4 +334,19 @@ registerService(() => {
 /** Ask whichever tab runs the engine to sync now. */
 export function requestSyncNow() {
   channel?.postMessage({ db: currentDb.name, cmd: 'syncNow' })
+}
+
+/** "Sync now": capture, push and pull, and re-read the device list (names and "last seen"). */
+export async function syncNowHere(e: Engine) {
+  try {
+    await e.sync()
+  } finally {
+    await e.refreshDevicesIfStale(0)
+  }
+}
+
+/** The Library sync page opened: re-read the device list, at most once a minute (here or in the engine's tab). */
+export function refreshDevices() {
+  if (engine) void engine.refreshDevicesIfStale()
+  else channel?.postMessage({ db: currentDb.name, cmd: 'devices' })
 }

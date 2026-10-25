@@ -1,6 +1,7 @@
 /**
- * Annotation tool bar, shown under the viewer's top bar while annotating. One row on tablets and
- * desktops, two rows (tools / options) on phones; popovers hold the less frequent options (palette, size, stamps, presets, layers).
+ * Annotation tool bar, shown under the viewer's top bar while annotating. One row on wide screens (and
+ * short landscape phones), two rows (tools / options) below 1200 px; popovers hold the less frequent
+ * options (palette, size, stamps, presets, layers).
  */
 import {
   ArrowDown,
@@ -39,6 +40,7 @@ import {
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type { Annotation, Song } from '../db/schema'
 import { uid } from '../db/db'
+import { useTerms } from '../library/browse/terms'
 import { settings, useSettings } from '../state/settings'
 import { confirmDialog, cx, promptDialog, Segmented, Slider, toast, Toggle, useMenu } from '../ui/primitives'
 import { DarkPop } from '../viewer/dark'
@@ -124,7 +126,17 @@ export function ToolIcon({ tool, className = 'size-[18px]' }: { tool: ToolId; cl
 
 /* --------------------------------------------------------------- Buttons */
 
-function TB({ label, active, disabled, onClick, children, className, btnRef }: { label: string; active?: boolean; disabled?: boolean; onClick: () => void; children: ReactNode; className?: string; btnRef?: (el: HTMLButtonElement | null) => void }) {
+/**
+ * Style controls must not take focus from an open text editor: its blur commits the text, and the click
+ * would then restyle the tool instead of the text being edited. Fields keep their focus (a range input
+ * can't be dragged otherwise); the editor ignores a blur towards `data-keeps-text-edit` (also keyboard).
+ */
+function keepTextFocus(e: React.MouseEvent) {
+  if (useAnnotUI.getState().editing && !(e.target as Element).closest('input, textarea, select')) e.preventDefault()
+}
+const keepsTextEdit = { 'data-keeps-text-edit': '', onMouseDown: keepTextFocus }
+
+function TB({ label, active, disabled, onClick, children, className, btnRef, styles }: { label: string; active?: boolean; disabled?: boolean; onClick: () => void; children: ReactNode; className?: string; btnRef?: (el: HTMLButtonElement | null) => void; styles?: boolean }) {
   return (
     <button
       ref={btnRef}
@@ -134,6 +146,7 @@ function TB({ label, active, disabled, onClick, children, className, btnRef }: {
       aria-pressed={active}
       disabled={disabled}
       onClick={onClick}
+      {...(styles && keepsTextEdit)}
       className={cx(
         'relative inline-flex size-10 shrink-0 items-center justify-center rounded-xl transition pointer-coarse:size-11 disabled:opacity-30',
         active ? 'bg-white text-neutral-900 shadow' : 'text-white/85 hover:bg-white/10 active:bg-white/15',
@@ -155,6 +168,7 @@ function Swatch({ color, active, onClick, label, size = 'md' }: { color: string;
       aria-label={label ?? `Colour ${color}`}
       aria-pressed={active}
       onClick={onClick}
+      {...keepsTextEdit}
       className={cx(
         'shrink-0 rounded-full border border-black/20 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.15)] transition hover:scale-110',
         size === 'sm' ? 'size-6' : 'size-9',
@@ -173,6 +187,7 @@ function ColorPopover({ anchor, open, onClose, value, opacity, onPick, onOpacity
   const recent = useSettings((s) => s.s.annotations.recentColors)
   return (
     <DarkPop anchor={anchor} open={open} onClose={onClose} align="start" className={pop}>
+      <div {...keepsTextEdit}>
       <div className="grid grid-cols-6 gap-2">
         {PALETTE.map((c) => (
           <Swatch key={c} color={c} active={c.toLowerCase() === value.toLowerCase()} onClick={() => onPick(c)} />
@@ -197,6 +212,7 @@ function ColorPopover({ anchor, open, onClose, value, opacity, onPick, onOpacity
         </div>
         <Slider label="Opacity" value={Math.round(opacity * 100)} min={10} max={100} onChange={(v) => onOpacity(v / 100)} />
       </div>
+      </div>
     </DarkPop>
   )
 }
@@ -219,6 +235,7 @@ function OptionsPopover({ anchor, open, onClose, tool, cfg, selection }: { ancho
   const isText = selection ? selection.some((i) => i.type === 'text') : tool === 'text'
   return (
     <DarkPop anchor={anchor} open={open} onClose={onClose} align="start" className={pop}>
+      <div {...keepsTextEdit}>
       {(selection ? selSize !== undefined : tool !== 'select') && (
         <div className="py-1">
           <div className="mb-1 flex justify-between text-xs text-muted">
@@ -301,6 +318,7 @@ function OptionsPopover({ anchor, open, onClose, tool, cfg, selection }: { ancho
       {!selection && tool === 'staff' && <p className="pt-1 text-xs text-muted">Drag a box: its width is the length, its height the system height. Tap for a standard staff.</p>}
       {!selection && isShapeTool(tool) && tool !== 'staff' && <p className="pt-1 text-xs text-muted">Shift snaps angles / draws squares and circles.</p>}
       {selection && <p className="pt-1 text-xs text-muted">Changes apply to the {selection.length} selected annotation{selection.length > 1 ? 's' : ''}.</p>}
+      </div>
     </DarkPop>
   )
 }
@@ -490,10 +508,12 @@ function PresetsPopover({ anchor, open, onClose }: { anchor: HTMLElement | null;
 
 function LayersPopover({ anchor, open, onClose, songId, hasSelection }: { anchor: HTMLElement | null; open: boolean; onClose: () => void; songId: string; hasSelection: boolean }) {
   const L = useSongLayers(songId)
+  const terms = useTerms()
   return (
     <DarkPop anchor={anchor} open={open} onClose={onClose} align="end" className="w-[min(92vw,20rem)] p-2">
       <div className="px-2 pb-1 pt-1 text-xs font-medium uppercase tracking-wide text-muted">Layers</div>
-      {L.layers.map((l, i) => {
+      {/* Stored bottom-to-top (later draws on top); shown top-most first. */}
+      {L.layers.map((l, i) => ({ l, i })).reverse().map(({ l, i }) => {
         const current = l.id === L.current
         return (
           <div key={l.id} className={cx('flex items-center gap-0.5 rounded-lg', current ? 'bg-white/10' : 'hover:bg-white/5')}>
@@ -522,7 +542,7 @@ function LayersPopover({ anchor, open, onClose, songId, hasSelection }: { anchor
             >
               <Pencil className="size-3.5" />
             </button>
-            <button type="button" aria-label="Move layer up" className="rounded p-1.5 text-muted hover:bg-white/10 disabled:opacity-30" disabled={i === 0} onClick={() => moveLayer(songId, l.id, -1)}>
+            <button type="button" aria-label="Move layer up" className="rounded p-1.5 text-muted hover:bg-white/10 disabled:opacity-30" disabled={i === L.layers.length - 1} onClick={() => moveLayer(songId, l.id, 1)}>
               <ArrowUp className="size-3.5" />
             </button>
             <button
@@ -534,7 +554,7 @@ function LayersPopover({ anchor, open, onClose, songId, hasSelection }: { anchor
                 const n = await countLayerItems(songId, l.id)
                 const ok = await confirmDialog({
                   title: `Delete layer "${l.name}"?`,
-                  message: n ? `Its ${n} annotation${n > 1 ? 's' : ''} on all pages of this song will be deleted (you can undo that).` : 'The layer is empty.',
+                  message: n ? `Its ${n} annotation${n > 1 ? 's' : ''} on all pages of this ${terms.song} will be deleted (you can undo that).` : 'The layer is empty.',
                   confirmLabel: 'Delete',
                   danger: true,
                 })
@@ -556,17 +576,44 @@ function LayersPopover({ anchor, open, onClose, songId, hasSelection }: { anchor
       >
         <Plus className="size-4 text-muted" /> New layer
       </button>
-      <p className="px-3 pb-1 pt-1 text-xs text-muted">Layers apply to every page of this song. Hidden layers stay hidden while performing.</p>
+      <p className="px-3 pb-1 pt-1 text-xs text-muted">Layers apply to every page of this {terms.song}; layers higher in this list draw on top. Hidden layers stay hidden while performing.</p>
     </DarkPop>
   )
 }
 
-function MorePopover({ anchor, open, onClose, songId, onPresets, onGrid }: { anchor: HTMLElement | null; open: boolean; onClose: () => void; songId: string; onPresets?: () => void; onGrid?: () => void }) {
+function MorePopover({ anchor, open, onClose, songId, onPresets, onGrid, selectionActions }: { anchor: HTMLElement | null; open: boolean; onClose: () => void; songId: string; onPresets?: () => void; onGrid?: () => void; selectionActions?: boolean }) {
   const a = useSettings((s) => s.s.annotations)
   const setA = (p: Partial<typeof a>) => useSettings.getState().setIn('annotations', p)
+  const terms = useTerms()
   const item = 'flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-sm hover:bg-white/10'
   return (
     <DarkPop anchor={anchor} open={open} onClose={onClose} align="end" className="w-[min(92vw,19rem)] p-2">
+      {selectionActions && (
+        <>
+          <button
+            type="button"
+            className={item}
+            onClick={() => {
+              onClose()
+              const n = copySelection()
+              toast(n > 1 ? `${n} annotations copied` : '1 annotation copied')
+            }}
+          >
+            <Copy className="size-4 text-muted" /> Copy selection
+          </button>
+          <button
+            type="button"
+            className={item}
+            onClick={() => {
+              onClose()
+              reorderSelection(true)
+            }}
+          >
+            <BringToFront className="size-4 text-muted" /> Bring to front
+          </button>
+          <div className="my-1 h-px bg-white/10" />
+        </>
+      )}
       {onPresets && (
         <button
           type="button"
@@ -645,13 +692,13 @@ function MorePopover({ anchor, open, onClose, songId, onPresets, onGrid }: { anc
         className={cx(item, 'text-danger')}
         onClick={async () => {
           onClose()
-          if (await confirmDialog({ title: 'Clear the whole song?', message: 'Delete all annotations on every page of this song. You can undo this while annotating.', confirmLabel: 'Clear all', danger: true })) {
+          if (await confirmDialog({ title: `Clear the whole ${terms.song}?`, message: `Delete all annotations on every page of this ${terms.song}. You can undo this while annotating.`, confirmLabel: 'Clear all', danger: true })) {
             const n = await clearSong(songId)
-            toast(n ? `Deleted ${n} annotations` : 'No annotations in this song', 'info', n ? { label: 'Undo', run: () => undo() } : undefined)
+            toast(n ? `Deleted ${n} annotations` : `No annotations in this ${terms.song}`, 'info', n ? { label: 'Undo', run: () => undo() } : undefined)
           }
         }}
       >
-        <Trash2 className="size-4" /> Clear song…
+        <Trash2 className="size-4" /> Clear {terms.song}…
       </button>
       <button
         type="button"
@@ -723,12 +770,18 @@ export function AnnotationToolbar({ song, onDone }: { song: Song; onDone: () => 
   const { canUndo, canRedo } = useAnnotHistory()
   // Phones and portrait tablets get two rows (tools / options) instead of one row that would hide
   // tools off-screen; short landscape screens keep one compact row to save drawing height.
-  const twoRow = useMedia('(max-width: 899px) and (min-height: 501px)')
+  const twoRow = useMedia('(max-width: 1199px) and (min-height: 501px)')
   const phone = useMedia('(max-width: 480px)')
   const roomy = useMedia('(min-width: 720px)')
+  // Short landscape phones keep one row; with a selection some buttons move into More.
+  const shortRow = useMedia('(max-width: 1199px)') && !twoRow
   const layers = useSongLayers(song.id)
   const tool: ToolId = tempEraser ? 'eraser' : a.tool
-  const cfg = toolConfig(tool, a.tools)
+  // While re-editing a text, the options show (and change, see applyStyle) that text's own style.
+  const editStyle = useAnnotUI((s) => (s.editing?.id ? s.editing.style : undefined))
+  const cfg = useMemo(() => (editStyle ? { ...toolConfig('text', a.tools), ...editStyle } : toolConfig(tool, a.tools)), [editStyle, tool, a.tools])
+  /** The tool whose options the colour and size controls show (a text being edited counts as Text). */
+  const styleTool: ToolId = editStyle ? 'text' : tool
   const [lastShape, setLastShape] = useState<ShapeTool>(isShapeTool(a.tool) ? a.tool : 'line')
   useEffect(() => {
     if (isShapeTool(a.tool)) setLastShape(a.tool)
@@ -754,6 +807,9 @@ export function AnnotationToolbar({ song, onDone }: { song: Song; onDone: () => 
   const layerM = useMenu()
   const moreM = useMenu()
   const gridM = useMenu()
+
+  // Presets, grid, copy and bring-to-front live in More when there's no room for them.
+  const inMore = phone || (shortRow && !!selItems)
 
   const doUndo = () => {
     const l = undo()
@@ -844,7 +900,7 @@ export function AnnotationToolbar({ song, onDone }: { song: Song; onDone: () => 
   )
 
   const currentLayer = layers.layers.find((l) => l.id === layers.current)
-  const sizeDot = Math.max(3, Math.min(18, tool === 'eraser' ? cfg.size / 5 : tool === 'text' || tool === 'stamp' ? cfg.size / 4 : cfg.size * (tool === 'highlighter' ? 0.4 : 1.4)))
+  const sizeDot = Math.max(3, Math.min(18, styleTool === 'eraser' ? cfg.size / 5 : styleTool === 'text' || styleTool === 'stamp' ? cfg.size / 4 : cfg.size * (styleTool === 'highlighter' ? 0.4 : 1.4)))
 
   const undoBtn = (
     <TB label="Undo (Ctrl+Z)" disabled={!canUndo} onClick={doUndo}>
@@ -866,7 +922,7 @@ export function AnnotationToolbar({ song, onDone }: { song: Song; onDone: () => 
         <ToolIcon tool={isShapeTool(tool) ? tool : lastShape} />
         <span className="absolute bottom-1 right-1 size-0 border-l-[4px] border-t-[4px] border-l-transparent border-t-current opacity-60" />
       </TB>
-      {(!phone || tool === 'snip') && toolBtn('snip')}
+      {(!inMore || tool === 'snip') && toolBtn('snip')}
     </>
   )
   const colorBtn = (
@@ -876,38 +932,44 @@ export function AnnotationToolbar({ song, onDone }: { song: Song; onDone: () => 
       onClick={colorM.toggle}
       aria-label="Colour and opacity"
       title="Colour and opacity"
+      {...keepsTextEdit}
       className="inline-flex size-10 shrink-0 items-center justify-center rounded-xl hover:bg-white/10 pointer-coarse:size-11 disabled:opacity-30"
-      disabled={tool === 'eraser' || tool === 'snip' || (tool === 'select' && !selItems)}
+      disabled={styleTool === 'eraser' || styleTool === 'snip' || (styleTool === 'select' && !selItems)}
     >
       <span className="size-6 rounded-full border-2 border-white/80 shadow" style={{ background: shownColor, opacity: Math.max(0.35, shownOpacity) }} />
     </button>
   )
   const sizeBtn = (
-    <TB label="Size and options" btnRef={optsM.ref} onClick={optsM.toggle} disabled={tool === 'snip' || (tool === 'select' && !selItems)}>
+    <TB label="Size and options" btnRef={optsM.ref} onClick={optsM.toggle} styles disabled={styleTool === 'snip' || (styleTool === 'select' && !selItems)}>
       <span className="rounded-full bg-current" style={{ width: sizeDot, height: sizeDot }} />
     </TB>
   )
   const selectionBtns = selItems && (
     <>
-      {!phone && <span className="shrink-0 px-1 text-xs tabular-nums text-white/60">{selItems.length} selected</span>}
+      {!phone && !shortRow && <span className="shrink-0 px-1 text-xs tabular-nums text-white/60">{selItems.length} selected</span>}
       <TB label="Delete selection (Del)" onClick={deleteSelection}>
         <Trash2 className="size-[18px]" />
       </TB>
       <TB label="Duplicate (Ctrl+D)" onClick={duplicateSelection}>
         <CopyPlus className="size-[18px]" />
       </TB>
-      <TB
-        label="Copy (Ctrl+C)"
-        onClick={() => {
-          const n = copySelection()
-          toast(n > 1 ? `${n} annotations copied` : '1 annotation copied')
-        }}
-      >
-        <Copy className="size-[18px]" />
-      </TB>
-      <TB label="Bring to front" onClick={() => reorderSelection(true)}>
-        <BringToFront className="size-[18px]" />
-      </TB>
+      {/* Phones find these two in More, so Layers and More fit beside the selection. */}
+      {!inMore && (
+        <>
+          <TB
+            label="Copy (Ctrl+C)"
+            onClick={() => {
+              const n = copySelection()
+              toast(n > 1 ? `${n} annotations copied` : '1 annotation copied')
+            }}
+          >
+            <Copy className="size-[18px]" />
+          </TB>
+          <TB label="Bring to front" onClick={() => reorderSelection(true)}>
+            <BringToFront className="size-[18px]" />
+          </TB>
+        </>
+      )}
       <TB label="Deselect (Esc)" onClick={() => useAnnotUI.setState({ selection: null })}>
         <X className="size-[18px]" />
       </TB>
@@ -988,6 +1050,9 @@ export function AnnotationToolbar({ song, onDone }: { song: Song; onDone: () => 
               <>
                 <div className="min-w-1 flex-1" />
                 {selectionBtns}
+                {layersBtn}
+                {moreBtn}
+                {roomy && pageBtns}
               </>
             ) : (
               <>
@@ -1014,11 +1079,14 @@ export function AnnotationToolbar({ song, onDone }: { song: Song; onDone: () => 
         {toolBtns}
         <Sep />
         {colorBtn}
-        <div className="hidden items-center gap-1 px-1 lg:flex">
-          {PALETTE.slice(0, 7).map((c) => (
-            <Swatch key={c} size="sm" color={c} active={c === shownColor} onClick={() => applyStyle({ color: c })} />
-          ))}
-        </div>
+        {/* A selection's buttons take the swatches' and presets' place. */}
+        {!selItems && (
+          <div className="hidden items-center gap-1 px-1 lg:flex">
+            {PALETTE.slice(0, 7).map((c) => (
+              <Swatch key={c} size="sm" color={c} active={c === shownColor} onClick={() => applyStyle({ color: c })} />
+            ))}
+          </div>
+        )}
         {sizeBtn}
         {selItems && (
           <>
@@ -1032,15 +1100,19 @@ export function AnnotationToolbar({ song, onDone }: { song: Song; onDone: () => 
           </TB>
         )}
         <Sep />
-        <div className="hidden items-center md:flex">
-          {a.presets.slice(0, 6).map((p) => (
-            <PresetChip key={p.id} p={p} onClick={() => applyPreset(p)} active={p.tool === a.tool && p.config.color === cfg.color && p.config.size === cfg.size} />
-          ))}
-        </div>
-        <TB label="Presets" btnRef={presetM.ref} onClick={presetM.toggle}>
-          <Star className="size-[18px]" />
-        </TB>
-        {gridBtn}
+        {!selItems && (
+          <div className="hidden items-center md:flex">
+            {a.presets.slice(0, 6).map((p) => (
+              <PresetChip key={p.id} p={p} onClick={() => applyPreset(p)} active={p.tool === a.tool && p.config.color === cfg.color && p.config.size === cfg.size} />
+            ))}
+          </div>
+        )}
+        {!inMore && (
+          <TB label="Presets" btnRef={presetM.ref} onClick={presetM.toggle}>
+            <Star className="size-[18px]" />
+          </TB>
+        )}
+        {!inMore && gridBtn}
         {layersBtn}
         {moreBtn}
         <div className="min-w-2 flex-1" />
@@ -1070,7 +1142,7 @@ export function AnnotationToolbar({ song, onDone }: { song: Song; onDone: () => 
         onPick={(c) => applyStyle({ color: c })}
         onOpacity={(o) => applyStyle({ opacity: o })}
       />
-      <OptionsPopover anchor={optsM.anchor} open={optsM.open} onClose={optsM.close} tool={tool} cfg={cfg} selection={selItems} />
+      <OptionsPopover anchor={optsM.anchor} open={optsM.open} onClose={optsM.close} tool={styleTool} cfg={cfg} selection={selItems} />
       <StampPopover anchor={stampM.anchor} open={stampM.open} onClose={stampM.close} value={cfg.stamp ?? 'fermata'} onPick={(id) => patchToolConfig({ stamp: id }, 'stamp')} />
       <DarkPop anchor={shapeM.anchor} open={shapeM.open} onClose={shapeM.close} align="start" className="p-1.5">
         <div className="grid grid-cols-3 gap-1">
@@ -1090,10 +1162,10 @@ export function AnnotationToolbar({ song, onDone }: { song: Song; onDone: () => 
           ))}
         </div>
       </DarkPop>
-      <PresetsPopover anchor={phone ? moreM.anchor : presetM.anchor} open={presetM.open} onClose={presetM.close} />
+      <PresetsPopover anchor={inMore ? moreM.anchor : presetM.anchor} open={presetM.open} onClose={presetM.close} />
       <LayersPopover anchor={layerM.anchor} open={layerM.open} onClose={layerM.close} songId={song.id} hasSelection={!!selItems} />
-      <MorePopover anchor={moreM.anchor} open={moreM.open} onClose={moreM.close} songId={song.id} onPresets={phone ? presetM.show : undefined} onGrid={phone ? gridM.show : undefined} />
-      <GridPopover anchor={phone ? moreM.anchor : gridM.anchor} open={gridM.open} onClose={gridM.close} />
+      <MorePopover anchor={moreM.anchor} open={moreM.open} onClose={moreM.close} songId={song.id} onPresets={inMore ? presetM.show : undefined} onGrid={inMore ? gridM.show : undefined} selectionActions={inMore && !!selItems} />
+      <GridPopover anchor={inMore ? moreM.anchor : gridM.anchor} open={gridM.open} onClose={gridM.close} />
     </div>
   )
 }

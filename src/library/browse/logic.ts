@@ -144,6 +144,12 @@ function numeric(s: Song, f: SortField): number | undefined {
   }
 }
 
+/** The name a song sorts under when sorting by artist (falls back to the composer). */
+export function sortArtist(song: Pick<Song, 'artists' | 'composers'>, o: Pick<SortOptions, 'ignoreArticles' | 'articles'>): string | undefined {
+  const a = song.artists[0] ?? song.composers[0]
+  return a !== undefined && o.ignoreArticles ? stripArticle(a, o.articles) : a
+}
+
 /**
  * Sort songs. Missing values (no rating, never played, …) always go last, whatever the direction;
  * ties fall back to the title so the order is stable and predictable.
@@ -162,8 +168,8 @@ export function sortSongs(songs: Song[], spec: SortSpec, o: SortOptions): Song[]
   if (spec.field === 'title') cmp = (a, b) => sign * byTitle(a, b)
   else if (spec.field === 'artist') {
     cmp = (a, b) => {
-      const x = a.artists[0] ?? a.composers[0]
-      const y = b.artists[0] ?? b.composers[0]
+      const x = sortArtist(a, o)
+      const y = sortArtist(b, o)
       if (!x !== !y) return x ? -1 : 1
       return (x && y ? sign * col.compare(x, y) : 0) || byTitle(a, b)
     }
@@ -280,8 +286,9 @@ function isActiveGroup(g: GroupFilter) {
   return g.mode === 'assigned' || g.mode === 'unassigned' || g.values.length > 0
 }
 
+/** The song has its own tempo (the metronome plays the tempo list; older versions saved metronome.bpm). */
 export function hasMetronome(s: Song): boolean {
-  return !!s.metronome && typeof s.metronome.bpm === 'number' && s.metronome.bpm > 0
+  return !!s.tempos?.some((t) => t > 0) || (!!s.metronome && typeof s.metronome.bpm === 'number' && s.metronome.bpm > 0)
 }
 
 /** Group values are compared case-/accent-insensitively ("Bärenreiter" == "barenreiter"). */

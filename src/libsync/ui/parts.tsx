@@ -72,7 +72,7 @@ export function Note({ tone = 'info', children, action }: { tone?: 'info' | 'war
       )}
     >
       <Icon className={cx('mt-0.5 size-4.5 shrink-0', tone === 'info' ? 'text-muted' : tone === 'ok' ? 'text-ok' : tone === 'warn' ? 'text-warn' : 'text-danger')} />
-      <div className="min-w-0 flex-1 basis-48">{children}</div>
+      <div className="min-w-0 flex-1 basis-48 break-words">{children}</div>
       {action && <div className="flex shrink-0 flex-wrap gap-2">{action}</div>}
     </div>
   )

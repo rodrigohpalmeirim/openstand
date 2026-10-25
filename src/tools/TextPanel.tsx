@@ -1,11 +1,12 @@
 import { Minus, PencilLine, Play, Plus, RotateCcw, Square } from 'lucide-react'
-import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { splitPageHint, tuneTitles } from '../abc/engine'
 import { startAbc, stopAbc, useAbcPlayback } from '../abc/playback'
 import { chordContext, songDiagrams } from '../chordpro/render'
 import { metaFirst } from '../chordpro/parse'
 import { updateSong } from '../db/db'
 import type { TextDisplayOverrides } from '../db/schema'
+import { useTerms } from '../library/browse/terms'
 import { ChordDiagram } from '../music/ChordDiagram'
 import { formatKey, makeTransposer, NAMINGS, type NoteNaming } from '../music/chords'
 import { loadInstrument, type Instrument } from '../music/diagrams'
@@ -51,6 +52,7 @@ const H = ({ children }: { children: ReactNode }) => <h3 className="mb-1 mt-1 te
 export function TextPanel({ song, pages, currentPage }: PanelProps) {
   const s = useSettings((st) => st.s)
   const setIn = useSettings((st) => st.setIn)
+  const terms = useTerms()
   const sessionMap = useViewer((v) => v.transpose)
   const textZoom = useViewer((v) => v.textZoom)
   const setV = useViewer((v) => v.set)
@@ -71,6 +73,35 @@ export function TextPanel({ song, pages, currentPage }: PanelProps) {
     return updateSong(song.id, { text: next })
   }
   const setSession = (n: number) => setV({ transpose: { ...useViewer.getState().transpose, [song.id]: n } })
+  // Text size is saved with the song (any temporary zoom is folded into it). Dragging previews through the
+  // session zoom; the song is written once on release, as each write reloads and repaginates it and syncs.
+  const fontScale = song.text?.fontScale ?? 1
+  const textSize = textZoom * fontScale
+  const committing = useRef<number | null>(null)
+  const previewTextSize = (v: number) => setV({ textZoom: v / fontScale })
+  const commitTextSize = (v: number) => {
+    const n = Math.round(v * 100) / 100
+    if (n === fontScale) {
+      if (useViewer.getState().textZoom !== 1) setV({ textZoom: 1 })
+      return
+    }
+    committing.current = n
+    void setText({ fontScale: n === 1 ? undefined : n })
+  }
+  // Drop the preview zoom in the same frame the saved size arrives, so the text doesn't jump.
+  useLayoutEffect(() => {
+    if (committing.current === null || committing.current !== fontScale) return
+    committing.current = null
+    setV({ textZoom: 1 })
+  }, [fontScale, setV])
+  const sizeSlider = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    // The native change event fires once the slider is released (or per key press).
+    const el = sizeSlider.current
+    const onCommit = (e: Event) => commitTextSize(Number((e.target as HTMLInputElement).value))
+    el?.addEventListener('change', onCommit)
+    return () => el?.removeEventListener('change', onCommit)
+  })
   const total = session + saved
 
   // Key display: text songs use the parsed song; ABC uses its K: field.
@@ -108,10 +139,10 @@ export function TextPanel({ song, pages, currentPage }: PanelProps) {
                 onClick={async () => {
                   await setText({ transpose: ((((total % 12) + 18) % 12) - 6) || undefined })
                   setSession(0)
-                  toast('Transposition saved to the song', 'ok')
+                  toast(`Transposition saved to the ${terms.song}`, 'ok')
                 }}
               >
-                Save to song
+                Save to {terms.song}
               </button>
             )}
             <button
@@ -154,10 +185,10 @@ export function TextPanel({ song, pages, currentPage }: PanelProps) {
 
       <section className="divide-y divide-white/10">
         <H>Text</H>
-        <Row label="Text size" hint={`${Math.round(textZoom * 100)}%`}>
-          <div className="flex items-center gap-2">
-            <Slider className="w-32" label="Text size" min={0.5} max={2.5} step={0.05} value={textZoom} onChange={(v) => setV({ textZoom: v })} />
-            <button type="button" className="flex size-9 items-center justify-center rounded-lg text-white/60 hover:bg-white/10" aria-label="Reset text size" onClick={() => setV({ textZoom: 1 })}>
+        <Row label="Text size" hint={`${Math.round(textSize * 100)}% for this ${terms.song}`}>
+          <div ref={sizeSlider} className="flex items-center gap-2">
+            <Slider className="w-32" label="Text size" min={0.5} max={2.5} step={0.05} value={textSize} onChange={previewTextSize} />
+            <button type="button" className="flex size-9 items-center justify-center rounded-lg text-white/60 hover:bg-white/10" aria-label="Reset text size" onClick={() => commitTextSize(1)}>
               <RotateCcw className="size-3.5" />
             </button>
           </div>
@@ -233,7 +264,7 @@ export function TextPanel({ song, pages, currentPage }: PanelProps) {
               options={[
                 { value: 'off', label: 'Off' },
                 { value: 'panel', label: 'Here' },
-                { value: 'bottom', label: 'In song' },
+                { value: 'bottom', label: `In ${terms.song}` },
               ]}
             />
           </Row>
@@ -275,11 +306,12 @@ export function TextPanel({ song, pages, currentPage }: PanelProps) {
 
 function DiagramList({ textPage, chords }: { textPage: Extract<PanelProps['pages'][number], { type: 'text' }>; chords: ReturnType<typeof chordContext> }) {
   const [, force] = useState(0)
+  const terms = useTerms()
   useEffect(() => {
     loadInstrument(chords.instrument).then(() => force((n) => n + 1))
   }, [chords.instrument])
   const items = songDiagrams(textPage.cp, chords)
-  if (!items.length) return <div className="py-3 text-sm text-white/50">No chords in this song.</div>
+  if (!items.length) return <div className="py-3 text-sm text-white/50">No chords in this {terms.song}.</div>
   return (
     <div className="grid grid-cols-[repeat(auto-fill,minmax(76px,1fr))] gap-3 py-3 text-white" style={{ fontSize: 15 }}>
       {items.map((it) =>

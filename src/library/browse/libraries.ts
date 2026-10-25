@@ -7,6 +7,7 @@ import { create } from 'zustand'
 import { openLibrary } from '../../db/db'
 import { useNav } from '../../state/nav'
 import { useViewer } from '../../state/viewer'
+import { uniqueTitle } from './logic'
 
 export interface LibraryInfo {
   id: string
@@ -82,22 +83,56 @@ function slug(name: string) {
   return `${base || 'library'}-${Math.random().toString(36).slice(2, 7)}`
 }
 
+/** `name`, or "name (1)", "name (2)"… when another library already has it (case-insensitive). */
+export function uniqueLibraryName(name: string, exceptId?: string): string {
+  return uniqueTitle(name.trim(), useLibraries.getState().list.filter((l) => l.id !== exceptId).map((l) => l.name))
+}
+
+/** Create a library; a name already in use gets a number (read it back with `libraryName`). */
 export function createLibrary(name: string): string {
   const id = slug(name)
-  save([...useLibraries.getState().list, { id, name: name.trim(), createdAt: Date.now() }])
+  save([...useLibraries.getState().list, { id, name: uniqueLibraryName(name), createdAt: Date.now() }])
   return id
 }
 
-export function renameLibrary(id: string, name: string) {
-  save(useLibraries.getState().list.map((l) => (l.id === id ? { ...l, name: name.trim() } : l)))
+/** Rename a library; returns the name used (numbered if another library has it). */
+export function renameLibrary(id: string, name: string): string {
+  const unique = uniqueLibraryName(name, id)
+  save(useLibraries.getState().list.map((l) => (l.id === id ? { ...l, name: unique } : l)))
+  return unique
 }
 
-/** Delete a library and all its data. The default library can only be emptied, not removed. */
-export async function deleteLibrary(id: string) {
-  if (id === 'default') return
+export const libraryName = (id: string) => useLibraries.getState().list.find((l) => l.id === id)?.name ?? DEFAULT.name
+
+/**
+ * Delete a library and all its data. The default library can only be emptied, not removed. Resolves false
+ * when the data couldn't be erased yet (another tab keeps the database open); it goes once that tab lets go.
+ */
+export async function deleteLibrary(id: string): Promise<boolean> {
+  if (id === 'default') return true
   if (useLibraries.getState().active === id) switchLibrary('default')
   save(useLibraries.getState().list.filter((l) => l.id !== id))
   // Library sync: retire this device from the synced library (best effort) and clear the capture flag.
   await import('../../libsync/service').then((m) => m.beforeLibraryDelete(dbNameFor(id))).catch(() => {})
-  await Dexie.delete(dbNameFor(id))
+  return deleteDatabase(dbNameFor(id))
+}
+
+/**
+ * `Dexie.delete` without its "blocked" warning: a just-closed connection finishing its last reads delays the
+ * delete for a moment, which is expected. Gives up waiting (the request stays queued) after `ms`.
+ */
+function deleteDatabase(name: string, ms = 10_000): Promise<boolean> {
+  if (typeof indexedDB === 'undefined') return Dexie.delete(name).then(() => true)
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => resolve(false), ms)
+    const req = indexedDB.deleteDatabase(name)
+    req.onsuccess = () => {
+      clearTimeout(timer)
+      resolve(true)
+    }
+    req.onerror = () => {
+      clearTimeout(timer)
+      reject(req.error ?? new Error('Could not delete the library'))
+    }
+  })
 }

@@ -5,12 +5,12 @@ import { isCaptureOn } from '../db/capture'
 import { openLibrary, pruneAnnotations } from '../db/db'
 import type { SongLayers } from '../db/schema'
 import { SyncError } from './engine'
-import { deleteRemote, leave } from './join'
+import { deleteRemote, join, leave, retireBeforeDelete } from './join'
 import { decodeDevice } from './codec'
 import { deviceKey, headsPrefix, libraryPrefix, logKey, logPrefix } from './paths'
 import { uniqueDeviceName } from '../sync/deviceName'
 import { getConfig, getState, putState } from './state'
-import { addSong, bytes, converge, enableDevice, joinDevice, outgoing, page, setlist, settle, stroke, view, world } from './sync.test-helper'
+import { addSong, bytes, converge, enableDevice, joinDevice, outgoing, page, pairing, setlist, settle, stroke, view, world } from './sync.test-helper'
 
 const DAY = 24 * 60 * 60_000
 const ids = (items: { id: string }[] | undefined) => (items ?? []).map((i) => i.id)
@@ -36,7 +36,7 @@ describe('join', () => {
 
     const { previewJoin } = await import('./join')
     const { pairing } = await import('./sync.test-helper')
-    expect(await previewJoin(B, await pairing(A), w.opts())).toEqual({ remoteSongs: 2, remoteBytes: 400, localSongs: 3, matches: 1, suggested: 'newLibrary' })
+    expect(await previewJoin(B, await pairing(A), w.opts())).toEqual({ remoteSongs: 2, remoteBytes: 400, localSongs: 3, demoSongs: 0, matches: 1, suggested: 'newLibrary' })
 
     const eB = await joinDevice(w, B, A, 'merge')
     await converge(eA, eB)
@@ -60,10 +60,127 @@ describe('join', () => {
     const eA = await enableDevice(w, A)
     const B = w.db('B')
     await addSong(B, 'demo', 'Welcome to OpenStand')
+    const { previewJoin } = await import('./join')
+    const { pairing } = await import('./sync.test-helper')
+    expect(await previewJoin(B, await pairing(A), w.opts({ isUntouchedDemo: async (s) => s.id === 'demo' }))).toMatchObject({ localSongs: 0, demoSongs: 1, suggested: 'here' })
     const eB = await joinDevice(w, B, A, 'here', { isUntouchedDemo: async (s) => s.id === 'demo' })
     await converge(eA, eB)
     expect((await A.songs.toArray()).map((s) => s.id)).toEqual(['s1'])
     expect((await B.songs.toArray()).map((s) => s.id)).toEqual(['s1'])
+  })
+
+  it('rejoining after the library was deleted and set up again merges local edits to records with the same ids', async () => {
+    // QA: A deletes the synced data and sets sync up again (same song ids); C, which edited meanwhile, joins
+    // the new library in merge mode. The re-uploaded versions used to overwrite C's edits.
+    const w = world()
+    const A = w.db('A')
+    await addSong(A, 's1', 'Speed the Plough', { files: [{ id: 'f1', data: bytes(1, 300) }], patch: { tags: ['folk'], playCount: 3, notes: '' } })
+    await A.annotations.put(page('s1', 'f1', [stroke('a1')]))
+    await A.kv.put({ key: 'layers:s1', value: { layers: [{ id: 'default', name: 'Default', visible: true }], current: 'default' } })
+    await A.setlists.put(setlist('SL', 'Gig', ['s1']))
+    const eA = await enableDevice(w, A)
+    const C = w.db('C')
+    const eC = await joinDevice(w, C, A)
+    await converge(eA, eC)
+
+    await deleteRemote(A, eA, w.opts())
+    await expect(eC.sync()).rejects.toMatchObject({ code: 'libraryGone' })
+    // C's edits after the library went away: a tag, a note, a stroke, a layer, a setlist entry, a play.
+    await addSong(C, 'c2', 'Only on C')
+    await C.table('songs').update('s1', { tags: ['folk', 'gone-two'], notes: 'from C', playCount: 4 })
+    await C.annotations.put(page('s1', 'f1', [stroke('a1'), stroke('c1', 'fing')]))
+    await C.kv.put({
+      key: 'layers:s1',
+      value: { layers: [{ id: 'default', name: 'Default', visible: true }, { id: 'fing', name: 'Fingering', visible: true }], current: 'fing' },
+    })
+    await C.setlists.put({ ...setlist('SL', 'Gig', ['s1', 'c2']), modifiedAt: 2000 })
+    await leave(C, eC, w.opts())
+    expect((await getState(C, 'unsynced'))?.ops.length).toBeGreaterThan(0)
+    // After leaving nothing is captured: a set member only C has is merged by value; a field C had kept
+    // unsynced and changed again is replayed with its latest value.
+    await C.table('songs').update('s1', { tags: ['folk', 'gone-two', 'after-leave'], notes: 'later on C' })
+
+    w.advance(60_000)
+    const eA2 = await enableDevice(w, A)
+    // A first attempt fails in its bootstrap; the rejoin flow leaves again before retrying, and the kept
+    // edits survive that.
+    const failing = w.backend()
+    failing.fail({ op: 'get', key: /\/snap\//, times: Infinity })
+    await expect(join(C, await pairing(A), 'merge', w.opts({ backend: failing }))).rejects.toBeTruthy()
+    await leave(C, undefined, w.opts({ backend: failing }))
+    expect(await getState(C, 'unsynced')).toMatchObject({ resolved: true, libraryId: eC.config.libraryId })
+    const eC2 = await joinDevice(w, C, A, 'merge')
+    await converge(eA2, eC2)
+    for (const d of [A, C]) {
+      const s1 = (await d.songs.get('s1'))!
+      expect([[...s1.tags].sort(), s1.notes, s1.playCount]).toEqual([['after-leave', 'folk', 'gone-two'], 'later on C', 4])
+      expect(ids((await d.annotations.get('s1:f1:0'))?.items).sort()).toEqual(['a1', 'c1'])
+      expect(((await d.kv.get('layers:s1'))!.value as SongLayers).layers.map((l) => l.name).sort()).toEqual(['Default', 'Fingering'])
+      expect((await d.setlists.get('SL'))!.entries.map((e) => e.songId)).toEqual(['s1', 'c2'])
+    }
+    expect(await view(C)).toEqual(await view(A))
+    expect(await getState(C, 'unsynced')).toBeUndefined()
+  })
+
+  describe('rejoining the same library replays kept edits with their own timestamps', () => {
+    async function scenario(away: number) {
+      const w = world()
+      const A = w.db('A')
+      await addSong(A, 's1', 'Title')
+      const eA = await enableDevice(w, A)
+      const C = w.db('C')
+      const cb = w.backend()
+      const eC = await joinDevice(w, C, A, 'here', { backend: cb })
+      // C can't push: its edits stay in the outbox and leaving keeps them.
+      const heal = cb.fail({ op: 'put', times: Infinity })
+      await C.table('songs').update('s1', { title: 'Older title on C', notes: 'Only C set this' })
+      await expect(eC.sync()).rejects.toMatchObject({ code: 'network' })
+      w.advance(60_000)
+      await A.table('songs').update('s1', { title: 'Newer title on A' })
+      await eA.sync()
+      await leave(C, eC, w.opts({ backend: cb }))
+      expect((await getState(C, 'unsynced'))?.libraryId).toBe(eA.config.libraryId)
+      heal()
+      w.advance(away)
+      const eC2 = await joinDevice(w, C, A, 'merge')
+      await converge(eA, eC2)
+      return { A, C }
+    }
+
+    it('a newer edit from another device wins; a field only this device changed is kept', async () => {
+      const { A, C } = await scenario(1000)
+      for (const d of [A, C]) expect((await d.songs.get('s1'))).toMatchObject({ title: 'Newer title on A', notes: 'Only C set this' })
+    })
+
+    it('edits kept longer than 30 days are dropped', async () => {
+      const { A, C } = await scenario(31 * DAY)
+      for (const d of [A, C]) expect((await d.songs.get('s1'))).toMatchObject({ title: 'Newer title on A', notes: '' })
+      expect(await getState(C, 'unsynced')).toBeUndefined()
+    })
+  })
+
+  it('a row whose remote creation arrives after an edit is left alone until then, then merged', async () => {
+    // No snapshot yet: a device's edit can arrive before the creation from another device's log.
+    const { Engine } = await import('./engine')
+    const { applyOps } = await import('./apply')
+    const { captureRecord } = await import('./merge')
+    const { formatHlc } = await import('./hlc')
+    const w = world()
+    const A = w.db('A')
+    const eA = await enableDevice(w, A)
+    const C = w.db('C')
+    await addSong(C, 's1', 'Local title', { patch: { tags: ['local'], playCount: 3 } })
+    const eC = await Engine.fromConfig(C, { ...eA.config, deviceId: 'cccccccccccccccc' }, w.opts())
+    const dev = 'aaaaaaaaaaaaaaaa'
+    const remote = (await import('../db/schema')).emptySong({ id: 's1', title: 'Remote title', tags: ['remote'], playCount: 3, createdAt: 1000, modifiedAt: 1000 })
+    const created = captureRecord('song', remote, undefined, formatHlc(w.now(), 0, dev), dev)
+    const edited = captureRecord('song', { ...remote, title: 'Remote edit' }, created.shadow, formatHlc(w.now() + 1, 0, dev), dev)
+    await applyOps(eC.core, [edited.delta!])
+    expect(await C.songs.get('s1')).toMatchObject({ title: 'Local title', tags: ['local'], playCount: 3 })
+    await applyOps(eC.core, [created.delta!])
+    const s1 = (await C.songs.get('s1'))!
+    expect([s1.title, [...s1.tags].sort(), s1.playCount]).toEqual(['Remote edit', ['local', 'remote'], 3])
+    expect(await C.syncDirty.get('song/s1')).toBeTruthy()
   })
 
   it('a wrong secret or deleted library is reported', async () => {
@@ -341,6 +458,12 @@ describe('device names', () => {
     await w.backend().put(logKey(eB.core.keys.libraryId, eB.config.deviceId, seq), bytes(9, 200))
     await eA.sync()
     expect(eA.status.streams?.[eB.config.deviceId]?.message).toBe('Changes from “Stage iPad” can’t be read right now. Other devices keep syncing.')
+
+    // Deleting the library on B retires its record under its own name, not the default one.
+    eB.stop()
+    await retireBeforeDelete(B, w.opts(named('B')))
+    await eA.refreshDevices()
+    expect(eA.status.devices.find((d) => !d.self)).toMatchObject({ name: 'Stage iPad', retired: true })
   })
 })
 

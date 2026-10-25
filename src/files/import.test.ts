@@ -4,15 +4,22 @@ import {
   capitalizeWords,
   folderFields,
   formatDuration,
+  ignoredFilesMessage,
+  isJunkPath,
   importFiles,
+  isDurationText,
   matchPattern,
   parseDuration,
+  metadataFromText,
   previewSource,
   previewWithContent,
+  readImportFile,
   refreshMetaFromText,
+  sourcesFromFileList,
   stripCommonRoot,
 } from './import'
 import { emptySong } from '../db/schema'
+import { abcKey } from './abcMeta'
 
 describe('import patterns', () => {
   it('matches filename patterns', () => {
@@ -27,6 +34,8 @@ describe('import patterns', () => {
     expect(parseDuration('1:02:03')).toBe(3723)
     expect(parseDuration('90')).toBe(90)
     expect(parseDuration('')).toBe(0)
+    expect(['3:45', '1:02:03', '90', ''].every(isDurationText)).toBe(true)
+    expect(['3:', ':45', '3::4', '1:2:3:4'].some(isDurationText)).toBe(false)
     expect(formatDuration(205)).toBe('3:25')
     expect(formatDuration(3723)).toBe('1:02:03')
     expect(formatDuration(0)).toBe('')
@@ -57,6 +66,8 @@ describe('import patterns', () => {
     expect(previewWithContent({ file }, opts).song.title).toBe('track01')
     const abc = previewWithContent({ file: new File(['x'], 'tune.abc') }, {}, { text: 'X:1\nT:Reel\nC:Trad\nK:G\n|GABc|' })
     expect(abc.song).toMatchObject({ title: 'Reel', composers: ['Trad'], keys: ['G'] })
+    const bad = previewWithContent({ file: new File(['x'], 'b.abc') }, {}, { text: 'X:1\nT:Broken\nK:Q\n|abc|' })
+    expect(bad.song.keys).toEqual([])
     const pdf = new File(['x'], 'scan001.pdf', { type: 'application/pdf' })
     expect(previewWithContent({ file: pdf }, { pdfTitle: true }, { pdfTitle: 'Sonata' }).song.title).toBe('Sonata')
     expect(previewWithContent({ file: pdf }, { pdfTitle: false }, { pdfTitle: 'Sonata' }).song.title).toBe('scan001')
@@ -64,9 +75,10 @@ describe('import patterns', () => {
   it('refreshes file-derived metadata after a text edit without clobbering user edits', () => {
     const oldText = '{title: Old}\n{artist: Ann}\n{key: C}\n{tempo: 100}\n[C]x'
     const newText = '{title: New}\n{artist: Bob}\n{key: D}\n{tempo: 120}\n{album: LP}\n[D]x'
-    const derived = emptySong({ id: 's', title: 'Old', artists: ['Ann'], keys: ['C'], tempos: [100], metronome: { bpm: 100 } })
+    const derived = emptySong({ id: 's', title: 'Old', artists: ['Ann'], keys: ['C'], tempos: [100] })
     refreshMetaFromText(derived, 'chordpro', oldText, newText)
-    expect(derived).toMatchObject({ title: 'New', artists: ['Bob'], keys: ['D'], albums: ['LP'], tempos: [120], metronome: { bpm: 120 } })
+    expect(derived).toMatchObject({ title: 'New', artists: ['Bob'], keys: ['D'], albums: ['LP'], tempos: [120] })
+    expect(derived.metronome).toBeUndefined()
     const edited = emptySong({ id: 's', title: 'My Title', artists: ['Someone Else'], keys: ['C'], tempos: [90] })
     refreshMetaFromText(edited, 'chordpro', oldText, newText)
     expect(edited).toMatchObject({ title: 'My Title', artists: ['Someone Else'], keys: ['D'], tempos: [90] })
@@ -127,6 +139,11 @@ describe('importFiles', () => {
     await importFiles([txt('x.txt', 'same')])
     const r = await importFiles([txt('y.txt', 'same'), txt('z.txt', 'other')], { skipDuplicates: true })
     expect(r.skipped.map((s) => s.name)).toEqual(['y.txt'])
+    expect(r.skipped[0].reason).toBe('Already in library')
+    // A copy of another file picked in the same import isn't "already in library".
+    const b = await importFiles([txt('m.txt', 'twin'), txt('n.txt', 'twin')], { skipDuplicates: true })
+    expect(b.songs.map((s) => s.title)).toEqual(['m'])
+    expect(b.skipped).toEqual([{ name: 'n.txt', reason: 'Duplicate of another file in this import' }])
     const c = await importFiles([txt('p1.txt', 'p1'), txt('p2.txt', 'p2')], { combine: true, collection: 'Book' })
     expect(c.songs).toHaveLength(1)
     expect(c.songs[0].files.map((f) => f.name)).toEqual(['p1.txt', 'p2.txt'])
@@ -136,5 +153,62 @@ describe('importFiles', () => {
     expect(c2.skipped).toEqual([])
     expect(c2.songs[0].title).toBe('q1')
     expect(c2.songs[0].files.map((f) => f.name)).toEqual(['q1.txt', 'q2.txt'])
+  })
+})
+
+describe('unsupported files', () => {
+  it('collects names of ignored files and explains audio', async () => {
+    const ignored: string[] = []
+    const srcs = sourcesFromFileList([new File(['x'], 'a.pdf', { type: 'application/pdf' }), new File(['x'], 'take.wav'), new File(['x'], 'notes.docx')], ignored)
+    expect(srcs.map((s) => s.file.name)).toEqual(['a.pdf'])
+    expect(ignored).toEqual(['take.wav', 'notes.docx'])
+    expect(ignoredFilesMessage(ignored)).toBe('Ignored 2 unsupported files (take.wav, notes.docx). Audio files can be attached in a song’s Audio tab.')
+    expect(ignoredFilesMessage(['notes.docx'])).toBe('Ignored 1 unsupported file (notes.docx).')
+    expect(ignoredFilesMessage([])).toBeNull()
+    expect(await readImportFile({ file: new File(['x'], 'take.mp3') })).toEqual({ error: 'Audio files go in the Audio tab' })
+  })
+
+  it('skips hidden files and OS clutter without reporting them', () => {
+    const ignored: string[] = []
+    const inDir = (name: string, rel: string) => Object.assign(new File(['x'], name), { webkitRelativePath: rel })
+    const srcs = sourcesFromFileList(
+      [
+        new File(['x'], '.DS_Store'),
+        new File(['x'], 'Thumbs.db'),
+        new File(['x'], 'desktop.ini'),
+        inDir('._a.pdf', 'Songs/__MACOSX/._a.pdf'),
+        inDir('b.pdf', 'Songs/.hidden/b.pdf'),
+        inDir('a.pdf', '.Root/a.pdf'),
+        new File(['x'], 'notes.docx'),
+      ],
+      ignored,
+    )
+    expect(srcs.map((s) => s.path)).toEqual(['.Root/a.pdf'])
+    expect(ignored).toEqual(['notes.docx'])
+    expect(isJunkPath('Songs/__MACOSX/x.pdf')).toBe(true)
+    expect(isJunkPath('Songs/a.pdf')).toBe(false)
+  })
+})
+
+describe('ABC key field', () => {
+  it('accepts keys and modes, rejects anything else', () => {
+    expect(['G', 'F#m', 'Bbmaj', 'E minor', 'Ador', 'AMix', 'G clef=bass', 'Q', 'none', 'HP', 'Gxyz'].map(abcKey)).toEqual([
+      'G', 'F#m', 'Bb', 'Em', 'Ador', 'Amix', 'G', undefined, undefined, undefined, undefined,
+    ])
+  })
+})
+
+describe('keys from German-style files', () => {
+  it('stores keys in standard spelling', () => {
+    const song = () => emptySong({ id: 'x', title: '' })
+    const a = song()
+    metadataFromText('chordpro', '{meta: notation german}\n{key: B}', a)
+    expect(a.keys).toEqual(['Bb'])
+    const b = song()
+    metadataFromText('chordpro', '{key: H}\n[H]la', b, 'german')
+    expect(b.keys).toEqual(['B'])
+    const c = song()
+    metadataFromText('chordpro', '{key: B}', c, 'english')
+    expect(c.keys).toEqual(['B'])
   })
 })

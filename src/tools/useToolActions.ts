@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react'
-import { updateSong } from '../db/db'
+import { db, updateSong } from '../db/db'
 import type { Song } from '../db/schema'
+import { terms } from '../library/browse/terms'
 import { settings } from '../state/settings'
 import { useViewer } from '../state/viewer'
 import { toast } from '../ui/primitives'
@@ -11,20 +12,35 @@ import { player, stepTrack, useAudio } from './audio/player'
 import { stepFactor } from './autoScroll/math'
 import { followLink, stepSmartButton } from './commands'
 import { metronome, songMetronome, useMetronome } from './metronome/engine'
-import { nextTempoIndex, tapTempo } from './metronome/tempo'
+import { nextTempoIndex, retempo, tapTempo } from './metronome/tempo'
 import { linkToActivate, nextBookmark, prevBookmark, visiblePages } from './navigation'
 import { useTools } from './store'
 
 let taps: number[] = []
+let tempoWrites = Promise.resolve()
+
+/**
+ * Save a metronome tempo change into the song's tempo list (see `retempo`). Writes run one after another
+ * against the stored song, so a dragged slider edits the same entry throughout.
+ */
+export function saveTempo(songId: string, from: number, to: number) {
+  tempoWrites = tempoWrites
+    .then(async () => {
+      const s = await db.songs.get(songId)
+      if (s) await updateSong(songId, retempo(s, from, to))
+    })
+    .catch((e) => console.warn('saving tempo failed', e))
+}
 
 /** Apply a tap-tempo tap to the current song (saved per song). */
 export function tap(song: Song) {
   const r = tapTempo(taps, performance.now())
   taps = r.taps
   if (r.bpm === null) return null
-  const cfg = { ...songMetronome(song), bpm: r.bpm }
-  metronome.configure(cfg)
-  void updateSong(song.id, { metronome: { ...song.metronome, bpm: r.bpm } })
+  const cfg = songMetronome(song)
+  const from = metronome.songId === song.id ? useMetronome.getState().bpm : cfg.bpm
+  metronome.configure({ ...cfg, bpm: r.bpm }, song.id)
+  saveTempo(song.id, from, r.bpm)
   return r.bpm
 }
 
@@ -58,7 +74,7 @@ export function useToolActions(props: PanelProps) {
       nextTempo: () => {
         const s = song()
         const tempos = (s.tempos ?? []).filter((t) => t > 0)
-        if (!tempos.length) return toast('No tempos saved for this song')
+        if (!tempos.length) return toast(`No tempos saved for this ${terms(settings()).song}`)
         const i = nextTempoIndex(tempos, useMetronome.getState().bpm)
         metronome.configure({ ...metronome.cfg, bpm: tempos[i] })
         toast(`Tempo ${i + 1}/${tempos.length}: ${tempos[i]} BPM`)
@@ -89,13 +105,13 @@ export function useToolActions(props: PanelProps) {
       nextAudioTrack: () => void stepTrack(song(), 1),
       toggleAudioPlayer: () => useTools.setState({ playerVisible: !useTools.getState().playerVisible }),
       nextBookmark: () => {
-        const b = nextBookmark(song().bookmarks, live.current.currentPage)
+        const b = nextBookmark(song().bookmarks, visible())
         if (!b) return toast('No more bookmarks')
         viewerApi()?.goToPage(b.pageIndex)
         toast(b.name)
       },
       prevBookmark: () => {
-        const b = prevBookmark(song().bookmarks, live.current.currentPage)
+        const b = prevBookmark(song().bookmarks, visible())
         if (!b) return toast('No earlier bookmarks')
         viewerApi()?.goToPage(b.pageIndex)
         toast(b.name)
@@ -109,7 +125,7 @@ export function useToolActions(props: PanelProps) {
       followLink: () => {
         const s = song()
         const p = useTools.getState().linkPointer
-        if (!s.links.length) return toast('This song has no link points')
+        if (!s.links.length) return toast(`This ${terms(settings()).song} has no link points`)
         if (p >= s.links.length) return toast('End of link points')
         followLink(s, p)
       },
@@ -120,7 +136,7 @@ export function useToolActions(props: PanelProps) {
       nextSmartButton: () => stepSmartButton(song(), 1),
       prevSmartButton: () => stepSmartButton(song(), -1),
       showNotesPopup: () => {
-        if (!song().notes.trim()) return toast('This song has no notes')
+        if (!song().notes.trim()) return toast(`This ${terms(settings()).song} has no notes`)
         useTools.setState({ notesPopup: !useTools.getState().notesPopup })
       },
     })

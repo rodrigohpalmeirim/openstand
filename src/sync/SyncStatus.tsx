@@ -1,8 +1,11 @@
 import { RadioTower, RefreshCw } from 'lucide-react'
+import { useEffect } from 'react'
 import { useSettings } from '../state/settings'
-import { Button, Popover, cx, useMenu } from '../ui/primitives'
+import { useViewer } from '../state/viewer'
+import { Button, cx, useMenu } from '../ui/primitives'
+import { DarkPop } from '../viewer/dark'
 import { sends } from './protocol'
-import { disconnect, syncNow, useSync, type SyncStatus as Status } from './sync'
+import { disconnect, syncNow, useMyRole, useSync, type SyncStatus as Status } from './sync'
 
 const DOT: Record<Status, string> = {
   off: 'bg-faint',
@@ -11,9 +14,9 @@ const DOT: Record<Status, string> = {
   error: 'bg-danger animate-pulse',
 }
 
-export function syncLabel(status: Status, peers: number, role: string) {
+export function syncLabel(status: Status, peers: number, role: string, configError?: boolean) {
   if (status === 'connecting') return 'Connecting…'
-  if (status === 'error') return 'Reconnecting…'
+  if (status === 'error') return configError ? 'Sync settings problem' : 'Reconnecting…'
   if (status === 'off') return 'Sync off'
   const r = role === 'leader' ? 'Leading' : role === 'follower' ? 'Following' : 'Synced'
   return `${r} · ${peers}`
@@ -48,11 +51,18 @@ export function PeerList({ empty = 'No other devices yet' }: { empty?: string })
  */
 export function SyncStatus({ className }: { className?: string }) {
   const status = useSync((s) => s.status)
-  const error = useSync((s) => s.error)
+  const error = useSync((s) => s.configError ?? s.error)
+  const configError = useSync((s) => !!s.configError)
   const peers = useSync((s) => Object.keys(s.peers).length)
-  const role = useSettings((s) => s.s.sync.role)
+  const role = useMyRole()
   const room = useSettings((s) => s.s.sync.room)
+  const chrome = useViewer((v) => v.toolbar || v.annotating)
   const m = useMenu()
+  const { open, close } = m
+  // The pill lives in the toolbar: close its popover when the toolbar hides.
+  useEffect(() => {
+    if (!chrome && open) close()
+  }, [chrome, open, close])
   if (status === 'off') return null
   return (
     <>
@@ -60,7 +70,7 @@ export function SyncStatus({ className }: { className?: string }) {
         ref={m.ref}
         type="button"
         title="Device sync"
-        aria-label={`Device sync: ${syncLabel(status, peers, role)}`}
+        aria-label={`Device sync: ${syncLabel(status, peers, role, configError)}`}
         onClick={m.toggle}
         className={cx(
           'inline-flex h-8 items-center gap-1.5 rounded-full border border-white/10 bg-white/10 px-2.5 text-xs font-medium text-white/85 backdrop-blur transition hover:bg-white/15',
@@ -69,9 +79,9 @@ export function SyncStatus({ className }: { className?: string }) {
       >
         <RadioTower className="size-3.5" />
         <span className={cx('size-1.5 rounded-full', DOT[status])} />
-        <span className="tabular-nums">{syncLabel(status, peers, role)}</span>
+        <span className="tabular-nums">{syncLabel(status, peers, role, configError)}</span>
       </button>
-      <Popover anchor={m.anchor} open={m.open} onClose={m.close} className="w-72">
+      <DarkPop anchor={m.anchor} open={m.open} onClose={m.close} className="w-72">
         <div className="px-3 pb-1 pt-2">
           <div className="text-sm font-semibold">Room “{room}”</div>
           <div className="text-xs text-muted">
@@ -82,7 +92,7 @@ export function SyncStatus({ className }: { className?: string }) {
         <PeerList />
         <div className="flex gap-2 border-t border-line p-2">
           {sends(role) && (
-            <Button size="sm" variant="ghost" icon={<RefreshCw className="size-4" />} onClick={() => void syncNow()} className="flex-1">
+            <Button size="sm" variant="ghost" icon={<RefreshCw className="size-4" />} onClick={() => void syncNow()} disabled={!peers} className="flex-1">
               Sync others to me
             </Button>
           )}
@@ -97,7 +107,7 @@ export function SyncStatus({ className }: { className?: string }) {
             Disconnect
           </Button>
         </div>
-      </Popover>
+      </DarkPop>
     </>
   )
 }

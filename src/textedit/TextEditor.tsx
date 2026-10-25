@@ -98,7 +98,9 @@ export function TextEditor({ songId, fileId, onClose }: { songId: string; fileId
 
   const [text, setText] = useState<string | null>(null)
   const [original, setOriginal] = useState('')
-  const [kind, setKind] = useState<FileKind>('chordpro')
+  // Set by "Convert to ChordPro". The file becomes ChordPro only while the text still looks like it,
+  // so undoing the conversion also undoes the change of kind.
+  const [converted, setConverted] = useState(false)
   const [preview, setPreview] = useState(() => window.innerWidth >= 768)
   const [chordMode, setChordMode] = useState(false)
   const [lastChord, setLastChord] = useState('C')
@@ -108,12 +110,12 @@ export function TextEditor({ songId, fileId, onClose }: { songId: string; fileId
   const ta = useRef<HTMLTextAreaElement>(null)
   const insertMenu = useMenu()
 
-  // Load once.
+  // Load once. Line endings are normalised so edits and transforms never mix them.
   useEffect(() => {
     if (!file || text !== null) return
-    setKind(file.kind)
     fileText(file)
-      .then((t) => {
+      .then((raw) => {
+        const t = raw.replace(/\r\n?/g, '\n')
         setText(t)
         setOriginal(t)
       })
@@ -123,7 +125,9 @@ export function TextEditor({ songId, fileId, onClose }: { songId: string; fileId
       })
   }, [file, text])
 
-  const dirty = text !== null && (text !== original || (file && kind !== file.kind))
+  const fileKind: FileKind = file?.kind ?? 'chordpro'
+  const kind: FileKind = fileKind === 'text' && converted && text !== null && looksLikeChordPro(text) ? 'chordpro' : fileKind
+  const dirty = text !== null && (text !== original || kind !== fileKind)
 
   const close = useCallback(async () => {
     if (dirty && !(await confirmDialog({ title: 'Discard changes?', message: 'Your edits to this file have not been saved.', confirmLabel: 'Discard', danger: true }))) return
@@ -131,7 +135,8 @@ export function TextEditor({ songId, fileId, onClose }: { songId: string; fileId
   }, [dirty, onClose])
 
   const save = useCallback(async () => {
-    if (!song || !file || text === null) return
+    // Unedited files stay as they are (saving would rewrite CRLF files as LF and mark them changed).
+    if (!song || !file || text === null || !dirty) return
     setSaving(true)
     try {
       const next = await updateTextFile(song, fileId, text)
@@ -142,13 +147,14 @@ export function TextEditor({ songId, fileId, onClose }: { songId: string; fileId
         })
       }
       setOriginal(text)
+      setConverted(false)
       toast('Saved', 'ok')
     } catch (e) {
       toast(`Could not save: ${String(e)}`, 'error')
     } finally {
       setSaving(false)
     }
-  }, [song, file, fileId, text, kind])
+  }, [song, file, fileId, text, kind, dirty])
 
   // Keyboard: Ctrl/Cmd+S saves, Ctrl/Cmd+F finds, Escape closes.
   useEffect(() => {
@@ -168,6 +174,8 @@ export function TextEditor({ songId, fileId, onClose }: { songId: string; fileId
         e.stopPropagation()
         if (findOpen) setFindOpen(false)
         else close()
+      } else if (/^(Arrow(Up|Down)|Home|End|Tab)$/.test(e.key) && e.target instanceof HTMLElement && e.target.closest('[role="menu"]')) {
+        // Menu navigation (the Insert menu): the menu handles these itself and keeps arrows from the viewer.
       } else if (!(e.target instanceof HTMLElement && e.target.closest('input, textarea, select'))) {
         e.stopPropagation() // keep viewer shortcuts (page turns…) away while the editor is open
       }
@@ -237,11 +245,12 @@ export function TextEditor({ songId, fileId, onClose }: { songId: string; fileId
   return (
     <div className="fixed inset-0 z-[45] flex flex-col bg-bg text-fg" role="dialog" aria-modal="true" aria-label={`Edit ${file.name}`}>
       {/* Toolbar */}
-      <div className="flex shrink-0 items-center gap-1 border-b border-line bg-surface px-2 py-1.5">
+      {/* On phones the tools get a row of their own under the title. */}
+      <div className="flex shrink-0 flex-wrap items-center gap-1 border-b border-line bg-surface px-2 py-1.5">
         <IconButton label="Close editor" onClick={close}>
           <X className="size-5" />
         </IconButton>
-        <div className="min-w-0 flex-1 px-1">
+        <div className="min-w-24 flex-1 px-1">
           <div className="truncate text-sm font-semibold">{song.title}</div>
           <div className="truncate text-xs text-muted">
             {file.name}
@@ -249,8 +258,8 @@ export function TextEditor({ songId, fileId, onClose }: { songId: string; fileId
             {dirty && <span className="ml-1 text-accent">• edited</span>}
           </div>
         </div>
-        <div className="flex items-center gap-0.5 overflow-x-auto">
-          <Button ref={insertMenu.ref} variant="ghost" size="sm" className="h-10" onClick={insertMenu.toggle} aria-haspopup="menu">
+        <div className="flex items-center gap-0.5 overflow-x-auto max-sm:order-last max-sm:w-full max-sm:justify-between">
+          <Button ref={insertMenu.ref} variant="ghost" size="sm" className="h-10" onClick={insertMenu.toggle} aria-haspopup="menu" aria-label="Insert">
             <Plus className="size-4" /> <span className="hidden sm:inline">Insert</span> <ChevronDown className="size-3.5" />
           </Button>
           {!isAbc && (
@@ -267,7 +276,7 @@ export function TextEditor({ songId, fileId, onClose }: { songId: string; fileId
               onClick={() => {
                 if (text === null) return
                 applyAll(textToChordPro(text, s.text.sourceNaming))
-                setKind('chordpro')
+                setConverted(true)
                 toast('Converted to ChordPro — save to keep it')
               }}
             >
@@ -277,12 +286,14 @@ export function TextEditor({ songId, fileId, onClose }: { songId: string; fileId
           <IconButton label="Find and replace (Ctrl+F)" active={findOpen} onClick={() => setFindOpen((v) => !v)}>
             <Search className="size-4.5" />
           </IconButton>
-          <IconButton label="Smaller text" className="hidden sm:inline-flex" onClick={() => setIn('text', { editorFontSize: Math.max(10, fontSize - 1) })}>
-            <Minus className="size-4" />
-          </IconButton>
-          <IconButton label="Larger text" className="hidden sm:inline-flex" onClick={() => setIn('text', { editorFontSize: Math.min(32, fontSize + 1) })}>
-            <Plus className="size-4" />
-          </IconButton>
+          <div className="hidden items-center gap-0.5 sm:flex">
+            <IconButton label="Smaller text" onClick={() => setIn('text', { editorFontSize: Math.max(10, fontSize - 1) })}>
+              <Minus className="size-4" />
+            </IconButton>
+            <IconButton label="Larger text" onClick={() => setIn('text', { editorFontSize: Math.min(32, fontSize + 1) })}>
+              <Plus className="size-4" />
+            </IconButton>
+          </div>
           <IconButton label={preview ? 'Hide preview' : 'Show preview'} active={preview} onClick={() => setPreview((v) => !v)}>
             {preview ? <Eye className="size-4.5" /> : <EyeOff className="size-4.5" />}
           </IconButton>
@@ -393,7 +404,7 @@ function Preview({ text, kind }: { text: string; kind: FileKind }) {
     if (kind === 'abc') return null
     try {
       const src = kind === 'text' && !looksLikeChordPro(text) ? textToChordPro(text, style.sourceNaming) : text
-      return songBlocks(parseChordPro(src, { instrument: style.instrument }), { style: { ...style, diagrams: style.diagrams === 'bottom' ? 'bottom' : 'off' }, transpose: 0 })
+      return songBlocks(parseChordPro(src, { instrument: style.instrument, naming: style.sourceNaming }), { style: { ...style, diagrams: style.diagrams === 'bottom' ? 'bottom' : 'off' }, transpose: 0 })
     } catch (e) {
       return [{ key: 'err', node: <div className="text-sm text-red-700">{String(e)}</div> }]
     }

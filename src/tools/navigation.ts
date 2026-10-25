@@ -5,16 +5,21 @@ import type { Stop } from '../viewer/layout'
 
 export const sortBookmarks = (bms: Bookmark[]) => [...bms].sort((a, b) => a.pageIndex - b.pageIndex || a.name.localeCompare(b.name))
 
-/** First bookmark after the current page, or undefined at the end. */
-export function nextBookmark(bms: Bookmark[], currentPage: number): Bookmark | undefined {
-  return sortBookmarks(bms).find((b) => b.pageIndex > currentPage)
+/**
+ * First bookmark after the shown page(s), or undefined at the end. With several pages on screen (a
+ * spread), bookmarks on any of them are already in view: look past the last one.
+ */
+export function nextBookmark(bms: Bookmark[], shown: number | number[]): Bookmark | undefined {
+  const last = Math.max(...[shown].flat())
+  return sortBookmarks(bms).find((b) => b.pageIndex > last)
 }
 
-/** Last bookmark before the current page, or undefined at the start. */
-export function prevBookmark(bms: Bookmark[], currentPage: number): Bookmark | undefined {
+/** Last bookmark before the shown page(s) (the first one of a spread), or undefined at the start. */
+export function prevBookmark(bms: Bookmark[], shown: number | number[]): Bookmark | undefined {
+  const first = Math.min(...[shown].flat())
   return sortBookmarks(bms)
     .reverse()
-    .find((b) => b.pageIndex < currentPage)
+    .find((b) => b.pageIndex < first)
 }
 
 /* -------------------------------------------------------------------- links */

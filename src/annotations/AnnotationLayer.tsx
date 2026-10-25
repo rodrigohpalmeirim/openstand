@@ -11,6 +11,7 @@ import type { Annotation, Point, SongLayers, TextAnnotation } from '../db/schema
 import { settings, useSettings } from '../state/settings'
 import { toast } from '../ui/primitives'
 import { runAction } from '../viewer/actions'
+import { ZOOM_PREVIEW_ATTR } from '../viewer/api'
 import {
   bboxNorm,
   dist,
@@ -37,10 +38,10 @@ import {
 import { gridPath, itemAnchor, snapDelta, snapPoint, snapScale } from './grid'
 import { isVisible, setCurrentLayer, useSongLayers } from './layers'
 import { hasClipboard, paste, setClipboard, setTool, snapCell } from './ops'
-import { isHighlight, itemNodes, nodeToMarkup, type SvgNode } from './render'
+import { isHighlight, itemNodes, nodeToMarkup, visibleItems, type SvgNode } from './render'
 import { snipRegion, writeSystemClipboard } from './snip'
 import { clampMeasures, DEFAULT_STAFF_SPACE, STAFF_SPACES } from './staff'
-import { commit, getItems, pageKey, registerEditable, setItems, setSelection, undo, useAnnotUI, usePageItems } from './store'
+import { commit, getItems, pageKey, registerEditable, saveSoon, setItems, setSelection, undo, useAnnotUI, usePageItems, type TextEdit } from './store'
 import { isShapeTool, TOOL_LABEL, toolConfig, type ShapeTool, type ToolConfig, type ToolId } from './tools'
 
 /* ---------------------------------------------------------------- Helpers */
@@ -118,7 +119,8 @@ export function AnnotationLayer({ songId, fileId, page, editable }: { songId: st
   const ref = useRef<HTMLDivElement>(null)
   const size = useElementSize(ref)
   const editing = useAnnotUI((s) => (s.editing?.key === key ? s.editing : null))
-  const visible = useMemo(() => (layers.layers.every((l) => l.visible) ? items : items.filter((i) => isVisible(i, layers))), [items, layers])
+  // Drawing (and hit-testing) order follows the layer list.
+  const visible = useMemo(() => visibleItems(items, layers.layers), [items, layers])
   const H = size.w > 0 ? Math.round((W * size.h) / size.w * 100) / 100 : W
 
   return (
@@ -167,6 +169,8 @@ let activeTextCommit: (() => void) | null = null
 
 const SMOOTH_STREAM = [0, 0.2, 0.38, 0.55]
 const SMOOTH_TOL_PX = [0, 0.3, 0.6, 1.1]
+/** Pressure change (0..1) that keeps a point when simplifying a pressure stroke. */
+const PRESSURE_TOL = 0.06
 
 function findScroller(el: HTMLElement | null): HTMLElement | null {
   for (let n = el?.parentElement; n; n = n.parentElement) {
@@ -436,11 +440,8 @@ function Editor({
       const a = aspect()
       const hit = hitTopmost(live.current.visible.filter((i) => i.type === 'text'), p, px(6), a) as TextAnnotation | undefined
       if (hit) {
-        const pa = settings().annotations
-        useSettings.getState().setIn('annotations', {
-          tools: { ...pa.tools, text: { ...(pa.tools.text ?? {}), color: hit.color, opacity: hit.opacity, size: Math.round(hit.size * 1000), bold: !!hit.bold, italic: !!hit.italic, font: hit.font ?? 'sans', background: !!hit.background } },
-        })
-        useAnnotUI.setState({ editing: { key, id: hit.id, at: hit.at }, selection: null, activeKey: key })
+        const style = { color: hit.color, opacity: hit.opacity, size: hit.size * 1000, bold: !!hit.bold, italic: !!hit.italic, font: hit.font ?? 'sans', background: !!hit.background }
+        useAnnotUI.setState({ editing: { key, id: hit.id, at: hit.at, style }, selection: null, activeKey: key })
       } else {
         ensureLayerVisible()
         const at = snap(p)
@@ -472,7 +473,9 @@ function Editor({
         const cx = pts.reduce((s, p) => s + p.x, 0) / pts.length
         const cy = pts.reduce((s, p) => s + p.y, 0) / pts.length
         multi.moved += Math.hypot(cx - multi.cx, cy - multi.cy)
-        fingerScroll?.scroller?.scrollBy(-(cx - multi.cx), -(cy - multi.cy))
+        // The viewer's pinch zoom pans too while it previews; scrolling here would fight it.
+        const sc = fingerScroll?.scroller
+        if (sc && !sc.hasAttribute(ZOOM_PREVIEW_ATTR)) sc.scrollBy(-(cx - multi.cx), -(cy - multi.cy))
         multi.cx = cx
         multi.cy = cy
       } else if (fingerScroll?.scroller) {
@@ -552,7 +555,8 @@ function Editor({
       if (g) return
 
       e.preventDefault()
-      e.stopPropagation()
+      // Touches reach the viewer so a second finger can pinch-zoom (it cancels this stroke, see fingerDown).
+      if (e.pointerType !== 'touch') e.stopPropagation()
       rect = root.getBoundingClientRect()
       try {
         root.setPointerCapture(e.pointerId)
@@ -804,7 +808,8 @@ function Editor({
           if (len < px(2)) pts = [pts[0]]
           else if (!cur.straight) {
             const tol = px(SMOOTH_TOL_PX[s.smoothing] ?? 0.6)
-            pts = simplify(pts.map((q) => toLocal(q, a)), tol).map((q) => fromLocal(q, a))
+            // Pressure strokes keep the points where the width changes.
+            pts = simplify(pts.map((q) => toLocal(q, a)), tol, cur.pressure ? PRESSURE_TOL : 0).map((q) => fromLocal(q, a))
           }
           const item = { ...inkItem(cur, true), points: pts.map(roundPoint) } as Annotation
           commit(cur.tool === 'pen' ? 'Pen stroke' : 'Highlight', [{ key, before: getItems(key), after: [...getItems(key), item] }])
@@ -895,6 +900,7 @@ function Editor({
           break
       }
       if (useAnnotUI.getState().tempEraser) useAnnotUI.setState({ tempEraser: false })
+      saveSoon()
     }
 
     const onLeave = (e: PointerEvent) => {
@@ -975,9 +981,10 @@ function SelectionBox({ r }: { r: Rect }) {
 
 /* ------------------------------------------------------------ Text editor */
 
-function TextEditor({ edit, box, songLayer }: { edit: { key: string; id?: string; at: Point }; box: { w: number; h: number }; songLayer: string }) {
+function TextEditor({ edit, box, songLayer }: { edit: TextEdit; box: { w: number; h: number }; songLayer: string }) {
   const tools = useSettings((s) => s.s.annotations.tools)
-  const cfg = useMemo(() => toolConfig('text', tools), [tools])
+  // An existing text keeps its own style; a new one uses the Text tool's.
+  const cfg = useMemo(() => ({ ...toolConfig('text', tools), ...edit.style }), [tools, edit.style])
   const existing = useMemo(() => (edit.id ? (getItems(edit.key).find((i) => i.id === edit.id) as TextAnnotation | undefined) : undefined), [edit])
   const [text, setText] = useState(existing?.text ?? '')
   const ref = useRef<HTMLTextAreaElement>(null)
@@ -1021,6 +1028,7 @@ function TextEditor({ edit, box, songLayer }: { edit: { key: string; id?: string
         const item: TextAnnotation = { id: uid(), type: 'text', layer: songLayer, createdAt: Date.now(), at: edit.at, text: clean, ...style }
         commit('Text', [{ key: edit.key, before, after: [...before, item] }])
       }
+      saveSoon()
       useAnnotUI.setState({ editing: null })
     }
     activeTextCommit = commitEdit
@@ -1042,7 +1050,11 @@ function TextEditor({ edit, box, songLayer }: { edit: { key: string; id?: string
       aria-label="Annotation text"
       placeholder="Type…"
       onChange={(e) => setText(e.target.value)}
-      onBlur={() => activeTextCommit?.()}
+      onBlur={(e) => {
+        // The toolbar's colour and size controls restyle this text: using them keeps it open.
+        if (e.relatedTarget instanceof Element && e.relatedTarget.closest('[data-keeps-text-edit]')) return
+        activeTextCommit?.()
+      }}
       onPointerDown={(e) => e.stopPropagation()}
       onKeyDown={(e) => {
         e.stopPropagation()

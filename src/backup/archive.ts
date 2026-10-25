@@ -7,7 +7,7 @@
  */
 import { collectGarbage, db, uid } from '../db/db'
 import { sha256Blob } from '../libsync/crypto'
-import type { BlobRecord, KV, PageAnnotations, Setlist, Song } from '../db/schema'
+import { emptySong, type BlobRecord, type KV, type PageAnnotations, type Setlist, type Song } from '../db/schema'
 import { ZipReader, ZipWriter, type ZipSink } from './zip'
 
 export const APP_VERSION = '0.1.0'
@@ -53,6 +53,29 @@ export type OnProgress = (p: Progress) => void
 
 /** kv keys that describe this device's backup state; never exported or restored. */
 const LOCAL_KV = (k: string) => k.startsWith('backup.')
+
+/** kv rows that belong to one song (annotation layers, text layout); they follow the song's id. */
+const SONG_KV = /^(layers|textLayout):(.+)$/
+const songKvKeys = (songId: string) => [`layers:${songId}`, `textLayout:${songId}`]
+/** `{ songId, rekey(newId) }` for a per-song kv key, else null. */
+function songKv(key: string) {
+  const m = SONG_KV.exec(key)
+  return m ? { songId: m[2], rekey: (id: string) => `${m[1]}:${id}` } : null
+}
+
+/**
+ * Merge a backup's kv value into the local one: list values (collections, saved filters) are unioned,
+ * de-duplicated by `id`/`name` for objects; anything else keeps the local value.
+ */
+export function mergeKvValue(local: unknown, incoming: unknown): unknown {
+  if (!Array.isArray(local) || !Array.isArray(incoming)) return local
+  const keyOf = (x: unknown) => {
+    const o = x as { id?: unknown; name?: unknown } | null
+    return typeof o === 'object' && o !== null && (o.id ?? o.name) !== undefined ? `k:${String(o.id ?? o.name)}` : JSON.stringify(x)
+  }
+  const have = new Set(local.map(keyOf))
+  return [...local, ...incoming.filter((x) => !have.has(keyOf(x)) && have.add(keyOf(x)))]
+}
 
 export function songBlobIds(s: Song): string[] {
   return [...s.files.map((f) => f.blobId), ...s.audio.flatMap((a) => (a.blobId ? [a.blobId] : []))]
@@ -112,6 +135,8 @@ export async function writeArchive(sink: ZipSink, opts: WriteOptions): Promise<M
   if (backup) {
     if (opts.settings) library.settings = opts.settings
     library.kv = (await db.kv.toArray()).filter((k) => !LOCAL_KV(k.key) && isPlainData(k.value))
+  } else {
+    library.kv = (await db.kv.bulkGet([...songIds].flatMap(songKvKeys))).filter((k): k is KV => !!k && isPlainData(k.value))
   }
 
   const manifest: Manifest = {
@@ -165,16 +190,72 @@ export async function openArchive(file: Blob, expect?: ArchiveKind): Promise<Ope
     throw new Error('This file is not an OpenStand backup or package.')
   }
   if (!zip.has('manifest.json') || !zip.has('library.json')) throw new Error('This file is not an OpenStand backup or package.')
-  const manifest = await zip.json<Manifest>('manifest.json')
-  if (manifest.format !== 'openstand') throw new Error('This file is not an OpenStand backup or package.')
+  const manifest = await zip.json<Manifest>('manifest.json').catch(() => null)
+  if (!isObj(manifest) || manifest.format !== 'openstand') throw new Error('This file is not an OpenStand backup or package.')
   if (manifest.version > ARCHIVE_VERSION) throw new Error('This file was made by a newer OpenStand. Update the app to open it.')
-  if (expect === 'backup' && manifest.kind !== 'backup') throw new Error('This is a song package, not a full backup. Import it from the library instead.')
-  const library = await zip.json<LibraryJson>('library.json')
-  library.songs ??= []
-  library.setlists ??= []
-  library.annotations ??= []
-  library.blobs ??= []
+  if (expect === 'backup' && manifest.kind !== 'backup') throw new Error('This is a package, not a full backup. Import it from the library instead.')
+  let raw: unknown
+  try {
+    raw = await zip.json<unknown>('library.json')
+  } catch {
+    throw new Error('This file is damaged: its library data can’t be read.')
+  }
+  if (!isObj(raw)) throw new Error('This file is damaged: its library data can’t be read.')
+  const library = sanitizeLibrary(raw)
+  // Describe what will actually be imported, not what the manifest claims.
+  manifest.counts = {
+    songs: library.songs.length,
+    setlists: library.setlists.length,
+    annotations: library.annotations.length,
+    blobs: library.blobs.length,
+    bytes: library.blobs.reduce((n, b) => n + b.size, 0),
+  }
   return { zip, manifest, library }
+}
+
+const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
+const isStr = (v: unknown): v is string => typeof v === 'string' && v !== ''
+const arr = (v: unknown): unknown[] => (Array.isArray(v) ? v : [])
+const num = (v: unknown, dflt = 0) => (typeof v === 'number' && Number.isFinite(v) ? v : dflt)
+
+/** Drop malformed records and fill missing fields, so a damaged or hand-edited archive can't break a restore. */
+export function sanitizeLibrary(raw: Record<string, unknown>): LibraryJson {
+  const songs = arr(raw.songs)
+    .filter((s): s is Record<string, unknown> => isObj(s) && isStr(s.id))
+    .map((s) => {
+      const base = emptySong({ id: s.id as string, title: 'Untitled', createdAt: 0, modifiedAt: 0 }) as unknown as Record<string, unknown>
+      const song: Record<string, unknown> = { ...base, ...s }
+      for (const [k, v] of Object.entries(base))
+        if (Array.isArray(v) ? !Array.isArray(song[k]) : typeof song[k] !== typeof v || song[k] === null) song[k] = v
+      song.files = (song.files as unknown[]).filter((f) => isObj(f) && isStr(f.id) && isStr(f.blobId))
+      song.audio = (song.audio as unknown[]).filter((a) => isObj(a) && isStr(a.id))
+      return song as unknown as Song
+    })
+  const setlists = arr(raw.setlists)
+    .filter((sl): sl is Record<string, unknown> => isObj(sl) && isStr(sl.id))
+    .map(
+      (sl) =>
+        ({
+          ...sl,
+          name: typeof sl.name === 'string' ? sl.name : 'Setlist',
+          notes: typeof sl.notes === 'string' ? sl.notes : '',
+          createdAt: num(sl.createdAt),
+          modifiedAt: num(sl.modifiedAt),
+          entries: arr(sl.entries)
+            .filter((e): e is Record<string, unknown> => isObj(e) && (e.isBreak === true || isStr(e.songId)))
+            .map((e) => ({ ...e, key: isStr(e.key) ? e.key : uid(), songId: isStr(e.songId) ? e.songId : '' })),
+        }) as Setlist,
+    )
+  const annotations = arr(raw.annotations)
+    .filter((a): a is Record<string, unknown> => isObj(a) && isStr(a.songId) && isStr(a.fileId) && typeof a.page === 'number' && Array.isArray(a.items))
+    .map((a) => a as unknown as PageAnnotations)
+  const blobs = arr(raw.blobs)
+    .filter((b): b is Record<string, unknown> => isObj(b) && isStr(b.id))
+    .map((b) => ({ id: b.id as string, hash: typeof b.hash === 'string' ? b.hash : '', mime: isStr(b.mime) ? b.mime : 'application/octet-stream', size: num(b.size) }))
+  const library: LibraryJson = { songs, setlists, annotations, blobs }
+  if (typeof raw.settings === 'string') library.settings = raw.settings
+  if (Array.isArray(raw.kv)) library.kv = raw.kv.filter((k): k is KV => isObj(k) && isStr(k.key))
+  return library
 }
 
 /**
@@ -252,12 +333,14 @@ export async function restoreArchive(a: OpenedArchive, opts: RestoreOptions): Pr
   const result: RestoreResult = { songsAdded: 0, songsUpdated: 0, songsKept: 0, setlists: 0, missingFiles: 0, settingsRestored: false }
 
   // Decide per song first so we only import the blobs we will use.
+  const merge = opts.mode === 'merge'
+  // Songs match by id only: the same piece added separately on two devices stays two songs.
   const existing = new Map((await db.songs.bulkGet(lib.songs.map((s) => s.id))).filter(Boolean).map((s) => [s!.id, s!]))
   const songIdMap = new Map<string, string>()
   /** Songs to write, with the archive id they came from (annotations follow them). */
   const incoming: { from: string; song: Song }[] = []
   for (const s of lib.songs) {
-    const mine = opts.mode === 'merge' ? existing.get(s.id) : undefined
+    const mine = merge ? existing.get(s.id) : undefined
     if (!mine) {
       songIdMap.set(s.id, s.id)
       incoming.push({ from: s.id, song: s })
@@ -294,6 +377,16 @@ export async function restoreArchive(a: OpenedArchive, opts: RestoreOptions): Pr
     const target = takenFrom.get(an.songId)
     if (target) annotations.push(remapAnnotation(an, target))
   }
+  // Per-song kv (layers) follows the song it came with; the rest is library-wide.
+  const songKvRows: KV[] = []
+  const libKv: KV[] = []
+  for (const k of lib.kv ?? []) {
+    if (LOCAL_KV(k.key)) continue
+    const sk = songKv(k.key)
+    if (!sk) libKv.push(k)
+    else if (opts.mode === 'replace') songKvRows.push(k)
+    else if (takenFrom.has(sk.songId)) songKvRows.push({ key: sk.rekey(takenFrom.get(sk.songId)!), value: k.value })
+  }
 
   const existingSetlists = new Map((await db.setlists.bulkGet(lib.setlists.map((s) => s.id))).filter(Boolean).map((s) => [s!.id, s!]))
   const setlists: Setlist[] = []
@@ -312,14 +405,20 @@ export async function restoreArchive(a: OpenedArchive, opts: RestoreOptions): Pr
       await Promise.all([db.songs.clear(), db.setlists.clear(), db.annotations.clear(), db.thumbs.clear()])
       const keep = (await db.kv.toArray()).filter((k) => LOCAL_KV(k.key))
       await db.kv.clear()
-      await db.kv.bulkPut([...(lib.kv ?? []).filter((k) => !LOCAL_KV(k.key)), ...keep])
+      await db.kv.bulkPut([...libKv, ...songKvRows, ...keep])
     } else {
-      // Replaced songs get the archive's annotations; drop their old ones first.
+      // Replaced songs get the archive's annotations and layers; drop their old ones first.
       const replaced = songs.filter((s) => existing.has(s.id)).map((s) => s.id)
-      if (replaced.length) await db.annotations.where('songId').anyOf(replaced).delete()
-      if (replaced.length) await db.thumbs.bulkDelete(replaced)
-      const have = new Set((await db.kv.toCollection().primaryKeys()) as string[])
-      await db.kv.bulkPut((lib.kv ?? []).filter((k) => !LOCAL_KV(k.key) && !have.has(k.key)))
+      if (replaced.length) {
+        await db.annotations.where('songId').anyOf(replaced).delete()
+        await db.thumbs.bulkDelete(replaced)
+        await db.kv.bulkDelete(replaced.flatMap(songKvKeys))
+      }
+      const mine = new Map((await db.kv.bulkGet(libKv.map((k) => k.key))).filter(Boolean).map((k) => [k!.key, k!.value]))
+      await db.kv.bulkPut([
+        ...libKv.flatMap((k) => (!mine.has(k.key) ? [k] : Array.isArray(mine.get(k.key)) ? [{ key: k.key, value: mergeKvValue(mine.get(k.key), k.value) }] : [])),
+        ...songKvRows,
+      ])
     }
     await db.songs.bulkPut(songs)
     await db.setlists.bulkPut(setlists)
@@ -401,6 +500,10 @@ export async function importPackageArchive(a: OpenedArchive, opts: PackageImport
     }
   }
   const annotations = lib.annotations.filter((an) => idMap.has(an.songId)).map((an) => remapAnnotation(an, idMap.get(an.songId)!))
+  const kv = (lib.kv ?? []).flatMap((k) => {
+    const sk = songKv(k.key)
+    return sk && idMap.has(sk.songId) ? [{ key: sk.rekey(idMap.get(sk.songId)!), value: k.value }] : []
+  })
   const setlists: Setlist[] = lib.setlists.map((sl) => ({
     ...sl,
     id: uid(),
@@ -410,14 +513,16 @@ export async function importPackageArchive(a: OpenedArchive, opts: PackageImport
     entries: sl.entries.filter((e) => !e.songId || idMap.has(e.songId)).map((e) => ({ ...e, key: uid(), songId: e.songId ? idMap.get(e.songId)! : '' })),
   }))
   report({ phase: 'library', done: 0, total: 1 })
-  await db.transaction('rw', [db.songs, db.setlists, db.annotations, db.thumbs], async () => {
+  await db.transaction('rw', [db.songs, db.setlists, db.annotations, db.thumbs, db.kv], async () => {
     if (replacedIds.length) {
       await db.annotations.where('songId').anyOf(replacedIds).delete()
       await db.thumbs.bulkDelete(replacedIds)
+      await db.kv.bulkDelete(replacedIds.flatMap(songKvKeys))
     }
     await db.songs.bulkPut(songs)
     await db.setlists.bulkPut(setlists)
     await db.annotations.bulkPut(annotations)
+    await db.kv.bulkPut(kv)
   })
   report({ phase: 'finishing', done: 1, total: 1 })
   return { songs: songs.length, setlists: setlists.length, updated: replacedIds.length }

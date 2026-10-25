@@ -2,7 +2,7 @@ import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import { DEFAULT_TEXT_STYLE, type TextStyle } from '../chordpro/style'
 import type { AutoScrollSettings, DisplayMode, FitMode, MetronomeSettings } from '../db/schema'
-import { ACTIONS, type ActionId } from '../viewer/actions'
+import { ACTIONS, setActionSongWord, type ActionId } from '../viewer/actions'
 import type { AnnotationPreset, ToolConfig, ToolId } from '../annotations/tools'
 import { FACE_GESTURES, GESTURE_INFO, type Gesture as FaceGestureId } from '../faces/gestures'
 
@@ -363,6 +363,7 @@ export const DEFAULT_SETTINGS: Settings = {
       { key: 'KeyB', action: 'showBookmarks' },
       { key: 'KeyD', action: 'toggleAnnotate' },
       { key: 'KeyI', action: 'toggleNightMode' },
+      { key: 'Backspace', action: 'goBack' },
       { key: 'Escape', action: 'closeSong' },
     ],
     showZonesHint: true,
@@ -405,7 +406,8 @@ export const DEFAULT_SETTINGS: Settings = {
     commandGapMs: 0,
   },
 
-  sync: { role: 'peer', deviceName: '', relayUrl: '', room: 'band', autoConnect: false, followPages: true, followSongs: true },
+  // room: a private random name is made on first use (sync/sync.ts ensureRoom)
+  sync: { role: 'peer', deviceName: '', relayUrl: '', room: '', autoConnect: false, followPages: true, followSongs: true },
 
   backup: { reminderDays: 14, autoBackup: false, autoEveryDays: 1, keepCount: 5, includeSettings: true },
 
@@ -487,6 +489,8 @@ function sanitize(s: Settings): Settings {
       threeFingerTap: fixAction(pt.threeFingerTap),
     },
     faceGestures: sanitizeFaceGestures(fg, fixAction),
+    // Nashville numbers used to be a separate switch; they are now one of the note namings.
+    text: s.text.nashville ? { ...s.text, naming: 'nashville', nashville: false } : s.text,
   }
 }
 
@@ -585,3 +589,5 @@ export const useSettings = create<SettingsStore>()(
 )
 
 export const settings = () => useSettings.getState().s
+
+setActionSongWord(() => (settings().terminology === 'piece' ? 'piece' : 'song'))

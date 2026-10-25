@@ -95,7 +95,7 @@ export async function mergeToPdf(files: SongFile[], opts: { title?: string; load
       }
       if (src.isEncrypted) throw new Error(`“${f.name}” is encrypted and can’t be combined`)
       const n = src.getPageCount()
-      if (n !== f.pageCount) throw new Error(`“${f.name}” has ${n} pages but the song expects ${f.pageCount}`)
+      if (n !== f.pageCount) throw new Error(`“${f.name}” has ${n} pages instead of the expected ${f.pageCount}`)
       for (const p of await out.copyPages(src, src.getPageIndices())) out.addPage(p)
     } else if (f.kind === 'image') {
       const img = await embedImageBlob(out, blob).catch(() => null)

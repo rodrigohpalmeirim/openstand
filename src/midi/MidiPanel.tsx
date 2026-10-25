@@ -1,10 +1,12 @@
 import { Minus, Play, Plus, Send, Square } from 'lucide-react'
 import { useState } from 'react'
+import { useTerms } from '../library/browse/terms'
 import { useSettings } from '../state/settings'
 import type { PanelProps } from '../viewer/panels'
 import { describeCommand } from './codec'
 import { clearMonitor, sendCommands, stopClock, useMidi } from './midi'
 import { MidiMonitor } from './MidiSettings'
+import { songBpm } from '../tools/metronome/tempo'
 import { MidiAvailability } from './MidiStatus'
 
 const sectionTitle = 'mb-2 text-xs font-semibold uppercase tracking-wider text-white/50'
@@ -17,10 +19,11 @@ export function MidiPanel({ song }: PanelProps) {
   const status = useMidi((m) => m.status)
   const outputs = useMidi((m) => m.outputs)
   const clock = useMidi((m) => m.clockRunning)
+  const terms = useTerms()
   const [channel, setChannel] = useState(defaultChannel)
   const [program, setProgram] = useState(0)
   const ready = enabled && status === 'ready'
-  const bpm = song.metronome?.bpm ?? useSettings.getState().s.metronome.bpm
+  const bpm = songBpm(song) ?? useSettings.getState().s.metronome.bpm
   const sendPc = (p: number) => {
     const v = Math.max(0, Math.min(127, p))
     setProgram(v)
@@ -34,7 +37,7 @@ export function MidiPanel({ song }: PanelProps) {
 
       <section>
         <div className="mb-2 flex items-center justify-between">
-          <h3 className={sectionTitle + ' mb-0'}>This song</h3>
+          <h3 className={sectionTitle + ' mb-0'}>This {terms.song}</h3>
           {clock && (
             <button className="flex items-center gap-1.5 rounded-full bg-white/10 px-2.5 py-1 text-xs" onClick={stopClock}>
               <span className="size-1.5 animate-pulse rounded-full bg-[var(--os-accent)]" /> Clock {bpm} BPM <Square className="size-3" />
@@ -42,7 +45,7 @@ export function MidiPanel({ song }: PanelProps) {
           )}
         </div>
         {song.midiOnLoad.length === 0 ? (
-          <p className="text-sm text-white/50">No MIDI commands. Add them in the song editor’s MIDI tab.</p>
+          <p className="text-sm text-white/50">No MIDI commands. Add them in the {terms.song} editor’s MIDI tab.</p>
         ) : (
           <>
             <ul className="mb-3 divide-y divide-white/5 overflow-hidden rounded-xl border border-white/10">

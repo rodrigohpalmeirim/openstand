@@ -6,7 +6,7 @@ import { lookupDiagram, type ChordDefinition, type Diagram, type Instrument } fr
 import type { TextStyle } from './style'
 import { ChordTapArea } from './ChordTap'
 import { MarkupText, Runs, safeColor, safeSize } from './markup'
-import { firstChord, metaFirst, songChords, type ChordProSong, type GridCell, type Line, type Section } from './parse'
+import { firstChord, lyricGroups, metaFirst, songChords, type ChordProSong, type GridCell, type Line, type Section } from './parse'
 
 export { DEFAULT_TEXT_STYLE, type TextStyle } from './style'
 
@@ -44,6 +44,8 @@ export interface ChordCtx {
   semitones: number
   defines: ChordDefinition[]
   instrument: Instrument
+  /** Chords are shown as Nashville numbers. */
+  nashville?: boolean
 }
 
 export function chordContext(song: ChordProSong, opts: RenderOpts): ChordCtx {
@@ -75,6 +77,7 @@ export function chordContext(song: ChordProSong, opts: RenderOpts): ChordCtx {
     semitones: semis,
     defines: song.defines,
     instrument: style.instrument,
+    nashville: nash,
   }
 }
 
@@ -165,7 +168,24 @@ function chordCss(style: TextStyle): CSSProperties {
 function ChordName({ chord, ctx }: { chord: string; ctx: Ctx }) {
   const label = ctx.chords.display(chord)
   if (chord.startsWith('*')) return <span style={{ fontStyle: 'italic' }}>{label}</span>
-  return <span data-chord={ctx.chords.lookupName(chord)} data-label={label}>{label}</span>
+  return (
+    <span data-chord={ctx.chords.lookupName(chord)} data-label={label}>
+      {ctx.chords.nashville ? <NashvilleLabel label={label} /> : label}
+    </span>
+  )
+}
+
+/** A numeric quality glued to the degree reads as one number ("57"), so raise it: 5⁷, 1⁷/3. */
+function NashvilleLabel({ label }: { label: string }) {
+  const m = /^(\(?[b#]?[1-7])(\d[^/)]*)(.*)$/.exec(label)
+  if (!m) return <>{label}</>
+  return (
+    <>
+      {m[1]}
+      <sup>{m[2]}</sup>
+      {m[3]}
+    </>
+  )
 }
 
 function SegText({ seg }: { seg: { text: string; runs?: import('./markup').Run[] } }) {
@@ -202,20 +222,28 @@ function LyricsLine({ line, ctx }: { line: Extract<Line, { type: 'lyrics' }>; ct
       </div>
     )
   }
+  // The line wraps between words; a chord stays on the row of the word under it.
   return (
     <div className="flex flex-wrap items-end">
-      {line.segments.map((s, i) => {
-        // Words split across chord positions stay visually joined; a trailing space keeps chords apart.
-        const text = s.text || (s.chord ? ' ' : '')
-        return (
-          <span key={i} className="inline-flex flex-col">
-            <span style={cs} className="min-h-[1.2em] whitespace-pre pr-[0.35em] leading-tight">
-              {s.chord ? <ChordName chord={s.chord} ctx={ctx} /> : ''}
-            </span>
-            <span className="whitespace-pre">{s.runs ? <Runs runs={s.runs} /> : text}</span>
-          </span>
-        )
-      })}
+      {lyricGroups(line.segments).map((g, gi) => (
+        <span key={gi} className="inline-flex items-end">
+          {g.map((s, i) =>
+            s.chord ? (
+              <span key={i} className="inline-flex flex-col">
+                <span style={cs} className="min-h-[1.2em] whitespace-pre pr-[0.35em] leading-tight">
+                  <ChordName chord={s.chord} ctx={ctx} />
+                </span>
+                {/* A trailing space keeps chords over no text apart. */}
+                <span className="whitespace-pre">{s.runs ? <Runs runs={s.runs} /> : s.text || ' '}</span>
+              </span>
+            ) : (
+              <span key={i} className="whitespace-pre">
+                {s.runs ? <Runs runs={s.runs} /> : s.text}
+              </span>
+            ),
+          )}
+        </span>
+      ))}
     </div>
   )
 }
@@ -242,10 +270,29 @@ function GridLine({ line, ctx }: { line: Extract<Line, { type: 'grid' }>; ctx: C
         ))}
       </span>
     )
+  // Wrap only at bar lines so each bar stays whole: a wrapped row starts with its bar line, while
+  // closing bars (":|", "||") and the final bar stay at the end of the row before.
+  const cells = line.cells
+  const bars: { cell: GridCell; i: number }[][] = [[]]
+  cells.forEach((c, i) => {
+    let cur = bars[bars.length - 1]
+    const more = cells.slice(i + 1).some((x) => x.kind !== 'bar')
+    const closing = c.kind === 'bar' && /^(:\||\|\||\|\.)$/.test(c.text)
+    if (c.kind === 'bar' && !closing && more && cur.some((x) => x.cell.kind !== 'bar')) bars.push((cur = []))
+    cur.push({ cell: c, i })
+    if (closing && more) bars.push([])
+  })
   return (
-    <div className="flex items-baseline whitespace-nowrap" style={targetCss(ctx.song, style, 'grid')}>
+    <div className="flex flex-wrap items-baseline gap-y-[0.2em]" style={targetCss(ctx.song, style, 'grid')}>
       {line.left && <span className="mr-[0.6em] text-[0.8em] italic" style={{ color: style.commentColor }}>{line.left}</span>}
-      {line.cells.map(cell)}
+      {bars.map(
+        (b, k) =>
+          b.length > 0 && (
+            <span key={k} className="inline-flex items-baseline whitespace-nowrap">
+              {b.map((x) => cell(x.cell, x.i))}
+            </span>
+          ),
+      )}
       {line.right && <span className="ml-[0.6em] text-[0.8em] italic" style={{ color: style.commentColor }}>{line.right}</span>}
     </div>
   )

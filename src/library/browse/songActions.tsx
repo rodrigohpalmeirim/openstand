@@ -22,12 +22,15 @@ import { ui } from './ui'
 
 const ic = (I: LucideIcon) => <I className="size-4" />
 
-async function run(label: string, fn: () => Promise<unknown>) {
+/** Run an action, reporting a failure as a toast. Resolves to whether it succeeded. */
+async function run(label: string, fn: () => Promise<unknown>): Promise<boolean> {
   try {
     await fn()
+    return true
   } catch (e) {
     console.error(e)
     toast(`${label} failed: ${(e as Error).message ?? e}`, 'error')
+    return false
   }
 }
 
@@ -40,7 +43,7 @@ export async function confirmDelete(ids: string[], t: Terms, titles?: string): P
     danger: true,
   })
   if (!ok) return false
-  await run('Delete', () => deleteSongs(ids))
+  if (!(await run('Delete', () => deleteSongs(ids)))) return false
   toast(n === 1 ? `Deleted ${titles ?? t.song}` : `Deleted ${n} ${t.songs}`, 'ok')
   return true
 }
@@ -53,7 +56,7 @@ export function exportItems(ids: string[], title: string, opts: { setlistIds?: s
   const list = { setlistId: opts.setlistIds?.length === 1 ? opts.setlistIds[0] : undefined }
   return [
     { label: 'Share / export package', icon: ic(Package), onSelect: () => run('Export', async () => (await exporter()).exportSongsPackage(ids, opts)) },
-    { label: 'Export files', icon: ic(FileDown), onSelect: () => run('Export', async () => (await exporter()).exportSongFiles(ids)) },
+    { label: 'Export files', icon: ic(FileDown), onSelect: () => run('Export', async () => (await exporter()).exportSongFiles(ids, undefined, { name: list.setlistId && title })) },
     { label: 'Title list (.txt)', icon: ic(FileDown), onSelect: () => run('Export', async () => (await exporter()).exportTitleList(ids, title, 'txt', list)) },
     { label: 'Title list (.pdf)', icon: ic(FileDown), onSelect: () => run('Export', async () => (await exporter()).exportTitleList(ids, title, 'pdf', list)) },
     { label: 'Print…', icon: ic(Printer), onSelect: () => run('Print', async () => (await exporter()).printSongs(ids, { withAnnotations: true, title })) },

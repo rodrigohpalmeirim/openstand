@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { hasMarkup, parseMarkup, safeColor, stripMarkup } from './markup'
-import { firstChord, looksLikeChordPro, parseAttrs, parseChordPro, parseGridLine, parseLyricLine, songChords, substituteMeta, textToChordPro } from './parse'
+import { firstChord, looksLikeChordPro, lyricGroups, parseAttrs, parseChordPro, parseGridLine, parseLyricLine, songChords, substituteMeta, textToChordPro } from './parse'
 
 describe('chordpro', () => {
   it('splits lyric lines', () => {
@@ -125,6 +125,12 @@ z
     expect(substituteMeta('%{missing}', look)).toBe('')
     const s = parseChordPro('{title: Hello}\n{key: D}\n{c: %{title} — key %{key}}\n{c: %{instrument}}', { instrument: 'ukulele' })
     expect(s.sections[0].lines.map((l) => l.type === 'comment' && l.text)).toEqual(['Hello — key D', 'ukulele'])
+    // Metadata defined later in the file is available too.
+    expect(parseChordPro('{subtitle: A %{artist} test}\n{artist: QA Band}').meta.subtitle).toEqual(['A QA Band test'])
+    // %{key} gives the key actually played.
+    const t = parseChordPro('{key: G}\n{transpose: 1}\n{c: In %{key}}', { transpose: 2 })
+    expect(t.sections[0].lines[0]).toMatchObject({ text: 'In Bb' })
+    expect(t.meta.key).toEqual(['G'])
   })
   it('reads {meta} and notation', () => {
     const s = parseChordPro('{meta: artist Someone}\n{meta: genre Folk}\n{meta: notation German Default}')
@@ -204,6 +210,26 @@ C   G
 `)
     expect(textToChordPro('C  G  Am riff\nla la la la la la')).toBe('[C]la [G]la [Am]la [*riff]la la la')
     expect(textToChordPro('Lyric with [brackets]')).toBe('Lyric with (brackets)')
+  })
+  it('keeps bar charts and N.C. lines as chords', () => {
+    expect(textToChordPro('Intro:\n| E  | B/D# |\n| A | E |\n\nN.C.\nLast line')).toBe(
+      '{comment: Intro}\n{start_of_grid label=""}\n| E  | B/D# |\n| A | E |\n{end_of_grid}\n\n[*N.C.]Last line',
+    )
+    const s = parseChordPro(textToChordPro('| E | B/D# | C#m7 |'))
+    expect(s.sections[0]).toMatchObject({ kind: 'grid', label: '' })
+    expect(songChords(s)).toEqual(['E', 'B/D#', 'C#m7'])
+    expect(textToChordPro('N.C.')).toBe('[*N.C.]')
+  })
+  it('groups lyrics into unbreakable words', () => {
+    const texts = (line: string) => lyricGroups(parseLyricLine(line)).map((g) => g.map((p) => (p.chord ? `[${p.chord}]` : '') + p.text).join(''))
+    expect(texts('[G]Amazing grace how [D]sweet')).toEqual(['[G]Amazing ', 'grace ', 'how ', '[D]sweet'])
+    // A chord inside a word keeps the word together; leading spaces stay with the chord's word.
+    expect(texts('A[C]ma[G]zing [Am] grace')).toEqual(['A[C]ma[G]zing ', '[Am] grace'])
+    // Chords over no text can break apart.
+    expect(texts('me[F7sus4][F7]')).toEqual(['me[F7sus4]', '[F7]'])
+    const line = parseChordPro('[C]Some <b>bold words</b> here').sections[0].lines[0]
+    const groups = line.type === 'lyrics' ? lyricGroups(line.segments) : []
+    expect(groups.map((g) => g.map((p) => p.runs?.map((r) => r.text).join('|')).join(''))).toEqual(['Some ', 'bold ', 'words| ', 'here'])
   })
   it('reads header metadata from plain text', () => {
     const cp = textToChordPro('Title: Hi\nKey: D\n\nD  A\nla la')

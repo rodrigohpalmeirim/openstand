@@ -6,9 +6,10 @@ import { useEffect, useSyncExternalStore } from 'react'
 import { create } from 'zustand'
 import { db } from '../db/db'
 import type { Annotation, Point } from '../db/schema'
-import { applyChanges, diffItems, makeCommand, UndoStack, type PageChange } from './history'
+import { applyChanges, diffItems, makeCommand, UndoStack, type PageChange, type SideEffect } from './history'
+import type { ToolConfig } from './tools'
 
-export type { PageChange }
+export type { PageChange, SideEffect }
 
 export interface PageMeta {
   songId: string
@@ -115,6 +116,14 @@ function scheduleWrite(key: string) {
   writeTimer = setTimeout(() => void flush(), WRITE_DELAY)
 }
 
+/**
+ * A gesture just ended (pen-up, text committed): write now rather than after the debounce, so a stroke
+ * drawn right before the tab closes is kept. While a write is running the debounce groups the next one.
+ */
+export function saveSoon() {
+  if (dirty.size && !flushing.size) void flush()
+}
+
 /** Keys whose flush transaction is running (their local changes aren't in the base yet). */
 const flushing = new Set<string>()
 let flushChain: Promise<void> = Promise.resolve()
@@ -125,6 +134,7 @@ let flushChain: Promise<void> = Promise.resolve()
  */
 export function flush(): Promise<void> {
   clearTimeout(writeTimer)
+  writeTimer = undefined
   const run = flushChain.then(flushNow)
   flushChain = run.catch(() => {})
   return run
@@ -215,9 +225,9 @@ const history = new UndoStack()
 export const useAnnotHistory = create<{ canUndo: boolean; canRedo: boolean; label?: string }>(() => ({ canUndo: false, canRedo: false }))
 const syncHistory = () => useAnnotHistory.setState({ canUndo: history.canUndo, canRedo: history.canRedo })
 
-/** Apply page changes and record them as one undo step. */
-export function commit(label: string, changes: PageChange[]) {
-  const cmd = makeCommand(label, changes)
+/** Apply page changes and record them as one undo step. `effect` (already applied by the caller) is undone and redone with it. */
+export function commit(label: string, changes: PageChange[], effect?: SideEffect) {
+  const cmd = makeCommand(label, changes, effect)
   if (!cmd) {
     // Still restore the final state in case a transient preview differs.
     for (const ch of changes) if (getItems(ch.key) !== entry(ch.key).stable) setItems(ch.key, entry(ch.key).stable, false)
@@ -242,10 +252,20 @@ function replay(ch: PageChange, inverse: boolean) {
   if (next !== entry(ch.key).stable) setItems(ch.key, next)
 }
 
+/**
+ * Replace a page's items outside the undo history (the page was rotated): the page's recorded steps
+ * no longer match its coordinates, so they are dropped.
+ */
+export function replacePage(key: string, items: Annotation[]) {
+  setItems(key, items)
+  if (history.forget(key)) syncHistory()
+}
+
 export function undo(): string | undefined {
   const c = history.undo()
   if (!c) return
   for (const ch of c.changes) replay(ch, true)
+  c.effect?.undo()
   clearSelection()
   syncHistory()
   return c.label
@@ -255,6 +275,7 @@ export function redo(): string | undefined {
   const c = history.redo()
   if (!c) return
   for (const ch of c.changes) replay(ch, false)
+  c.effect?.redo()
   clearSelection()
   syncHistory()
   return c.label
@@ -313,6 +334,8 @@ export interface TextEdit {
   /** Existing item being edited, or undefined for a new one. */
   id?: string
   at: Point
+  /** The edited item's own style (editing a text never changes the Text tool's defaults). */
+  style?: Partial<ToolConfig>
 }
 
 interface AnnotUI {

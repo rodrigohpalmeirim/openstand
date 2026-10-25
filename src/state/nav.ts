@@ -25,7 +25,20 @@ export type LibraryRoute = { name: 'library'; section: Section; group?: string; 
 export type Route = LibraryRoute | { name: 'settings'; page?: string }
 
 const ROUTE_KEY = 'openstand-route'
+/** Set while Settings is open (its section, '' for the list), so a reload stays there. Per tab (session
+ *  storage): a cold start, another window or an "Open with" file launch starts in the library. */
+const SETTINGS_KEY = 'openstand-route-settings'
 const HOME: LibraryRoute = { name: 'library', section: 'songs' }
+
+function savedSettingsPage(): string | undefined | null {
+  try {
+    localStorage.removeItem(SETTINGS_KEY) // where older versions kept it
+    const page = sessionStorage.getItem(SETTINGS_KEY)
+    return page === null ? null : page || undefined
+  } catch {
+    return null
+  }
+}
 
 /** The library route saved by the last session (validated against the library later, see Library.tsx). */
 function savedRoute(): LibraryRoute {
@@ -71,9 +84,10 @@ interface NavState {
 }
 
 const initial = savedRoute()
+const initialSettings = savedSettingsPage()
 
 export const useNav = create<NavState>((set) => ({
-  route: initial,
+  route: initialSettings === null ? initial : { name: 'settings', page: initialSettings },
   go: (route) => set(route.name === 'library' ? { route, lastLibrary: route } : { route }),
   lastLibrary: initial,
   query: '',
@@ -87,11 +101,14 @@ export const useNav = create<NavState>((set) => ({
     set((s) => ({ libraryEpoch: s.libraryEpoch + 1, route: HOME, lastLibrary: HOME, query: '', filter: {} })),
 }))
 
-// Remember the library section across reloads.
+// Remember the library section across sessions, and an open Settings page across reloads of this tab.
 useNav.subscribe((s, prev) => {
-  if (s.lastLibrary === prev.lastLibrary) return
   try {
-    localStorage.setItem(ROUTE_KEY, JSON.stringify(s.lastLibrary))
+    if (s.lastLibrary !== prev.lastLibrary) localStorage.setItem(ROUTE_KEY, JSON.stringify(s.lastLibrary))
+    if (s.route !== prev.route) {
+      if (s.route.name === 'settings') sessionStorage.setItem(SETTINGS_KEY, s.route.page ?? '')
+      else sessionStorage.removeItem(SETTINGS_KEY)
+    }
   } catch {
     /* storage full or blocked */
   }

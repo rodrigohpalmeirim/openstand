@@ -36,6 +36,7 @@ import {
   enableSync,
   leaveSync,
   oauthProviders,
+  refreshDevices,
   renameDevice,
   repair,
   setPaused,
@@ -345,7 +346,19 @@ function RenameDialog({ current, onClose }: { current: string; onClose: () => vo
     >
       <div className="grid gap-3 px-5 py-4 text-sm">
         <Field label="Device name" hint={`Your other devices show this name. Leave it empty to use “${fallback}”.`}>
-          <Input value={name} maxLength={60} placeholder={fallback} onChange={(e) => setName(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && void save()} autoFocus autoComplete="off" />
+          <Input
+            value={name}
+            maxLength={60}
+            placeholder={fallback}
+            onChange={(e) => setName(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key !== 'Enter') return
+              e.preventDefault()
+              void save()
+            }}
+            autoFocus
+            autoComplete="off"
+          />
         </Field>
       </div>
     </Dialog>
@@ -406,7 +419,7 @@ function KeysDialog({ onClose }: { onClose: () => void }) {
         ) : f ? (
           <>
             {config && (
-              <div className="rounded-xl border border-line bg-surface-2 px-4 py-2.5 text-sm">
+              <div className="break-all rounded-xl border border-line bg-surface-2 px-4 py-2.5 text-sm">
                 {preset(config.provider).name} · {config.bucket}/{config.prefix}
               </div>
             )}
@@ -453,7 +466,18 @@ function TypeName({ name, value, onChange, onEnter, autoFocus }: { name: string;
       <label htmlFor={id} className="text-muted">
         Type <b className="text-fg">{name}</b> to confirm.
       </label>
-      <Input id={id} value={value} onChange={(e) => onChange(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && onEnter()} autoFocus={autoFocus} autoComplete="off" />
+      <Input
+        id={id}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key !== 'Enter') return
+          e.preventDefault()
+          onEnter()
+        }}
+        autoFocus={autoFocus}
+        autoComplete="off"
+      />
     </>
   )
 }
@@ -673,6 +697,12 @@ export function LibrarySyncSettings() {
   const quota = s.error?.code === 'quota'
   const { config, backend } = useStorageConfig(quota || !!kind)
   const close = () => setModal(null)
+
+  // Other devices' names and "last seen" can be hours old in the cached list: re-read it when the page opens.
+  const configured = s.configured
+  useEffect(() => {
+    if (configured) refreshDevices()
+  }, [configured])
 
   // "Sign in again" came back: the engine restarts with the new tokens; say so, or why it didn't work.
   useEffect(() => {
@@ -947,19 +977,23 @@ export function LibrarySyncSettings() {
               <span className="text-xs text-muted">The library stays here as a normal local library.</span>
             </div>
           </div>
-          <div className="mt-2 grid gap-2 rounded-xl border border-danger/30 p-3">
-            <h4 className="text-xs font-semibold uppercase tracking-wide text-danger">Danger zone</h4>
-            <div className="flex flex-wrap gap-2">
-              <Button size="sm" variant="ghost" className="!text-danger" onClick={() => setModal({ kind: 'confirm', what: 'reset' })}>
-                Reset sync…
-              </Button>
-              {c.deleteRemote && (
-                <Button size="sm" variant="ghost" className="!text-danger" onClick={() => setModal({ kind: 'confirm', what: 'delete' })}>
-                  Delete synced data from storage…
-                </Button>
-              )}
+          {(c.reset || c.deleteRemote) && (
+            <div className="mt-2 grid gap-2 rounded-xl border border-danger/30 p-3">
+              <h4 className="text-xs font-semibold uppercase tracking-wide text-danger">Danger zone</h4>
+              <div className="flex flex-wrap gap-2">
+                {c.reset && (
+                  <Button size="sm" variant="ghost" className="!text-danger" onClick={() => setModal({ kind: 'confirm', what: 'reset' })}>
+                    Reset sync…
+                  </Button>
+                )}
+                {c.deleteRemote && (
+                  <Button size="sm" variant="ghost" className="!text-danger" onClick={() => setModal({ kind: 'confirm', what: 'delete' })}>
+                    Delete synced data from storage…
+                  </Button>
+                )}
+              </div>
             </div>
-          </div>
+          )}
         </Block>
       </div>
       {dialogs}

@@ -1,11 +1,11 @@
-import { AlertTriangle, Keyboard, Plus, RotateCcw, Trash2, Zap } from 'lucide-react'
+import { AlertTriangle, ChevronDown, Keyboard, Plus, Trash2, Zap } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
-import { DEFAULT_SETTINGS, useSettings, type KeyBinding } from '../state/settings'
+import { useSettings, type KeyBinding } from '../state/settings'
 import { Button, cx, Dialog, IconButton, Kbd, Menu, Segmented, toast, useMenu } from '../ui/primitives'
 import { ACTIONS, type ActionId } from '../viewer/actions'
 import { keyId, keyLabel } from '../viewer/input'
 import { applyPreset, conflictingIndexes, delayedTapKeys, findConflicts, isModifierOnly, PEDAL_PRESETS } from './keymap'
-import { ActionSelect, Row } from './kit'
+import { ActionMenu, ActionSelect, Row } from './kit'
 
 /**
  * Capture one key press. Bare modifiers (a pedal that sends Shift) are recorded on release unless
@@ -35,7 +35,7 @@ function useKeyCapture(active: boolean, onKey: (id: string) => void) {
       }
       pendingMod = null
     }
-    // Registered before the Dialog's own Escape handler (child effects run first), so Escape can be bound.
+    // Escape reaches this too: the dialog doesn't close on Escape while listening (see LearnDialog).
     window.addEventListener('keydown', down, true)
     window.addEventListener('keyup', up, true)
     return () => {
@@ -72,6 +72,7 @@ function LearnDialog({
     <Dialog
       open={open}
       onClose={onClose}
+      escapeCloses={!listening}
       size="sm"
       title={initial ? 'Change key' : 'Add key or pedal'}
       footer={
@@ -108,6 +109,7 @@ function LearnDialog({
         <div className="flex flex-col gap-1.5">
           <span className="text-xs font-medium uppercase tracking-wide text-muted">When</span>
           <Segmented
+            label="When"
             value={long ? 'hold' : 'tap'}
             onChange={(v) => setLong(v === 'hold')}
             options={[
@@ -128,6 +130,31 @@ function LearnDialog({
         )}
       </div>
     </Dialog>
+  )
+}
+
+/**
+ * Action of a binding: a button opening the action list, not a <select>. A focused select would take
+ * the arrow keys of a pedal being tested and silently change the binding. Its minimum width makes it
+ * wrap to a line of its own on phones rather than shrink to a letter.
+ */
+function ActionPicker({ value, onChange, label }: { value: ActionId; onChange: (a: ActionId) => void; label: string }) {
+  const { ref: setAnchor, anchor, open, toggle, close } = useMenu()
+  return (
+    <>
+      <button
+        ref={setAnchor}
+        onClick={toggle}
+        aria-label={`${label}: ${ACTIONS[value].label}`}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        className="flex h-10 min-w-40 flex-1 items-center gap-2 rounded-lg border border-line bg-surface px-3 text-left text-sm text-fg transition hover:border-accent"
+      >
+        <span className="min-w-0 flex-1 truncate">{ACTIONS[value].label}</span>
+        <ChevronDown className="size-4 shrink-0 text-muted" />
+      </button>
+      <ActionMenu anchor={anchor} open={open} onClose={close} value={value} onChange={onChange} title={label} />
+    </>
   )
 }
 
@@ -231,6 +258,7 @@ export function KeyBindingsEditor() {
             </button>
             <Segmented
               size="sm"
+              label={`When ${keyLabel(k.key)} runs`}
               value={k.long ? 'hold' : 'tap'}
               onChange={(v) => update(i, { long: v === 'hold' })}
               options={[
@@ -238,7 +266,7 @@ export function KeyBindingsEditor() {
                 { value: 'hold', label: 'Hold', title: 'Runs after holding for half a second' },
               ]}
             />
-            <ActionSelect value={k.action} onChange={(a) => update(i, { action: a })} className="min-w-0 flex-1" label={`Action for ${keyLabel(k.key)}`} />
+            <ActionPicker value={k.action} onChange={(a) => update(i, { action: a })} label={`Action for ${keyLabel(k.key)}`} />
             {bad.has(i) && <AlertTriangle className="size-4 text-warn" aria-label="Conflicts with an earlier binding" />}
             <IconButton size="sm" label={`Remove ${keyLabel(k.key)}`} onClick={() => save(keys.filter((_, j) => j !== i))}>
               <Trash2 className="size-4" />
@@ -258,16 +286,6 @@ export function KeyBindingsEditor() {
         </Button>
         <Button ref={presets.ref} onClick={presets.toggle}>
           Pedal presets…
-        </Button>
-        <Button
-          variant="ghost"
-          icon={<RotateCcw className="size-4" />}
-          onClick={() => {
-            save(DEFAULT_SETTINGS.pageTurn.keys)
-            toast('Default keys restored')
-          }}
-        >
-          Default keys
         </Button>
       </div>
       <Menu
@@ -291,7 +309,7 @@ export function KeyBindingsEditor() {
       {learn && (
         <LearnDialog
           open
-        onClose={() => setLearn(null)}
+          onClose={() => setLearn(null)}
           initial={learn.index != null ? keys[learn.index] : undefined}
           onSave={(b) => upsert(b, learn.index)}
         />

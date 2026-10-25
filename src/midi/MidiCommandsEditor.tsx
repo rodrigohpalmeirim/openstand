@@ -1,6 +1,7 @@
 import { Ear, GripVertical, Pencil, Play, Plus, Radio, Trash2, X } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { MidiCommand, MidiMessageType } from '../db/schema'
+import { useTerms } from '../library/browse/terms'
 import { useSettings } from '../state/settings'
 import { Button, Dialog, Field, IconButton, Input, Menu, Segmented, Select, Textarea, Toggle, cx, toast, useMenu } from '../ui/primitives'
 import {
@@ -101,7 +102,9 @@ export function CommandDialog({
 }) {
   const [c, setC] = useState<MidiCommand | null>(initial)
   const [editChild, setEditChild] = useState<number | null>(null)
+  const [childDraft, setChildDraft] = useState<MidiCommand | null>(null)
   const outputs = useMidi((m) => m.outputs)
+  const terms = useTerms()
   useEffect(() => setC(initial), [initial, open])
   if (!c) return null
   const set = (patch: Partial<MidiCommand>) => setC({ ...c, ...patch })
@@ -113,7 +116,7 @@ export function CommandDialog({
     <Dialog
       open={open}
       onClose={onClose}
-      title={trigger ? 'Message that opens the song' : nested ? 'Command in group' : 'MIDI command'}
+      title={trigger ? `Message that opens the ${terms.song}` : nested ? 'Command in group' : 'MIDI command'}
       size="md"
       footer={
         <>
@@ -201,7 +204,7 @@ export function CommandDialog({
         {(c.type === 'clockStart' || c.type === 'clockStop') && (
           <p className="text-sm text-muted">
             {c.type === 'clockStart'
-              ? 'Sends MIDI timing clock (24 pulses per beat) at the song’s metronome tempo until a Stop clock command or the song closes. Add “MIDI start” too if your device needs it.'
+              ? `Sends MIDI timing clock (24 pulses per beat) at the ${terms.song}’s metronome tempo until a Stop clock command or the ${terms.song} closes. Add “MIDI start” too if your device needs it.`
               : 'Stops the timing clock.'}
           </p>
         )}
@@ -212,11 +215,15 @@ export function CommandDialog({
               value={c.children ?? []}
               onChange={(children) => set({ children })}
               onEdit={(i) => setEditChild(i)}
+              onAdd={(d) => {
+                setChildDraft(d)
+                setEditChild((c.children ?? []).length)
+              }}
               nested
             />
             <CommandDialog
               open={editChild !== null}
-              initial={editChild !== null ? (c.children ?? [])[editChild] ?? null : null}
+              initial={editChild !== null ? ((c.children ?? [])[editChild] ?? childDraft) : null}
               nested
               onClose={() => setEditChild(null)}
               onSave={(child) => {
@@ -237,16 +244,16 @@ export function CommandDialog({
           <div className="grid gap-3 rounded-xl border border-line p-3">
             <label className="flex items-center justify-between gap-3 text-sm">
               <span>
-                Send when the song opens
-                <span className="block text-xs text-faint">Off: only sent from the MIDI panel or “Send song MIDI”</span>
+                Send when the {terms.song} opens
+                <span className="block text-xs text-faint">Off: only sent from the MIDI panel or “Send {terms.song} MIDI”</span>
               </span>
               <Toggle checked={c.sendOnLoad !== false} onChange={(v) => set({ sendOnLoad: v })} />
             </label>
             {RECALLABLE.includes(c.type) && (
               <label className="flex items-center justify-between gap-3 text-sm">
                 <span>
-                  Open this song when received
-                  <span className="block text-xs text-faint">Needs “Open songs from MIDI” in MIDI settings</span>
+                  Open this {terms.song} when received
+                  <span className="block text-xs text-faint">Needs “Open {terms.songs} from MIDI” in MIDI settings</span>
                 </span>
                 <Toggle checked={!!c.loadOnReceive} onChange={(v) => set({ loadOnReceive: v || undefined })} />
               </label>
@@ -294,14 +301,18 @@ function CommandRows({
   value,
   onChange,
   onEdit,
+  onAdd,
   nested,
 }: {
   value: MidiCommand[]
   onChange: (v: MidiCommand[]) => void
   onEdit: (i: number) => void
+  /** A new command to edit; it joins the list only when its dialog is saved. */
+  onAdd: (c: MidiCommand) => void
   nested?: boolean
 }) {
   const channel = useSettings((s) => s.s.midi.defaultChannel)
+  const terms = useTerms()
   const move = (i: number, j: number) => {
     if (j < 0 || j >= value.length || i === j) return
     const next = [...value]
@@ -370,7 +381,7 @@ function CommandRows({
             <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted">
               {c.label ? <span className="truncate">{describeCommand(c)}</span> : <span>{typeLabel(c.type)}</span>}
               {!nested && c.sendOnLoad === false && <span className="rounded bg-surface-2 px-1.5 text-faint">manual</span>}
-              {!nested && c.loadOnReceive && <span className="rounded bg-accent-soft px-1.5 text-accent">opens song</span>}
+              {!nested && c.loadOnReceive && <span className="rounded bg-accent-soft px-1.5 text-accent">opens {terms.song}</span>}
               {c.output && <span className="rounded bg-surface-2 px-1.5">→ {c.output}</span>}
             </div>
           </button>
@@ -387,10 +398,7 @@ function CommandRows({
       <div className="flex gap-2 pt-1">
         <AddMenu
           nested={nested}
-          onAdd={(t) => {
-            onChange([...value, newCommand(t, channel)])
-            onEdit(value.length)
-          }}
+          onAdd={(t) => onAdd(newCommand(t, channel))}
         />
       </div>
     </div>
@@ -425,6 +433,7 @@ export function ListenDialog({
   const [sel, setSel] = useState<Set<number>>(new Set())
   const [use, setUse] = useState<'load' | 'recall'>('recall')
   const ready = useMidiReady()
+  const terms = useTerms()
   useEffect(() => {
     if (!open) return
     setRows([])
@@ -454,8 +463,8 @@ export function ListenDialog({
               value={use}
               onChange={setUse}
               options={[
-                { value: 'recall', label: 'Opens song', title: 'Receiving this message opens the song' },
-                { value: 'load', label: 'Sent on open', title: 'Send this message when the song opens' },
+                { value: 'recall', label: `Opens ${terms.song}`, title: `Receiving this message opens the ${terms.song}` },
+                { value: 'load', label: 'Sent on open', title: `Send this message when the ${terms.song} opens` },
               ]}
             />
           )}
@@ -527,11 +536,16 @@ export function MidiCommandsEditor({
   onRecallChange?: (v: MidiCommand | undefined) => void
 }) {
   const [edit, setEdit] = useState<number | null>(null)
+  /** A command being added: it only joins the list when its dialog is saved. */
+  const [draft, setDraft] = useState<MidiCommand | null>(null)
   const [editRecall, setEditRecall] = useState(false)
   const [listen, setListen] = useState<null | 'commands' | 'recall'>(null)
   const midi = useSettings((s) => s.s.midi)
   const channel = midi.defaultChannel
-  const editing = useMemo(() => (edit !== null ? value[edit] ?? null : null), [edit, value])
+  const terms = useTerms()
+  const editing = useMemo(() => (edit !== null ? (value[edit] ?? draft) : null), [edit, value, draft])
+  // "Set" edits a suggested trigger; nothing is stored until Save.
+  const recallInitial = useMemo<MidiCommand>(() => recall ?? { type: 'programChange', channel, data1: 0 }, [recall, channel])
 
   return (
     <div className="grid gap-6 p-1">
@@ -541,7 +555,7 @@ export function MidiCommandsEditor({
         <div className="flex items-end justify-between gap-2">
           <div>
             <h3 className="text-sm font-semibold">Commands</h3>
-            <p className="text-xs text-muted">Sent in order when the song opens{midi.sendOnLoad ? '' : ' (sending on open is turned off in MIDI settings)'}.</p>
+            <p className="text-xs text-muted">Sent in order when the {terms.song} opens{midi.sendOnLoad ? '' : ' (sending on open is turned off in MIDI settings)'}.</p>
           </div>
           <div className="flex gap-1.5">
             <Button size="sm" variant="ghost" icon={<Ear className="size-4" />} onClick={() => setListen('commands')}>
@@ -552,16 +566,24 @@ export function MidiCommandsEditor({
             </Button>
           </div>
         </div>
-        <CommandRows value={value} onChange={onChange} onEdit={setEdit} />
+        <CommandRows
+          value={value}
+          onChange={onChange}
+          onEdit={setEdit}
+          onAdd={(d) => {
+            setDraft(d)
+            setEdit(value.length)
+          }}
+        />
       </section>
 
       {onRecallChange && (
         <section className="grid gap-2">
           <div>
-            <h3 className="text-sm font-semibold">Open this song from MIDI</h3>
+            <h3 className="text-sm font-semibold">Open this {terms.song} from MIDI</h3>
             <p className="text-xs text-muted">
-              When this message arrives, OpenStand opens the song
-              {midi.recallSongs ? '.' : ' — turn on “Open songs from MIDI” in MIDI settings for this to work.'}
+              When this message arrives, OpenStand opens the {terms.song}
+              {midi.recallSongs ? '.' : ` — turn on “Open ${terms.songs} from MIDI” in MIDI settings for this to work.`}
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2 rounded-xl border border-line bg-surface px-3 py-2">
@@ -573,10 +595,7 @@ export function MidiCommandsEditor({
               size="sm"
               variant="ghost"
               icon={recall ? <Pencil className="size-4" /> : <Plus className="size-4" />}
-              onClick={() => {
-                if (!recall) onRecallChange({ type: 'programChange', channel, data1: 0 })
-                setEditRecall(true)
-              }}
+              onClick={() => setEditRecall(true)}
             >
               {recall ? 'Edit' : 'Set'}
             </Button>
@@ -603,7 +622,7 @@ export function MidiCommandsEditor({
       <CommandDialog
         open={editRecall}
         trigger
-        initial={recall ?? null}
+        initial={editRecall ? recallInitial : null}
         onClose={() => setEditRecall(false)}
         onSave={(c) => {
           onRecallChange?.(c)
@@ -613,7 +632,7 @@ export function MidiCommandsEditor({
       <ListenDialog
         open={listen !== null}
         single={listen === 'recall'}
-        title={listen === 'recall' ? 'Listen for the message that opens this song' : 'Listen for MIDI'}
+        title={listen === 'recall' ? `Listen for the message that opens this ${terms.song}` : 'Listen for MIDI'}
         onClose={() => setListen(null)}
         onAdd={(cmds, use) => {
           if (listen === 'recall') onRecallChange?.(cmds[0])

@@ -17,7 +17,8 @@ export const TEXT_BLOCK_STYLE = { display: 'flow-root' } as const
 
 /**
  * Pack blocks into pages of the given CSS size. Each block is measured off-screen at the column width,
- * then greedily placed; explicit column/page breaks are honoured and headers stay with the next block.
+ * then greedily placed; explicit page breaks are honoured, column breaks too unless `columnBreaks` is
+ * false, and headers stay with the next block.
  */
 export function paginate(
   blocks: Block[],
@@ -25,6 +26,7 @@ export function paginate(
   columns: number,
   style: TextStyle,
   zoom: number,
+  { columnBreaks = true }: { columnBreaks?: boolean } = {},
 ): TextPage[] {
   const pad = size.width * TEXT_PAGE_PADDING
   const gap = size.width * 0.04
@@ -79,7 +81,7 @@ export function paginate(
     const h = heights[i] ?? 0
     const col = () => page.columns[page.columns.length - 1]
     if (b.breakBefore === 'page' && (col().length || page.columns.length > 1)) newPage()
-    else if (b.breakBefore === 'column' && col().length) newColumn()
+    else if (b.breakBefore === 'column' && columnBreaks && col().length) newColumn()
     const withNext = b.keepWithNext ? h + (heights[i + 1] ?? 0) : h
     if (used > 0 && used + withNext > colHeight) newColumn()
     col().push(b)

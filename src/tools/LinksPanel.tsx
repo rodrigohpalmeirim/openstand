@@ -3,6 +3,7 @@ import { ArrowDown, ArrowUp, Link2, MapPin, MoreVertical, MousePointerClick, Pen
 import { useState } from 'react'
 import { db, uid, updateSong } from '../db/db'
 import type { LinkPoint, SmartButton, SmartButtonKind, Song } from '../db/schema'
+import { useTerms, type Terms } from '../library/browse/terms'
 import { MidiCommandsEditor } from '../midi/MidiCommandsEditor'
 import { useSettings } from '../state/settings'
 import { confirmDialog, cx, Field, Input, Menu, promptDialog, Segmented, Select, Toggle, useMenu } from '../ui/primitives'
@@ -173,10 +174,10 @@ function LinkRow({
 
 /* ---------------------------------------------------------------- buttons */
 
-const KINDS: { value: SmartButtonKind; label: string }[] = [
+const kinds = (t: Terms): { value: SmartButtonKind; label: string }[] => [
   { value: 'action', label: 'Run an action' },
   { value: 'page', label: 'Go to page' },
-  { value: 'song', label: 'Open song' },
+  { value: 'song', label: `Open ${t.song}` },
   { value: 'audio', label: 'Play audio track' },
   { value: 'midi', label: 'Send MIDI' },
   { value: 'url', label: 'Open web link' },
@@ -188,6 +189,7 @@ const GROUPS = [...new Set(BUTTON_ACTIONS.map((a) => ACTIONS[a].group))]
 
 function ButtonsTab({ song, currentPage, goToPage }: PanelProps) {
   const [draft, setDraft] = useState<SmartButton | null>(null)
+  const terms = useTerms()
   const list = song.smartButtons ?? []
   const save = (smartButtons: SmartButton[]) => updateSong(song.id, { smartButtons })
 
@@ -205,7 +207,7 @@ function ButtonsTab({ song, currentPage, goToPage }: PanelProps) {
       {list.length === 0 ? (
         <div className="flex flex-col items-center gap-2 py-6 text-center text-sm text-white/50">
           <MousePointerClick className="size-8 text-white/25" />
-          <p>Place buttons on the score that start a backing track, send MIDI to your rig, jump to a page or song, or run any action.</p>
+          <p>Place buttons on the score that start a backing track, send MIDI to your rig, jump to a page or {terms.song}, or run any action.</p>
         </div>
       ) : (
         <ul className="-mx-1">
@@ -267,6 +269,7 @@ function ButtonEditor({ song, draft: initial, isNew, onClose }: { song: Song; dr
   const [b, setB] = useState<SmartButton>(initial)
   const set = (p: Partial<SmartButton>) => setB((x) => ({ ...x, ...p }))
   const [songQuery, setSongQuery] = useState('')
+  const terms = useTerms()
   const target = useLiveQuery(() => (b.songId ? db.songs.get(b.songId) : undefined), [b.songId])
   const found = useLiveQuery(async () => {
     const t = songQuery.trim().toLowerCase()
@@ -296,7 +299,7 @@ function ButtonEditor({ song, draft: initial, isNew, onClose }: { song: Song; dr
       </Field>
       <Field label="When tapped">
         <Select value={b.kind} onChange={(e) => set({ kind: e.target.value as SmartButtonKind })}>
-          {KINDS.map((k) => (
+          {kinds(terms).map((k) => (
             <option key={k.value} value={k.value}>
               {k.label}
             </option>
@@ -325,8 +328,8 @@ function ButtonEditor({ song, draft: initial, isNew, onClose }: { song: Song; dr
         </Field>
       )}
       {b.kind === 'song' && (
-        <Field label="Song" hint={target ? `Selected: ${target.title}` : 'Search the library'}>
-          <Input value={songQuery} onChange={(e) => setSongQuery(e.target.value)} placeholder={target?.title ?? 'Find a song…'} />
+        <Field label={terms.Song} hint={target ? `Selected: ${target.title}` : 'Search the library'}>
+          <Input value={songQuery} onChange={(e) => setSongQuery(e.target.value)} placeholder={target?.title ?? `Find a ${terms.song}…`} />
           {!!found?.length && (
             <ul className="mt-1 rounded-lg border border-white/10">
               {found.map((s) => (
@@ -357,7 +360,7 @@ function ButtonEditor({ song, draft: initial, isNew, onClose }: { song: Song; dr
             </Field>
           </>
         ) : (
-          <p className="text-sm text-white/55">Add audio tracks to this song first (Audio panel).</p>
+          <p className="text-sm text-white/55">Add audio tracks to this {terms.song} first (Audio panel).</p>
         ))}
       {b.kind === 'midi' && <MidiCommandsEditor value={b.midi ?? []} onChange={(midi) => set({ midi })} />}
       {b.kind === 'url' && (

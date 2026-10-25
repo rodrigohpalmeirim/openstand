@@ -5,32 +5,38 @@ import { settings } from '../state/settings'
 import { confirmDialog, cx, Menu, promptDialog, toast, useMenu } from '../ui/primitives'
 import { runAction } from '../viewer/actions'
 import type { PanelProps } from '../viewer/panels'
-import { sortBookmarks } from './navigation'
+import { nextBookmark, prevBookmark, sortBookmarks, visiblePages } from './navigation'
 import { PanelBody, PanelButton } from './ui'
 
-export function BookmarksPanel({ song, currentPage, goToPage, pages }: PanelProps) {
+export function BookmarksPanel({ song, currentPage, goToPage, pages, stops, pos, paged }: PanelProps) {
   const list = sortBookmarks(song.bookmarks)
   const save = (bookmarks: Bookmark[]) => updateSong(song.id, { bookmarks })
+  // Two-page spreads and half-page stops show two pages: either can be bookmarked.
+  const shown = [...new Set(visiblePages(stops, pos, paged, currentPage))].sort((a, b) => a - b)
 
-  const add = async () => {
-    const existing = song.bookmarks.find((b) => b.pageIndex === currentPage)
-    if (existing && !(await confirmDialog({ title: 'Page already has a bookmark', message: `"${existing.name}" is on page ${currentPage + 1}. Add another?`, confirmLabel: 'Add' }))) return
-    const name = await promptDialog({ title: `Bookmark page ${currentPage + 1}`, label: 'Name', initial: `Page ${currentPage + 1}` })
+  const add = async (page: number) => {
+    const existing = song.bookmarks.find((b) => b.pageIndex === page)
+    if (existing && !(await confirmDialog({ title: 'Page already has a bookmark', message: `"${existing.name}" is on page ${page + 1}. Add another?`, confirmLabel: 'Add' }))) return
+    const name = await promptDialog({ title: `Bookmark page ${page + 1}`, label: 'Name', initial: `Page ${page + 1}` })
     if (name === null) return
-    await save([...song.bookmarks, { id: uid(), name: name.trim() || `Page ${currentPage + 1}`, pageIndex: currentPage, showInLibrary: true }])
+    await save([...song.bookmarks, { id: uid(), name: name.trim() || `Page ${page + 1}`, pageIndex: page, showInLibrary: true }])
     toast('Bookmark added', 'ok')
   }
 
   return (
     <PanelBody className="space-y-3">
-      <PanelButton primary className="min-h-12 w-full" onClick={add}>
-        <BookmarkPlus className="size-4" /> Bookmark page {currentPage + 1}
-      </PanelButton>
+      <div className="flex gap-2">
+        {shown.map((page) => (
+          <PanelButton key={page} primary className="min-h-12 min-w-0 flex-1" onClick={() => add(page)}>
+            <BookmarkPlus className="size-4 shrink-0" /> {shown.length > 1 ? `Bookmark p. ${page + 1}` : `Bookmark page ${page + 1}`}
+          </PanelButton>
+        ))}
+      </div>
       <div className="grid grid-cols-2 gap-2">
-        <PanelButton onClick={() => runAction('prevBookmark')} disabled={!list.some((b) => b.pageIndex < currentPage)}>
+        <PanelButton onClick={() => runAction('prevBookmark')} disabled={!prevBookmark(list, shown)}>
           <ChevronLeft className="size-4" /> Previous
         </PanelButton>
-        <PanelButton onClick={() => runAction('nextBookmark')} disabled={!list.some((b) => b.pageIndex > currentPage)}>
+        <PanelButton onClick={() => runAction('nextBookmark')} disabled={!nextBookmark(list, shown)}>
           Next <ChevronRight className="size-4" />
         </PanelButton>
       </div>
@@ -45,7 +51,7 @@ export function BookmarksPanel({ song, currentPage, goToPage, pages }: PanelProp
             <BookmarkRow
               key={b.id}
               b={b}
-              active={b.pageIndex === currentPage}
+              active={shown.includes(b.pageIndex)}
               pageCount={pages.length}
               onGo={() => goToPage(b.pageIndex)}
               onChange={(patch) => save(song.bookmarks.map((x) => (x.id === b.id ? { ...x, ...patch } : x)))}

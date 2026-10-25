@@ -5,6 +5,7 @@ import { terms } from '../browse/terms'
 const PACKAGE_RE = /\.(ospkg|osbackup)$/i
 
 export const PACKAGE_ACCEPT = '.ospkg,.osbackup'
+export const isPackageFile = (name: string) => PACKAGE_RE.test(name)
 
 /** Import any OpenStand packages/backups among `files`; returns the remaining (regular) files. */
 export async function importPackagesIn(files: File[]): Promise<File[]> {

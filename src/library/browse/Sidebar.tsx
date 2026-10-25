@@ -33,6 +33,7 @@ import { useSettings } from '../../state/settings'
 import { Button, cx, IconButton } from '../../ui/primitives'
 import { useLibrary } from './data'
 import { useLibraries } from './libraries'
+import { normalize } from './logic'
 import { BROWSE_GROUPS, useTerms } from './terms'
 import { ui, useLibraryUI } from './ui'
 
@@ -86,7 +87,7 @@ export function Sidebar({ onClose }: { onClose?: () => void }) {
   const t = useTerms()
   const route = useNav((n) => n.route)
   const visible = useSettings((s) => s.s.visibleGroups)
-  const { songs, setlists } = useLibrary()
+  const { songs, setlists, extraCollections } = useLibrary()
   const { list, active } = useLibraries()
   const current = route.name === 'library' ? route.section : null
   const libName = list.find((l) => l.id === active)?.name ?? 'My Library'
@@ -98,10 +99,12 @@ export function Sidebar({ onClose }: { onClose?: () => void }) {
     for (const s of songs) {
       if (s.favorite) fav++
       for (const b of s.bookmarks ?? []) if (b.showInLibrary) bm++
-      for (const c of s.collections) coll.add(c.toLowerCase())
+      for (const c of s.collections) if (c.trim()) coll.add(normalize(c) || c.trim())
     }
+    // Empty collections (created but not yet used) are listed too, so count them like the list does.
+    for (const c of extraCollections) if (c.trim()) coll.add(normalize(c) || c.trim())
     return { fav, bm, coll: coll.size }
-  }, [songs])
+  }, [songs, extraCollections])
 
   const top = visible.filter((g) => g === 'setlists' || g === 'collections') as Section[]
   const browse = visible.filter((g) => (BROWSE_GROUPS as string[]).includes(g)) as Section[]
@@ -116,6 +119,7 @@ export function Sidebar({ onClose }: { onClose?: () => void }) {
           className="flex min-w-0 flex-1 flex-col rounded-lg px-1.5 py-1 text-left hover:bg-surface-2"
           onClick={() => useLibraryUI.getState().set({ libraries: true })}
           title="Switch library"
+          aria-label={`Switch library (current: ${libName})`}
         >
           <span className="text-sm font-semibold leading-tight">OpenStand</span>
           <span className="flex items-center gap-1 truncate text-xs text-muted">
@@ -242,7 +246,7 @@ export function BottomNav() {
   ]
   const inMore = current && !items.some((i) => i.section === current)
   return (
-    <nav aria-label="Sections" className="flex shrink-0 border-t border-line bg-surface pb-[env(safe-area-inset-bottom)] md:hidden">
+    <nav aria-label="Sections" data-bottom-bar className="flex shrink-0 border-t border-line bg-surface pb-[env(safe-area-inset-bottom)] md:hidden">
       {items.map(({ section, label }) => {
         const Icon = SECTION_ICONS[section]
         const active = current === section

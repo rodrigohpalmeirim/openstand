@@ -1,3 +1,11 @@
+// Labels that name a song follow the terminology setting. settings.ts plugs the reader in, since
+// importing the settings store here would be a circular import (it validates action ids on load).
+let songWord = () => 'song'
+export function setActionSongWord(get: () => string) {
+  songWord = get
+}
+const cap = (w: string) => w[0].toUpperCase() + w.slice(1)
+
 /**
  * Every performable action. Touch zones, gestures, keyboard/pedal keys, MIDI messages and face
  * gestures all map to these ids; the viewer registers a handler for each.
@@ -18,8 +26,8 @@ export const ACTIONS = {
   lastPage: { label: 'Last page', group: 'Navigation' },
   scrollDown: { label: 'Scroll down', group: 'Navigation' },
   scrollUp: { label: 'Scroll up', group: 'Navigation' },
-  nextSong: { label: 'Next song', group: 'Navigation' },
-  prevSong: { label: 'Previous song', group: 'Navigation' },
+  nextSong: { get label() { return `Next ${songWord()}` }, group: 'Navigation' },
+  prevSong: { get label() { return `Previous ${songWord()}` }, group: 'Navigation' },
   followLink: { label: 'Follow link point', group: 'Navigation' },
   goBack: { label: 'Return from link', group: 'Navigation' },
   showBookmarks: { label: 'Bookmarks', group: 'Navigation' },
@@ -52,12 +60,12 @@ export const ACTIONS = {
   transposeDown: { label: 'Transpose down', group: 'Tools' },
   textBigger: { label: 'Larger text', group: 'Tools' },
   textSmaller: { label: 'Smaller text', group: 'Tools' },
-  sendMidi: { label: 'Send song MIDI', group: 'Tools' },
+  sendMidi: { get label() { return `Send ${songWord()} MIDI` }, group: 'Tools' },
   startAutoScroll: { label: 'Start auto-scroll', group: 'Tools' },
   stopAutoScroll: { label: 'Stop auto-scroll', group: 'Tools' },
   startMetronome: { label: 'Start metronome', group: 'Tools' },
   stopMetronome: { label: 'Stop metronome', group: 'Tools' },
-  toggleNotes: { label: 'Song notes', group: 'Tools' },
+  toggleNotes: { get label() { return `${cap(songWord())} notes` }, group: 'Tools' },
   toggleFaceGestures: { label: 'Face gestures on/off', group: 'Tools' },
   // Performance tools (src/tools)
   prevBookmark: { label: 'Previous bookmark', group: 'Navigation' },

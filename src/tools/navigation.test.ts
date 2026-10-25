@@ -17,6 +17,15 @@ describe('bookmark navigation', () => {
     expect(prevBookmark(list, 4)?.id).toBe('b')
     expect(prevBookmark(list, 1)).toBeUndefined()
   })
+  it('looks past every page of a two-page spread', () => {
+    // [2|3] → the bookmark on page 3 is already in view.
+    const spread = [bm('a', 1), bm('b', 3), bm('c', 4)]
+    expect(nextBookmark(spread, visiblePages([{ kind: 'spread', pages: [2, 3] }], 0, true, 2))?.id).toBe('c')
+    expect(prevBookmark(spread, [2, 3])?.id).toBe('a')
+    expect(nextBookmark(spread, [3, 4])).toBeUndefined()
+    // Half-page stops show the next page on top: [top 4, bottom 3].
+    expect(prevBookmark(spread, [4, 3])?.id).toBe('a')
+  })
 })
 
 describe('link points', () => {

@@ -5,6 +5,7 @@ import type { Song } from '../../db/schema'
 import { createTextSong } from '../../files/import'
 import { settings, useSettings } from '../../state/settings'
 import { Button, cx, Dialog, toast } from '../../ui/primitives'
+import { radioGroupProps, radioTabIndex } from '../../ui/radio'
 import { CLASSICAL_GROUPS } from './terms'
 import { ui } from './ui'
 
@@ -107,6 +108,7 @@ export function Welcome() {
       type="button"
       role="radio"
       aria-checked={terminology === v}
+      tabIndex={radioTabIndex(terminology === v, v === 'song' ? 0 : 1, true)}
       onClick={() => choose(v)}
       className={cx(
         'flex flex-1 flex-col gap-1 rounded-xl border-2 p-4 text-left transition',
@@ -118,7 +120,8 @@ export function Welcome() {
     </button>
   )
   return (
-    <Dialog open onClose={finish} size="md" label="Welcome to OpenStand">
+    // A stray tap beside the dialog mustn't dismiss it for good: only Escape or one of the choices.
+    <Dialog open onClose={finish} backdropCloses={false} size="md" label="Welcome to OpenStand">
       <div className="flex flex-col gap-6 px-6 py-7">
         <div className="flex flex-col items-center gap-3 text-center">
           <div className="flex size-14 items-center justify-center rounded-2xl bg-accent text-accent-fg shadow-lg">
@@ -130,8 +133,10 @@ export function Welcome() {
           </p>
         </div>
         <div>
-          <div className="mb-2 text-xs font-medium uppercase tracking-wide text-muted">What do you play?</div>
-          <div className="flex gap-3" role="radiogroup">
+          <div id="welcome-play" className="mb-2 text-xs font-medium uppercase tracking-wide text-muted">
+            What do you play?
+          </div>
+          <div className="flex gap-3" aria-labelledby="welcome-play" {...radioGroupProps()}>
             {card('song', 'Songs', 'Artists, albums, genres — bands, worship, pop, jazz')}
             {card('piece', 'Pieces', 'Composers, books, years — classical repertoire')}
           </div>

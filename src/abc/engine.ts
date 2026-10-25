@@ -223,6 +223,9 @@ export function tuneTitles(source: string): string[] {
 /** Transpose ABC text with abcjs (rewrites notes and key signatures). */
 export async function transposeAbcText(source: string, steps: number): Promise<string> {
   const abcjs = await loadAbcjs()
-  const tunes = abcjs.renderAbc('*', source)
-  return abcjs.strTranspose(source, tunes, steps)
+  const one = (src: string) => abcjs.strTranspose(src, abcjs.renderAbc('*', src), steps)
+  // abcjs only handles the first tune of a string, so transpose each X: tune on its own.
+  const parts = source.split(/(?=^X:)/m)
+  if (!parts.some((p) => p.startsWith('X:'))) return one(source)
+  return parts.map((p) => (p.startsWith('X:') ? one(p) : p)).join('')
 }

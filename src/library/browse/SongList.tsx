@@ -184,7 +184,8 @@ const SongRow = memo(function SongRow(p: RowProps) {
             aria-pressed={s.favorite}
             className={cx(
               'inline-flex size-8 shrink-0 items-center justify-center rounded-lg transition hover:bg-surface-3',
-              s.favorite ? 'text-accent' : 'text-faint opacity-0 group-hover:opacity-100 focus-visible:opacity-100 max-md:hidden',
+              // Revealed on hover only, so it's removed where there is no hover (touch) rather than left as an invisible target.
+              s.favorite ? 'text-accent' : 'text-faint opacity-0 group-hover:opacity-100 focus-visible:opacity-100 max-md:hidden [@media(hover:none)]:hidden',
             )}
             onClick={(e) => {
               e.stopPropagation()
@@ -194,7 +195,8 @@ const SongRow = memo(function SongRow(p: RowProps) {
             <Heart className={cx('size-4', s.favorite && 'fill-current')} />
           </button>
           <IconButton
-            label="More actions"
+            label={`More actions for ${s.title}`}
+            title="More actions"
             size="sm"
             className="text-muted!"
             onClick={(e) => {

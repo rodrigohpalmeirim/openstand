@@ -114,3 +114,37 @@ export function fitSpread(aspects: number[], box: Box, fit: FitMode, gap: number
   if (fit === 'height') h = box.height
   return aspects.map((a) => ({ width: h * a, height: h }))
 }
+
+/** A page of a scroll strip along its scroll axis (offsets relative to the scroller's content). */
+export interface StripItem {
+  page: number
+  start: number
+  size: number
+}
+
+/** Reading position in a scroll strip: the page at the leading edge of the view and how far into it (0..1). */
+export interface StripAnchor {
+  page: number
+  frac: number
+}
+
+/** Page whose start is the last one at or before `offset` (the first page before any). */
+export function pageAtOffset(items: StripItem[], offset: number): number {
+  let cur = items[0]?.page ?? 0
+  for (const it of items) if (it.start <= offset) cur = it.page
+  return cur
+}
+
+/** Anchor for a scroll offset; null at the very start, which should stay the start whatever the sizes. */
+export function stripAnchor(items: StripItem[], offset: number): StripAnchor | null {
+  if (offset <= 1 || !items.length) return null
+  const page = pageAtOffset(items, offset)
+  const it = items.find((i) => i.page === page)!
+  return { page, frac: Math.max(0, Math.min(1, (offset - it.start) / Math.max(1, it.size))) }
+}
+
+/** Scroll offset that shows an anchor again once the pages have new sizes. */
+export function anchorOffset(items: StripItem[], a: StripAnchor): number | undefined {
+  const it = items.find((i) => i.page === a.page)
+  return it && it.start + a.frac * it.size
+}

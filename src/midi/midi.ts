@@ -257,6 +257,12 @@ export async function runSteps(steps: SendStep[], bpm: number) {
 
 /** Send a list of commands now (all of them, or just the send-on-load ones). */
 export async function sendCommands(cmds: MidiCommand[], opts: { bpm?: number; onLoadOnly?: boolean } = {}) {
+  // Never switch MIDI on behind the user's back: with "Use MIDI" off, incoming messages would start
+  // running actions and opening songs.
+  if (!settings().midi.enabled) {
+    toast('Turn on MIDI in Settings first', 'info', { label: 'Turn on', run: () => useSettings.getState().setIn('midi', { enabled: true }) })
+    return
+  }
   if (!access) await enableMidi()
   if (!access) {
     toast('MIDI is not available', 'error')

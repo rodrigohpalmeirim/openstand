@@ -12,10 +12,12 @@ import {
   type ButtonHTMLAttributes,
   type InputHTMLAttributes,
   type ReactNode,
+  type RefObject,
   type SelectHTMLAttributes,
   type TextareaHTMLAttributes,
 } from 'react'
 import { createPortal } from 'react-dom'
+import { radioGroupProps, radioTabIndex } from './radio'
 
 export function cx(...parts: (string | false | null | undefined)[]) {
   return parts.filter(Boolean).join(' ')
@@ -140,8 +142,21 @@ export function Toggle({
   label?: string
   disabled?: boolean
 }) {
+  const ref = useRef<HTMLButtonElement>(null)
+  useLayoutEffect(() => {
+    // Unlabelled switch in a "caption + control" row: take the caption beside it as the name.
+    const el = ref.current
+    if (!el || label || el.labels?.length || el.hasAttribute('aria-labelledby')) return
+    const prev = el.previousElementSibling
+    if (!prev) return
+    // Its first piece of text: a hint may follow the caption.
+    const walk = document.createTreeWalker(prev, NodeFilter.SHOW_TEXT, { acceptNode: (n) => (n.textContent?.trim() ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP) })
+    const caption = walk.nextNode()?.textContent?.trim()
+    if (caption) el.setAttribute('aria-label', caption)
+  }, [label])
   return (
     <button
+      ref={ref}
       type="button"
       role="switch"
       aria-checked={checked}
@@ -169,21 +184,30 @@ export function Segmented<T extends string | number>({
   onChange,
   size = 'md',
   className,
+  label,
 }: {
   value: T
   options: { value: T; label: ReactNode; title?: string }[]
   onChange: (v: T) => void
   size?: 'sm' | 'md'
   className?: string
+  /** Accessible name of the group. */
+  label?: string
 }) {
+  const any = options.some((o) => o.value === value)
   return (
-    <div className={cx('inline-flex rounded-lg bg-surface-2 p-0.5 border border-line', className)} role="radiogroup">
-      {options.map((o) => (
+    <div
+      className={cx('inline-flex rounded-lg bg-surface-2 p-0.5 border border-line', className)}
+      aria-label={label}
+      {...radioGroupProps()}
+    >
+      {options.map((o, i) => (
         <button
           key={String(o.value)}
           type="button"
           role="radio"
           aria-checked={o.value === value}
+          tabIndex={radioTabIndex(o.value === value, i, any)}
           title={o.title}
           onClick={() => onChange(o.value)}
           className={cx(
@@ -232,6 +256,23 @@ export function Slider({
 
 /* ------------------------------------------------------------------ Dialogs */
 
+/**
+ * True while an Enter/Space keydown is being dispatched. A dialog it closes must give focus back only
+ * once the key is done: the button that opened the dialog would otherwise get the keypress (click) too
+ * and open it again.
+ */
+let activationKeyDown = false
+if (typeof window !== 'undefined')
+  window.addEventListener(
+    'keydown',
+    (e) => {
+      if (e.key !== 'Enter' && e.key !== ' ') return
+      activationKeyDown = true
+      setTimeout(() => (activationKeyDown = false))
+    },
+    true,
+  )
+
 /** Open overlays, innermost last: Escape closes only the topmost one. */
 const escapeStack: { current: () => void }[] = []
 
@@ -256,16 +297,52 @@ export function useEscape(active: boolean, onEscape: () => void) {
   }, [active])
 }
 
-export function Dialog({
-  open,
-  onClose,
-  title,
-  children,
-  footer,
-  size = 'md',
-  className,
-  label,
-}: {
+const FOCUSABLE =
+  'a[href], button:not([disabled]), input:not([disabled]):not([type="hidden"]), select:not([disabled]), textarea:not([disabled]), [tabindex], [contenteditable="true"], audio[controls], video[controls]'
+
+/** Elements Tab can reach inside `root`, in order. */
+function tabbables(root: HTMLElement): HTMLElement[] {
+  return [...root.querySelectorAll<HTMLElement>(FOCUSABLE)].filter(
+    (el) => el.tabIndex >= 0 && !el.closest('[inert]') && (typeof el.checkVisibility !== 'function' || el.checkVisibility()),
+  )
+}
+
+/**
+ * Open modal dialogs. While any is open, everything in <body> before the top-most one (the app, lower
+ * dialogs and sheets) is inert; later siblings (menus and popovers opened from the dialog) and the
+ * toast stack stay usable.
+ */
+const modals: { overlay: HTMLElement; panel: HTMLElement }[] = []
+let madeInert: HTMLElement[] = []
+
+function topModal() {
+  // Portals append in mount order, so the last in the document is the one on top.
+  return modals.reduce<(typeof modals)[number] | undefined>(
+    (a, m) => (!a || a.overlay.compareDocumentPosition(m.overlay) & Node.DOCUMENT_POSITION_FOLLOWING ? m : a),
+    undefined,
+  )
+}
+
+function applyInert() {
+  for (const el of madeInert) el.inert = false
+  madeInert = []
+  const top = topModal()
+  if (!top) return
+  for (const el of Array.from(document.body.children)) {
+    if (el === top.overlay) break
+    if (el instanceof HTMLElement && !el.inert && el.tagName !== 'SCRIPT' && !el.hasAttribute('data-no-inert')) {
+      el.inert = true
+      madeInert.push(el)
+    }
+  }
+}
+
+export function Dialog(props: DialogProps) {
+  if (!props.open) return null
+  return <OpenDialog {...props} />
+}
+
+interface DialogProps {
   open: boolean
   onClose: () => void
   title?: ReactNode
@@ -275,24 +352,75 @@ export function Dialog({
   className?: string
   /** Accessible name when there's no `title` (with a title, the dialog is labelled by it). */
   label?: string
-}) {
-  useEscape(open, onClose)
+  /** False while Escape means something else (e.g. a key being recorded). The dialog still swallows it. */
+  escapeCloses?: boolean
+  /** False for choices that must be made explicitly: a tap on the backdrop does nothing. */
+  backdropCloses?: boolean
+}
+
+function OpenDialog({ onClose, title, children, footer, size = 'md', className, label, escapeCloses = true, backdropCloses = true }: DialogProps) {
+  useEscape(true, () => escapeCloses && onClose())
   const titleId = useId()
-  if (!open) return null
+  const overlayRef = useRef<HTMLDivElement>(null)
+  const panelRef = useRef<HTMLDivElement>(null)
+  // Read on the first render, before an autoFocus child takes focus: where focus goes back on close.
+  const [trigger] = useState(() => document.activeElement)
+  // The field that took focus on open; refs survive StrictMode's effect re-run, whose cleanup moves focus away.
+  const opened = useRef<Element | null>(null)
+  useLayoutEffect(() => {
+    const m = { overlay: overlayRef.current!, panel: panelRef.current! }
+    modals.push(m)
+    applyInert()
+    // Focus the dialog itself (an autoFocus field keeps it): Tab then starts at its first control, and
+    // phones don't pop up the keyboard for a text field.
+    if (m.panel.contains(document.activeElement)) opened.current = document.activeElement
+    else if (opened.current instanceof HTMLElement && m.panel.contains(opened.current)) opened.current.focus({ preventScroll: true })
+    else m.panel.focus({ preventScroll: true })
+    return () => {
+      modals.splice(modals.indexOf(m), 1)
+      applyInert()
+      const restore = () => {
+        const active = document.activeElement
+        if (active && active !== document.body && !m.overlay.contains(active)) return // focus moved on deliberately
+        if (trigger instanceof HTMLElement && trigger !== document.body && trigger.isConnected) trigger.focus({ preventScroll: true })
+        if (document.activeElement !== trigger) topModal()?.panel.focus({ preventScroll: true })
+      }
+      // Unless it's still there by then (StrictMode re-runs this effect on mount).
+      if (activationKeyDown) setTimeout(() => !m.overlay.isConnected && restore())
+      else restore()
+    }
+  }, [trigger])
   return createPortal(
     <div
+      ref={overlayRef}
       className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/55 animate-fade-in"
       onPointerDown={(e) => {
-        if (e.target === e.currentTarget) onClose()
+        if (backdropCloses && e.target === e.currentTarget) onClose()
+      }}
+      onKeyDown={(e) => {
+        // Keep Tab inside the dialog (events from portalled popovers bubble here too; leave those alone).
+        const panel = panelRef.current
+        if (e.key !== 'Tab' || !panel?.contains(e.target as Node)) return
+        const f = tabbables(panel)
+        if (!f.length) return e.preventDefault()
+        if (e.shiftKey && (e.target === f[0] || e.target === panel)) {
+          e.preventDefault()
+          f[f.length - 1].focus()
+        } else if (!e.shiftKey && e.target === f[f.length - 1]) {
+          e.preventDefault()
+          f[0].focus()
+        }
       }}
     >
       <div
+        ref={panelRef}
         role="dialog"
         aria-modal="true"
         aria-labelledby={title !== undefined ? titleId : undefined}
         aria-label={title === undefined ? label : undefined}
+        tabIndex={-1}
         className={cx(
-          'flex max-h-[92dvh] w-full flex-col overflow-hidden bg-surface text-fg shadow-2xl animate-pop-in',
+          'flex max-h-[92dvh] w-full flex-col overflow-hidden bg-surface text-fg shadow-2xl animate-pop-in outline-none',
           'rounded-t-2xl sm:rounded-2xl border border-line',
           size === 'sm' && 'sm:max-w-sm',
           size === 'md' && 'sm:max-w-lg',
@@ -313,7 +441,11 @@ export function Dialog({
           </div>
         )}
         <div className="min-h-0 flex-1 overflow-y-auto">{children}</div>
-        {footer && <div className="flex items-center justify-end gap-2 border-t border-line px-5 py-3">{footer}</div>}
+        {footer && (
+          <div data-bottom-bar className="flex items-center justify-end gap-2 border-t border-line px-5 py-3">
+            {footer}
+          </div>
+        )}
       </div>
     </div>,
     document.body,
@@ -352,7 +484,11 @@ export function Popover({
 }) {
   const ref = useRef<HTMLDivElement>(null)
   const [pos, setPos] = useState<{ left: number; top: number } | null>(null)
-  useEscape(open, onClose)
+  useEscape(open, () => {
+    const inside = ref.current?.contains(document.activeElement)
+    onClose()
+    if (inside) anchor?.focus({ preventScroll: true })
+  })
   useLayoutEffect(() => {
     if (!open || !anchor || !ref.current) return
     const a = anchor.getBoundingClientRect()
@@ -405,23 +541,58 @@ export function Menu({
   align?: 'start' | 'end' | 'center'
   side?: 'bottom' | 'top'
 }) {
+  const menuRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    // Focus the first item so the arrow keys work straight away (no ring after a click: not focus-visible).
+    if (open) menuRef.current?.querySelector<HTMLElement>('[role="menuitem"]:not(:disabled)')?.focus({ preventScroll: true })
+  }, [open])
+  /** Close and give focus back to the button that opened the menu (unless focus already went elsewhere). */
+  const closeToAnchor = () => {
+    const active = document.activeElement
+    const inside = !active || active === document.body || !!menuRef.current?.contains(active)
+    onClose()
+    if (inside) anchor?.focus({ preventScroll: true })
+  }
   return (
     <Popover anchor={anchor} open={open} onClose={onClose} align={align} side={side} className="min-w-52">
-      <div role="menu">
+      <div
+        ref={menuRef}
+        role="menu"
+        onKeyDown={(e) => {
+          if (e.key === 'Tab') {
+            e.preventDefault()
+            return closeToAnchor()
+          }
+          const list = [...e.currentTarget.querySelectorAll<HTMLElement>('[role="menuitem"]:not(:disabled)')]
+          if (!list.length) return
+          const at = list.indexOf(document.activeElement as HTMLElement)
+          const k = e.key
+          const next =
+            k === 'ArrowDown' ? (at + 1) % list.length
+            : k === 'ArrowUp' ? (at <= 0 ? list.length - 1 : at - 1)
+            : k === 'Home' ? 0
+            : k === 'End' ? list.length - 1
+            : -1
+          if (next < 0) return
+          e.preventDefault()
+          e.stopPropagation() // arrows must not also turn pages in the viewer
+          list[next].focus()
+        }}
+      >
         {items.map((it, i) =>
           it.divider ? (
-            <div key={i} className="my-1 h-px bg-line" />
+            <div key={i} role="separator" className="my-1 h-px bg-line" />
           ) : (
             <button
               key={i}
               role="menuitem"
               disabled={it.disabled}
               onClick={() => {
-                onClose()
+                closeToAnchor()
                 it.onSelect?.()
               }}
               className={cx(
-                'flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-sm transition hover:bg-surface-2 disabled:opacity-40',
+                'flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-sm transition hover:bg-surface-2 focus-visible:bg-surface-2 focus-visible:outline-offset-[-2px] disabled:opacity-40',
                 it.danger && 'text-danger',
               )}
             >
@@ -485,16 +656,27 @@ export function ToastProvider({ children }: { children: ReactNode }) {
       toastSink = null
     }
   }, [push])
+  const stackRef = useRef<HTMLDivElement>(null)
+  const lift = useBottomBarHeight(toasts.length > 0, stackRef)
   return (
     <ToastCtx.Provider value={push}>
       {children}
       {createPortal(
-        <div className="pointer-events-none fixed inset-x-0 bottom-4 z-[70] flex flex-col items-center gap-2 px-4">
+        <div
+          ref={stackRef}
+          role="status"
+          aria-live="polite"
+          data-no-inert=""
+          style={{ bottom: lift ? lift + 8 : 'max(1rem, env(safe-area-inset-bottom))' }}
+          className="pointer-events-none fixed inset-x-0 z-[70] flex flex-col items-center gap-2 px-4"
+        >
           {toasts.map((t) => (
             <div
               key={t.id}
               className={cx(
-                'pointer-events-auto flex items-center gap-3 rounded-xl px-4 py-2.5 text-sm shadow-lg animate-pop-in',
+                // Only toasts with a button take taps; the rest let them through to what's underneath.
+                t.action && 'pointer-events-auto',
+                'flex items-center gap-3 rounded-xl px-4 py-2.5 text-sm shadow-lg animate-pop-in',
                 'bg-fg text-bg',
                 t.tone === 'error' && '!bg-danger !text-white',
               )}
@@ -521,6 +703,43 @@ export function ToastProvider({ children }: { children: ReactNode }) {
 }
 
 export const useToast = () => useContext(ToastCtx)
+
+/**
+ * Height of the bar along the bottom of the screen (phone nav, a sheet's footer, the viewer's page
+ * bar), so toasts sit above it rather than over its buttons. Bars opt in with `data-bottom-bar` (so a
+ * list row scrolled to the bottom edge doesn't count) and are found by hit-testing the bottom edge:
+ * hidden bars (pointer-events: none) and inert content behind a dialog don't count.
+ */
+function useBottomBarHeight(active: boolean, self: RefObject<HTMLElement | null>) {
+  const [h, setH] = useState(0)
+  useLayoutEffect(() => {
+    if (!active) return
+    const measure = () => {
+      const W = window.innerWidth
+      const H = window.innerHeight
+      let top = H
+      for (const x of [W * 0.25, W * 0.5, W * 0.75]) {
+        for (const hit of document.elementsFromPoint(x, H - 2)) {
+          const el = hit.closest('[data-bottom-bar]')
+          if (!el || self.current?.contains(el)) continue
+          const r = el.getBoundingClientRect()
+          // Only while it sits on the bottom edge (a sheet's footer on a phone, not a centred dialog's).
+          if (Math.abs(r.bottom - H) <= 2) top = Math.min(top, r.top)
+        }
+      }
+      setH(Math.max(0, Math.round(H - top)))
+    }
+    measure()
+    // Bars come and go (viewer chrome auto-hides, sheets open) while a toast is up.
+    const t = setInterval(measure, 400)
+    window.addEventListener('resize', measure)
+    return () => {
+      clearInterval(t)
+      window.removeEventListener('resize', measure)
+    }
+  }, [active, self])
+  return active ? h : 0
+}
 
 /* ------------------------------------------------------------ Confirm/prompt */
 
@@ -582,8 +801,14 @@ export function AskHost() {
             <Input
               autoFocus
               value={text}
+              // Select the suggested value, so typing replaces it (e.g. the current page in "Go to page").
+              onFocus={(e) => e.currentTarget.select()}
               onChange={(e) => setText(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && close(true)}
+              onKeyDown={(e) => {
+                if (e.key !== 'Enter') return
+                e.preventDefault() // or the button focus returns to would take the same keypress
+                close(true)
+              }}
             />
           </Field>
         )}

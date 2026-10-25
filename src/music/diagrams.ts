@@ -273,7 +273,11 @@ export function lookupDiagram(name: string, inst: Instrument, defines: ChordDefi
     const prefix = canon === 'minor' ? 'm' : canon === 'major' ? '' : null
     if (prefix !== null) shapes = tryGet(`${prefix}/${bassName}`) ?? tryGet(`${prefix}/${['C', 'Db', 'D', 'Eb', 'E', 'F', 'Gb', 'G', 'Ab', 'A', 'Bb', 'B'][c.bass!]}`)
   }
-  shapes ??= tryGet(canon)
+  if (!shapes) {
+    shapes = tryGet(canon)
+    // A slash chord without its own shape shows the plain chord: the bass note is missing.
+    if (shapes && c.bass !== undefined && c.bass !== c.root) approx = true
+  }
   if (!shapes) {
     for (const f of fallbacks(canon)) {
       shapes = tryGet(f)

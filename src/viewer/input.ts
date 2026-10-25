@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react'
-import { settings, type TouchZone } from '../state/settings'
+import { settings, type KeyBinding, type TouchZone } from '../state/settings'
 import { runAction, type ActionId } from './actions'
 
 export function zoneAt(x: number, y: number, w: number, h: number): TouchZone {
@@ -46,8 +46,72 @@ function debounced(a: ActionId): boolean {
   return false
 }
 
-const isTyping = (t: EventTarget | null) =>
-  t instanceof HTMLElement && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))
+/** Inputs that take no text (checkboxes, buttons…) leave pedal and key bindings working. */
+const NON_TEXT_INPUTS = /^(checkbox|radio|button|submit|reset|color|file|image)$/
+
+/**
+ * Sliders focused by a pointer press leave arrow keys to the bindings (a pedal must not nudge a slider
+ * that merely kept focus from a tap); focused from the keyboard (Tab) they keep their arrows/Home/End.
+ */
+const pointerSliders = new WeakSet<Element>()
+if (typeof document !== 'undefined') {
+  document.addEventListener(
+    'pointerdown',
+    (e) => {
+      if (e.target instanceof HTMLInputElement && e.target.type === 'range') pointerSliders.add(e.target)
+    },
+    true,
+  )
+  document.addEventListener('focusout', (e) => e.target instanceof Element && pointerSliders.delete(e.target), true)
+}
+
+export const isTyping = (t: EventTarget | null) =>
+  t instanceof HTMLElement &&
+  (t.isContentEditable ||
+    /^(TEXTAREA|SELECT)$/.test(t.tagName) ||
+    (t instanceof HTMLInputElement && (t.type === 'range' ? !pointerSliders.has(t) : !NON_TEXT_INPUTS.test(t.type))))
+
+/** Physical key of an event, without modifiers: keyup of a modifier has no modifier flag set. */
+const physicalKey = (e: KeyboardEvent) => (e.code && e.code !== 'Unidentified' ? e.code : e.key)
+
+/**
+ * Keydown/keyup handlers for the bindings in settings. A key with both a press and a hold binding
+ * waits: released before 500ms it runs the press action, held longer the hold action.
+ */
+export function keyBindingHandlers(run: (a: ActionId) => void = (a) => runAction(a, 'key')) {
+  // Keyed by physical key: the binding id of a modifier differs between its keydown ("Shift+ShiftLeft") and keyup ("ShiftLeft").
+  const held = new Map<string, { timer: number; fired: boolean; short?: KeyBinding }>()
+  const down = (e: KeyboardEvent) => {
+    if (isTyping(e.target)) return
+    const id = keyId(e)
+    const binds = settings().pageTurn.keys.filter((k) => k.key === id || k.key === e.key)
+    if (!binds.length) return
+    e.preventDefault()
+    if (e.repeat) return
+    const long = binds.find((b) => b.long)
+    const short = binds.find((b) => !b.long)
+    if (!long) {
+      if (short && !debounced(short.action)) run(short.action)
+      return
+    }
+    const st = { fired: false, timer: 0, short }
+    st.timer = window.setTimeout(() => {
+      st.fired = true
+      run(long.action)
+    }, 500)
+    held.set(physicalKey(e), st)
+  }
+  const up = (e: KeyboardEvent) => {
+    const k = physicalKey(e)
+    const st = held.get(k)
+    if (!st) return
+    clearTimeout(st.timer)
+    held.delete(k)
+    if (!st.fired && st.short && !debounced(st.short.action)) run(st.short.action)
+  }
+  const dispose = () => held.forEach((s) => clearTimeout(s.timer))
+  return { down, up, dispose }
+}
 
 /**
  * Keyboard / Bluetooth page-turner pedals. Most pedals (AirTurn, PageFlip, Donner, …) emulate a
@@ -56,44 +120,13 @@ const isTyping = (t: EventTarget | null) =>
 export function useKeyBindings(enabled: boolean) {
   useEffect(() => {
     if (!enabled) return
-    const held = new Map<string, { timer: number; fired: boolean }>()
-    const down = (e: KeyboardEvent) => {
-      if (isTyping(e.target)) return
-      const id = keyId(e)
-      const binds = settings().pageTurn.keys.filter((k) => k.key === id || k.key === e.key)
-      if (!binds.length) return
-      e.preventDefault()
-      if (e.repeat) return
-      const long = binds.find((b) => b.long)
-      const short = binds.find((b) => !b.long)
-      if (!long) {
-        if (short && !debounced(short.action)) runAction(short.action, 'key')
-        return
-      }
-      const st = { fired: false, timer: 0 }
-      st.timer = window.setTimeout(() => {
-        st.fired = true
-        runAction(long.action, 'key')
-      }, 500)
-      held.set(id, st)
-    }
-    const up = (e: KeyboardEvent) => {
-      const id = keyId(e)
-      const st = held.get(id)
-      if (!st) return
-      clearTimeout(st.timer)
-      held.delete(id)
-      if (!st.fired) {
-        const short = settings().pageTurn.keys.find((k) => (k.key === id || k.key === e.key) && !k.long)
-        if (short && !debounced(short.action)) runAction(short.action, 'key')
-      }
-    }
+    const { down, up, dispose } = keyBindingHandlers()
     window.addEventListener('keydown', down)
     window.addEventListener('keyup', up)
     return () => {
       window.removeEventListener('keydown', down)
       window.removeEventListener('keyup', up)
-      held.forEach((s) => clearTimeout(s.timer))
+      dispose()
     }
   }, [enabled])
 }
@@ -103,6 +136,8 @@ interface GestureOpts {
   enabled: boolean
   /** When disabled, still allow two-finger pinch zoom (used while annotating). */
   pinchOnly?: boolean
+  /** When disabled, finger taps and swipes outside the page still turn pages (annotating with stylus only). */
+  fingerTurns?: boolean
   /** Current zoom; swipes are disabled when zoomed in so panning works. */
   zoomed: boolean
   /** `scale` is relative to the finger distance at the start; (sx, sy) is the start midpoint. */
@@ -111,6 +146,8 @@ interface GestureOpts {
   onPinchEnd?: () => void
 }
 
+const TURN_ACTION = /^(next|prev)(Page|OnePage|TwoPages|PageLoop|HalfPage|Song)$|^(first|last)Page$|^scroll(Up|Down)$|^activateLinkOrTurn$/
+
 /** Pointer gestures on the performance stage: zone taps, swipes, double tap, long press, pinch. */
 export function useStageGestures(ref: React.RefObject<HTMLElement | null>, opts: GestureOpts) {
   const o = useRef(opts)
@@ -118,7 +155,8 @@ export function useStageGestures(ref: React.RefObject<HTMLElement | null>, opts:
   useEffect(() => {
     const el = ref.current
     if (!el) return
-    const pts = new Map<number, { x: number; y: number; t: number; sx: number; sy: number }>()
+    // `turn`: this pointer may fire tap/swipe actions (always, unless the stage is disabled).
+    const pts = new Map<number, { x: number; y: number; t: number; sx: number; sy: number; turn: boolean }>()
     let pinchStart = 0
     let pinchMid = { x: 0, y: 0 }
     let longTimer = 0
@@ -141,9 +179,11 @@ export function useStageGestures(ref: React.RefObject<HTMLElement | null>, opts:
     }
 
     const down = (e: PointerEvent) => {
-      if (!o.current.enabled && !(o.current.pinchOnly && e.pointerType === 'touch')) return
+      const touch = e.pointerType === 'touch'
+      const fingerTurn = touch && !!o.current.fingerTurns && !(e.target instanceof Element && e.target.closest('[data-annot-key]'))
+      if (!o.current.enabled && !fingerTurn && !(o.current.pinchOnly && touch)) return
       if (e.pointerType === 'mouse' && e.button !== 0) return
-      pts.set(e.pointerId, { x: e.clientX, y: e.clientY, t: performance.now(), sx: e.clientX, sy: e.clientY })
+      pts.set(e.pointerId, { x: e.clientX, y: e.clientY, t: performance.now(), sx: e.clientX, sy: e.clientY, turn: o.current.enabled || fingerTurn })
       maxPts = Math.max(maxPts, pts.size)
       if (pts.size === 2) {
         multi = true
@@ -192,7 +232,7 @@ export function useStageGestures(ref: React.RefObject<HTMLElement | null>, opts:
       if (!p) return
       // Lifting one finger ends the pinch even while the other stays down.
       if (pts.size < 2) endPinch()
-      if (!o.current.enabled && !multi) return
+      if (!p.turn && !multi) return
       if (multi) {
         if (pts.size === 0) {
           multi = false
@@ -205,6 +245,9 @@ export function useStageGestures(ref: React.RefObject<HTMLElement | null>, opts:
         return
       }
       if (longFired) return
+      // A disabled stage (annotating) only turns pages.
+      const enabled = o.current.enabled
+      const go = (a: ActionId) => (enabled || TURN_ACTION.test(a)) && fire(a)
       const dx = p.x - p.sx
       const dy = p.y - p.sy
       const dt = performance.now() - p.t
@@ -215,7 +258,7 @@ export function useStageGestures(ref: React.RefObject<HTMLElement | null>, opts:
         const horiz = Math.abs(dx) > Math.abs(dy) * 1.3
         const vert = Math.abs(dy) > Math.abs(dx) * 1.3
         const a = horiz ? (dx < 0 ? cfg.swipeLeft : cfg.swipeRight) : vert ? (dy < 0 ? cfg.swipeUp : cfg.swipeDown) : 'none'
-        if (a !== 'none') fire(a)
+        if (a !== 'none') go(a)
         return
       }
       if (dist > 12 || dt > 600) return
@@ -223,8 +266,8 @@ export function useStageGestures(ref: React.RefObject<HTMLElement | null>, opts:
       const x = p.x - rect.left
       const y = p.y - rect.top
       const zoneAction = cfg.zones[zoneAt(x, y, rect.width, rect.height)]
-      if (cfg.doubleTap === 'none') {
-        fire(zoneAction)
+      if (cfg.doubleTap === 'none' || !enabled) {
+        go(zoneAction)
         return
       }
       const now = performance.now()

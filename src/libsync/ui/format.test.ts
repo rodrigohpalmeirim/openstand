@@ -138,6 +138,8 @@ describe('controls per state', () => {
     for (const code of ['libraryGone', 'wrongSecret'] as const)
       expect(controls(err(code))).toMatchObject({ syncNow: false, addDevice: false, storageKeys: false, pause: false, recheck: false })
     expect(controls(err('libraryGone')).deleteRemote).toBe(false)
+    expect(controls(err('libraryGone')).reset).toBe(false)
+    expect(controls(err('auth')).reset).toBe(true)
   })
   it('rejoin/corrupt: no pairing code or sync, storage keys stay', () => {
     for (const code of ['rejoin', 'corrupt'] as const) expect(controls(err(code))).toMatchObject({ syncNow: false, addDevice: false, storageKeys: true })
@@ -149,6 +151,7 @@ describe('controls per state', () => {
     expect(controls(err('auth'))).toMatchObject({ syncNow: true, syncNowOff: undefined, addDevice: true, storageKeys: true })
     expect(controls(on({ phase: 'paused' }))).toMatchObject({ syncNow: true, syncNowOff: 'Sync is paused.', addDevice: true, pause: true })
     expect(controls(on({ phase: 'offline' })).syncNowOff).toBeUndefined()
+    expect(controls(on({ phase: 'offline' }), false).syncNowOff).toBe('This device is offline.')
   })
 })
 

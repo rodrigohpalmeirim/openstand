@@ -2,6 +2,7 @@
 import 'fake-indexeddb/auto'
 import { describe, expect, it } from 'vitest'
 import { capture } from './apply'
+import { MemoryBackend } from './backends/memory'
 import { metaKey } from './paths'
 import { addSong, bytes, converge, enableDevice, joinDevice, outgoing, page, setlist, settle, stroke, view, world } from './sync.test-helper'
 import type { Setlist, Song } from '../db/schema'
@@ -134,6 +135,27 @@ describe('library sync: two and three devices', () => {
     await A.setlists.put(setlist('L', 'Set', ['s1']))
     await converge(eA, eB)
     expect((await B.setlists.get('L'))?.name).toBe('Set')
+  })
+
+  it('a delete that discards newer local edits is reported (lostEdits), an ordinary one is not', async () => {
+    const w = world()
+    const A = w.db('A')
+    await addSong(A, 's1', 'Edited offline')
+    await addSong(A, 's2', 'Edited long ago')
+    const eA = await enableDevice(w, A)
+    const B = w.db('B')
+    const eB = await joinDevice(w, B, A)
+    await B.table('songs').update('s2', { title: 'Edited long ago on B' })
+    await converge(eA, eB)
+    w.advance(1000)
+    await A.songs.bulkDelete(['s1', 's2'])
+    await eA.sync()
+    w.advance(60_000)
+    await B.table('songs').update('s1', { title: 'Edited offline on B' })
+    const applied = await eB.sync()
+    expect([...applied.lostEdits]).toEqual([['s1', 'Edited offline on B']])
+    expect(await B.songs.count()).toBe(0)
+    expect((await eA.sync()).lostEdits.size).toBe(0)
   })
 
   it('play counts from offline devices add up', async () => {
@@ -332,5 +354,88 @@ describe('device record', () => {
     for (let i = 0; i < 50 && again.status.devices.find((d) => d.self)?.name !== 'Android tablet'; i++) await new Promise((r) => setTimeout(r, 20))
     expect(again.status.devices.find((d) => d.self)?.name).toBe('Android tablet')
     again.stop()
+  })
+
+  it('another device’s “last seen” follows its pushes; list refreshes are throttled unless explicit', async () => {
+    const w = world()
+    const A = w.db('A')
+    await addSong(A, 's1', 'One')
+    let lists = 0
+    const backendA = new MemoryBackend(w.bucket, { ...w.backendOptions, hook: (op, key) => void (op === 'list' && key.includes('/devices/') && lists++) })
+    const eA = await enableDevice(w, A, { backend: backendA })
+    const B = w.db('B')
+    const eB = await joinDevice(w, B, A)
+    await eA.refreshDevices()
+    const joined = eA.status.devices.find((d) => !d.self)!.lastSeenAt
+    w.advance(3 * 60 * 60_000)
+    await B.table('songs').update('s1', { title: 'From B' })
+    await eB.sync()
+    await eA.sync()
+    expect(eA.status.devices.find((d) => !d.self)!.lastSeenAt).toBe(joined + 3 * 60 * 60_000)
+
+    lists = 0
+    await eA.refreshDevicesIfStale()
+    await eA.refreshDevicesIfStale()
+    expect(lists).toBe(1)
+    await eA.refreshDevicesIfStale(0) // "Sync now"
+    expect(lists).toBe(2)
+    w.advance(61_000)
+    await eA.refreshDevicesIfStale()
+    expect(lists).toBe(3)
+  })
+
+  it('a rate-limited sync stays “syncing” while its retry is pending, also after a status refresh', async () => {
+    const w = world()
+    const A = w.db('A')
+    await addSong(A, 's1', 'One')
+    const backend = w.backend()
+    const eA = await enableDevice(w, A, { backend })
+    const { BackendError } = await import('./backends/types')
+    backend.fail({ times: Infinity, error: () => new BackendError('rateLimited', 'slow down', { retryAfterMs: 60_000 }) })
+    await expect(eA.sync()).rejects.toBeTruthy()
+    await eA.refreshStatus()
+    expect(eA.status.phase).toBe('syncing')
+    w.advance(61_000)
+    await eA.refreshStatus()
+    expect(eA.status.phase).toBe('idle')
+  })
+
+  it('rewriting a dirty mark (count unchanged) doesn’t refresh the whole status', async () => {
+    const w = world()
+    const A = w.db('A')
+    await addSong(A, 's1', 'One')
+    const eA = await enableDevice(w, A)
+    eA.setPaused(true) // no capture: the dirty mark stays
+    await eA.start()
+    const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+    await A.table('songs').update('s1', { title: 'Typing 1' })
+    await sleep(400)
+    let refreshes = 0
+    const orig = eA.refreshStatus.bind(eA)
+    eA.refreshStatus = async () => void (refreshes++, await orig())
+    for (let i = 2; i <= 4; i++) {
+      await A.table('songs').update('s1', { title: `Typing ${i}` })
+      await sleep(300)
+    }
+    expect(await A.syncDirty.count()).toBe(1)
+    expect(refreshes).toBe(0)
+    eA.stop()
+  })
+
+  it('changes made while the storage is unreachable are counted as waiting to upload', async () => {
+    const w = world()
+    const A = w.db('A')
+    await addSong(A, 's1', 'One')
+    const backend = w.backend()
+    const eA = await enableDevice(w, A, { backend })
+    expect(eA.status.pendingChanges).toBe(0)
+    const heal = backend.fail({ times: Infinity })
+    await A.table('songs').update('s1', { title: 'Offline edit' })
+    await expect(eA.sync()).rejects.toMatchObject({ code: 'network' })
+    for (let i = 0; i < 25 && eA.status.pendingChanges === 0; i++) await new Promise((r) => setTimeout(r, 20))
+    expect(eA.status).toMatchObject({ phase: 'offline', pendingChanges: 1 })
+    heal()
+    await eA.sync()
+    expect(eA.status.pendingChanges).toBe(0)
   })
 })

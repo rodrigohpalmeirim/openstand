@@ -22,19 +22,21 @@ function css(): string {
     .join('\n')
 }
 
-registerService(() => {
+const apply = (id: AccentId) => {
+  if (id === 'ember') delete document.documentElement.dataset.accent
+  else document.documentElement.dataset.accent = id
+}
+
+// Added on import (startup, before the first render) rather than by the service, so a saved accent
+// (set early by public/theme-boot.js) shows from the first frame.
+if (typeof document !== 'undefined' && !document.querySelector('style[data-openstand="accent"]')) {
   const style = document.createElement('style')
   style.dataset.openstand = 'accent'
   style.textContent = css()
   document.head.appendChild(style)
-  const apply = (id: AccentId) => {
-    if (id === 'ember') delete document.documentElement.dataset.accent
-    else document.documentElement.dataset.accent = id
-  }
+}
+
+registerService(() => {
   apply(useSettings.getState().s.accent)
-  const unsub = useSettings.subscribe((st, prev) => st.s.accent !== prev.s.accent && apply(st.s.accent))
-  return () => {
-    unsub()
-    style.remove()
-  }
+  return useSettings.subscribe((st, prev) => void (st.s.accent !== prev.s.accent && apply(st.s.accent)))
 })

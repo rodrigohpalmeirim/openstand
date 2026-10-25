@@ -9,7 +9,7 @@ import type { KV, PageAnnotations, Setlist, Song, SongLayers } from '../db/schem
 import { createBackend } from './backends'
 import { listAll } from './backends/util'
 import { BackendError, isOAuthKind, type BackendConfig, type StorageBackend } from './backends/types'
-import { claimedSize } from './apply'
+import { claimedSize, isPlainOutbox, plainBatch, replayUnsynced, resolveUnsynced } from './apply'
 import { SHA256 } from './blobs'
 import { decodeBatch, decodeDevice, decodeMeta, encodeMeta, objectStream, readSnapshot } from './codec'
 import { b64url, deriveLibraryKeys, FormatError, newDeviceId, newSecret, type LibraryKeys } from './crypto'
@@ -18,8 +18,9 @@ import { kvShape, syncedKv, validateDelta } from './fields'
 import { HLC_ZERO } from './hlc'
 import { joinFileMap, joinLayers, joinPages, joinSong, planJoin, remapSetlist } from './joinPlan'
 import { materialize, mergeDelta } from './merge'
-import type { DeviceRecord, JoinCheckpoint, JoinMode, PairingPayload, RecordDelta, SyncConfig } from './model'
+import { UNSYNCED_MAX_AGE, type DeviceRecord, type JoinCheckpoint, type JoinMode, type PairingPayload, type RecordDelta, type SyncConfig } from './model'
 import { deviceKey, devicesPrefix, headsPrefix, latestHeads, libraryPrefix, logKey, logPrefix, metaKey, parseKey, snapPrefix } from './paths'
+import { NoticeChannel } from './relay'
 import { allRecordKeys, clearSyncTables, deleteState, getConfig, getState, markDirty, putState, setCapture } from './state'
 import { PROVIDERS } from './oauth/config'
 import { forgetTokens, readTokens, tokenSource } from './oauth/tokens'
@@ -118,6 +119,8 @@ export async function enable(
       await putState(db, 'cursors', {})
       await putState(db, 'clock', HLC_ZERO)
       await deleteState(db, 'enable')
+      // Every record is published below; edits kept from a library this device left have nothing to add.
+      await deleteState(db, 'unsynced')
       // Records are locked for the transaction: none is written between the listing and capture turning on.
       setCapture(db, true)
       await markDirty(db, await allRecordKeys(db, syncedKv))
@@ -314,6 +317,8 @@ export interface JoinPreview {
   remoteSongs: number
   remoteBytes: number
   localSongs: number
+  /** Untouched demo songs here: a join into this library removes them. */
+  demoSongs: number
   matches: number
   suggested: 'here' | 'newLibrary'
 }
@@ -322,7 +327,7 @@ export interface JoinPreview {
 export async function previewJoin(db: OpenStandDB, p: PairingPayload, o: FlowOptions = {}): Promise<JoinPreview> {
   const { keys, backend } = await openPairing(p, o, db)
   const remote = await remoteLibrary(keys, backend, (o.now ?? Date.now)())
-  const { songs } = await realLocalSongs(db, o)
+  const { songs, demos } = await realLocalSongs(db, o)
   const plan = planJoin({ songs, setlists: await db.setlists.toArray() }, remote, await localHashOf(db))
   const sizes = new Map<string, number>()
   for (const s of remote.songs) for (const f of s.files) sizes.set(f.blobId, claimedSize(f.size))
@@ -330,6 +335,7 @@ export async function previewJoin(db: OpenStandDB, p: PairingPayload, o: FlowOpt
     remoteSongs: remote.songs.length,
     remoteBytes: [...sizes.values()].reduce((a, b) => a + b, 0),
     localSongs: songs.length,
+    demoSongs: demos.length,
     matches: plan.songMap.size,
     suggested: songs.length ? 'newLibrary' : 'here',
   }
@@ -348,6 +354,11 @@ export async function join(db: OpenStandDB, p: PairingPayload, mode: Exclude<Joi
     // Untouched demo songs are dropped before anything is published.
     const { demos } = await realLocalSongs(db, o)
     if (demos.length) await db.songs.bulkDelete(demos.map((s) => s.id))
+    // Edits kept from a library this device left are taken with the rows' values now, before the
+    // bootstrap writes any row (once: a retried join keeps the first resolution). Old ones are dropped.
+    const kept = await getState(db, 'unsynced')
+    if (kept && now() - kept.at > UNSYNCED_MAX_AGE) await deleteState(db, 'unsynced')
+    else if (kept && !kept.resolved) await putState(db, 'unsynced', { ...kept, ops: await resolveUnsynced(db, kept.ops), resolved: true })
     config = {
       v: 1,
       secret: p.s,
@@ -389,6 +400,10 @@ export async function resumeJoin(db: OpenStandDB, o: FlowOptions = {}): Promise<
     o.onProgress?.('bootstrap', 0, 1)
     await engine.bootstrap({ onProgress: (d, t) => o.onProgress?.('bootstrap', d, t) })
     await engine.pull()
+    // Edits this device never pushed to a library it left: plain LWW when it's this library again; when
+    // it's another one (the old one was reset or deleted and set up again), they win as new edits.
+    const unsynced = await getState(db, 'unsynced')
+    if (unsynced?.ops.length) await replayUnsynced(engine.core, unsynced.ops, { restamp: unsynced.libraryId !== config.libraryId })
     await step('register')
   }
   if (cp.phase === 'register') {
@@ -406,6 +421,7 @@ export async function resumeJoin(db: OpenStandDB, o: FlowOptions = {}): Promise<
     const shadowed = new Set((await db.syncShadow.toCollection().primaryKeys()) as string[])
     const keys = (await allRecordKeys(db, syncedKv)).filter((k) => !shadowed.has(k.slice(k.indexOf('/') + 1)))
     await markDirty(db, keys)
+    await deleteState(db, 'unsynced')
     await deleteState(db, 'join')
   }
   return engine
@@ -494,9 +510,15 @@ async function forgetSignIn(db: OpenStandDB, o: FlowOptions & { keepSignIn?: boo
  */
 export async function leave(db: OpenStandDB, engine?: Engine, o: FlowOptions & { keepSignIn?: boolean } = {}) {
   const e = engine ?? (await getConfig(db).then((c) => (c ? Engine.fromConfig(db, c, o) : undefined)))
+  // Leaving a join that didn't finish (a retry leaves first): what an earlier leave kept is still owed.
+  const prev = await getState(db, 'unsynced')
+  const joining = !!(await getState(db, 'join'))
+  let unsynced: RecordDelta[] = []
   if (e) {
-    await withTimeout(e.sync(), 10_000)
+    // A join that didn't finish publishes nothing: its rows are only half merged.
+    if (!joining) await withTimeout(e.sync(), 10_000)
     e.stop()
+    if (!joining) unsynced = (await withTimeout(unsyncedOps(e), 10_000)) ?? []
     try {
       // Heads, logs and snapshots stay: devices that join later still need this stream until a snapshot
       // covers it, and the retired-device pruning removes them then. A deleted or reset library gets
@@ -511,6 +533,53 @@ export async function leave(db: OpenStandDB, engine?: Engine, o: FlowOptions & {
   await forgetSignIn(db, o)
   await clearSyncTables(db)
   if (kept) await putState(db, 'oauth', kept)
+  const lib = e?.config.libraryId
+  const keep =
+    joining || !unsynced.length || !lib
+      ? prev
+      : { libraryId: lib, at: (o.now ?? Date.now)(), ops: prev && prev.libraryId === lib && !prev.resolved ? [...prev.ops, ...unsynced] : unsynced }
+  if (keep) await putState(db, 'unsynced', keep)
+}
+
+/**
+ * Local edits that never reached the library (it was deleted or reset elsewhere, or this device is offline
+ * or paused): pending changes are captured, then the outbox is read back. Kept by `leave` for a later join.
+ */
+async function unsyncedOps(e: Engine): Promise<RecordDelta[]> {
+  await e.captureNow()
+  const { db, keys, config } = e.core
+  const ops: RecordDelta[] = []
+  for (const r of await db.syncOutbox.orderBy('seq').toArray()) {
+    try {
+      ops.push(...(isPlainOutbox(r) ? plainBatch(r) : await decodeBatch(keys, r.bytes, { deviceId: config.deviceId, seq: r.seq })).ops)
+    } catch {
+      /* unreadable: nothing to keep */
+    }
+  }
+  return ops
+}
+
+/**
+ * Tell the library's other devices to look at the storage now, rather than at their next poll, after it
+ * was deleted (or reset): a notice past this device's head makes them pull, and the pull finds `meta` gone.
+ * They verify against the storage; the notice itself proves nothing. Best effort, a few seconds at most.
+ */
+async function noticePeers(e: Engine, o: FlowOptions) {
+  const base = e.config.relay
+  if (!base) return
+  const head = (await getState(e.db, 'cursors'))?.[e.config.deviceId] ?? 0
+  let ch: NoticeChannel | undefined
+  try {
+    await withTimeout(
+      new Promise<void>((resolve) => {
+        ch = new NoticeChannel({ base, keys: e.core.keys, deviceId: e.config.deviceId, transport: o.relayTransport, onNotice: () => {}, onSent: () => resolve() })
+        void ch.post(head + 1)
+      }).then(() => new Promise((r) => setTimeout(r, 300))), // let the frame leave before the socket closes
+      5_000,
+    )
+  } finally {
+    ch?.close()
+  }
 }
 
 /** Delete everything under `os1/<libraryId>/`. Then sync is off on this device too. */
@@ -523,6 +592,7 @@ export async function deleteRemote(db: OpenStandDB, engine?: Engine, o: FlowOpti
   // Meta first, so other devices see `libraryGone` rather than a half-deleted library.
   await e.core.backend.delete(metaKey(e.core.keys.libraryId))
   for (const k of await e.listAll(prefix)) await e.core.backend.delete(k.key)
+  await noticePeers(e, o).catch((err) => o.log?.('could not notify other devices', err))
   setCapture(db, false)
   await forgetSignIn(db, o)
   await clearSyncTables(db)

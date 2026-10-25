@@ -290,6 +290,9 @@ export function JoinFlow({
   const name = s.payload?.n
   const lines = s.preview && previewLine(s.preview, name)
   const simple = s.preview?.suggested === 'here' && !rejoin
+  // What `preview` preselects: merging when rejoining (unsynced local edits stay in this library), else a new library.
+  const recommended: JoinMode = rejoin ? 'merge' : 'newLibrary'
+  const recommendedBadge = <span className="ml-1.5 rounded-full bg-accent-soft px-2 py-0.5 text-xs font-medium text-accent">Recommended</span>
   const target = s.payload && joinTarget(s.payload)
 
   const signInKind = driveOf(s.payload)?.kind
@@ -398,7 +401,7 @@ export function JoinFlow({
             {s.error && <Note tone="danger">{s.error}</Note>}
             {simple ? (
               <p className="text-sm text-muted">
-                {s.preview.localSongs
+                {s.preview.demoSongs
                   ? 'The synced library will be loaded here. The demo songs on this device will be removed.'
                   : 'The synced library will be loaded here.'}
               </p>
@@ -410,16 +413,23 @@ export function JoinFlow({
                   current={s.mode}
                   onPick={(mode) => dispatch({ type: 'mode', mode })}
                   icon={<Library className="size-5" />}
-                  title={
-                    <>
-                      As a new library <span className="ml-1 rounded-full bg-accent-soft px-2 py-0.5 text-xs font-medium text-accent">Recommended</span>
-                    </>
-                  }
+                  title={<>As a new library{recommended === 'newLibrary' && recommendedBadge}</>}
                 >
                   Your songs here stay in “{libName}”. The synced library becomes a separate library you can switch to.
                 </ModeOption>
-                <ModeOption value="merge" current={s.mode} onPick={(mode) => dispatch({ type: 'mode', mode })} icon={<Merge className="size-5" />} title={`Merge with “${libName}”`}>
+                <ModeOption
+                  value="merge"
+                  current={s.mode}
+                  onPick={(mode) => dispatch({ type: 'mode', mode })}
+                  icon={<Merge className="size-5" />}
+                  title={
+                    <>
+                      Merge with “{libName}”{recommended === 'merge' && recommendedBadge}
+                    </>
+                  }
+                >
                   {mergeLine(s.preview)}
+                  {s.preview.demoSongs ? ' The demo songs here will be removed.' : ''}
                 </ModeOption>
               </fieldset>
             )}
@@ -433,7 +443,12 @@ export function JoinFlow({
             ) : (
               <p className="flex items-start gap-2 text-sm text-muted">
                 <ShieldAlert className="mt-0.5 size-4 shrink-0 text-warn" />
-                <span>Only join codes from your own devices. Joining sends your library to the storage in this code.</span>
+                <span>
+                  Only join codes from your own devices.{' '}
+                  {s.mode === 'newLibrary'
+                    ? `Your songs in “${libName}” stay on this device; what you add to the new library goes to the storage in this code.`
+                    : 'What you add to this library from now on goes to the storage in this code.'}
+                </span>
               </p>
             )}
           </>

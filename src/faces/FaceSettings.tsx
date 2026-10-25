@@ -1,5 +1,6 @@
 import { Camera, CameraOff, Loader2, Plus, SlidersHorizontal, X } from 'lucide-react'
 import { useEffect, useState, useSyncExternalStore } from 'react'
+import { useTerms } from '../library/browse/terms'
 import { ActionSelect } from '../settings/kit'
 import { useSettings, type FaceGestureBinding } from '../state/settings'
 import { Button, cx, IconButton, Menu, Slider, useMenu } from '../ui/primitives'
@@ -274,9 +275,10 @@ export function FaceGestureList() {
 }
 
 export function FacePrivacyNote() {
+  const t = useTerms()
   return (
     <div className="px-4 py-3 text-xs leading-relaxed text-muted">
-      The camera is used only while a song is open, and video is processed on this device. It is never recorded or uploaded. The first time,
+      The camera is used only while a {t.song} is open, and video is processed on this device. It is never recorded or uploaded. The first time,
       the face model (about 4 MB) and its runtime (about 13 MB) are downloaded from Google’s and jsDelivr’s servers and then cached. A small dot
       in the bottom-left corner shows when the camera is on: grey means no face found, green means tracking.
     </div>

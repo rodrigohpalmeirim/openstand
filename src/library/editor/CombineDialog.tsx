@@ -2,6 +2,7 @@ import { FileMusic, FileText, Image as ImageIcon, Music } from 'lucide-react'
 import { useState } from 'react'
 import type { FileKind, Song, SongFile } from '../../db/schema'
 import { Button, cx, Dialog, Field, Input } from '../../ui/primitives'
+import { useTerms } from '../browse/terms'
 import { applyCombine, combinable, combinedName, combineFiles } from './combine'
 
 const KIND: Record<FileKind, string> = { pdf: 'PDF', image: 'Image', chordpro: 'ChordPro', text: 'Text', abc: 'ABC' }
@@ -29,6 +30,7 @@ export function CombineDialog({
   const [selected, setSelected] = useState<Set<string>>(() => new Set(song.files.filter(combinable).map((f) => f.id)))
   const [name, setName] = useState(() => combinedName(song, song.files.filter(combinable)))
   const [busy, setBusy] = useState<string | null>(null)
+  const t = useTerms()
   const [error, setError] = useState<string | null>(null)
   const eligible = song.files.filter(combinable)
   const hasText = eligible.length < song.files.length
@@ -82,7 +84,7 @@ export function CombineDialog({
       <div className="flex flex-col gap-4 px-5 py-4">
         <p className="text-sm text-muted">
           The new PDF takes the place of the first chosen file. Page order, crop, rotation, bookmarks, links and annotations carry over; the
-          original files stay available to other songs.
+          original files stay available to other {t.songs}.
         </p>
         <div className="flex flex-col gap-2">
           <div className="flex min-h-11 items-center gap-2">

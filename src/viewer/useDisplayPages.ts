@@ -8,7 +8,7 @@ import { db, getBlob, MissingBlobError } from '../db/db'
 import { onBlobReady } from '../libsync/api'
 import type { Song, SongFile } from '../db/schema'
 import { displayAspect, pageSettingsKey, pageSize, resolvePageRefs } from './pageSource'
-import { paginate, type TextPage } from './textPagination'
+import { paginate, TEXT_PAGE_PADDING, type TextPage } from './textPagination'
 
 export type DisplayPage =
   | {
@@ -70,9 +70,21 @@ export function fileText(file: SongFile): Promise<string> {
   return p
 }
 
-export function parseTextFile(file: SongFile, text: string, style: TextStyle): ChordProSong {
+export function parseTextFile(file: SongFile, text: string, style: TextStyle, transpose = 0): ChordProSong {
   const isCp = file.kind === 'chordpro' || looksLikeChordPro(text)
-  return parseChordPro(isCp ? text : textToChordPro(text, style.sourceNaming ?? 'english'), { instrument: style.instrument })
+  const naming = style.sourceNaming ?? 'english'
+  return parseChordPro(isCp ? text : textToChordPro(text, naming), { instrument: style.instrument, naming, transpose })
+}
+
+/** Narrowest text column worth laying out, in ems of the lyrics font. */
+const MIN_COLUMN_EMS = 12
+
+/** Columns that fit the page box at the given font size (a file's {columns: 3} must not overlap on a phone). */
+export function fitColumns(wanted: number, pageWidth: number, fontPx: number): number {
+  const content = pageWidth * (1 - 2 * TEXT_PAGE_PADDING)
+  const gap = pageWidth * 0.04
+  const fit = Math.floor((content + gap) / (MIN_COLUMN_EMS * fontPx + gap))
+  return Math.max(1, Math.min(wanted, fit))
 }
 
 /**
@@ -243,12 +255,15 @@ export function useDisplayPages(
           )
         continue
       }
-      const cp = parseTextFile(f, text, style)
+      const cp = parseTextFile(f, text, style, opts.transpose)
       const eff = effectiveStyle(style, cp)
       const ro: RenderOpts = { style: eff, transpose: opts.transpose, capo: song.text?.capo }
-      // An explicit per-song choice beats the file's {columns}, which beats the automatic default.
-      const columns = Math.max(1, song.text?.columns ?? cp.columns ?? opts.columns)
-      const tp = paginate(songBlocks(cp, ro), textBox, columns, eff, opts.zoom)
+      // An explicit per-song choice beats the file's {columns}, which beats the automatic default;
+      // any of them is capped to what fits the page. With fewer columns than asked for (phones), column breaks
+      // written for the wider layout would turn the page after a few lines, so they are ignored.
+      const wanted = song.text?.columns ?? cp.columns ?? opts.columns
+      const columns = fitColumns(wanted, textBox.width, eff.fontSize * opts.zoom)
+      const tp = paginate(songBlocks(cp, ro), textBox, columns, eff, opts.zoom, { columnBreaks: columns >= wanted })
       tp.forEach((p, i) =>
         out.push({
           type: 'text',

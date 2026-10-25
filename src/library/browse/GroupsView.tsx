@@ -127,7 +127,8 @@ function GroupRow({ g, top, label, sub, onOpen, menu }: { g: GroupValue; top: nu
       </div>
       <IconButton
         size="sm"
-        label="More actions"
+        label={`More actions for ${label}`}
+        title="More actions"
         className="text-muted!"
         onClick={(e) => {
           e.stopPropagation()
@@ -288,7 +289,18 @@ export function GroupSongsView({ field, group }: { field: GroupField; group: str
   )
   const rowExtra = useCallback(
     (s: Song): MenuItem[] =>
-      none ? [] : [{ label: `Remove from “${group}”`, icon: <FolderMinus className="size-4" />, onSelect: () => removeFromGroup(field, group, [s.id]) }],
+      none
+        ? []
+        : [
+            {
+              label: `Remove from “${group}”`,
+              icon: <FolderMinus className="size-4" />,
+              onSelect: async () => {
+                await removeFromGroup(field, group, [s.id])
+                toast(`Removed “${s.title}” from “${group}”`, 'ok', { label: 'Undo', run: () => addToGroup(field, group, [s.id]) })
+              },
+            },
+          ],
     [none, field, group],
   )
 

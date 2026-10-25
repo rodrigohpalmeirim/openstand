@@ -29,6 +29,7 @@ import { openScanner } from '../../scan/launch'
 import { useSettings } from '../../state/settings'
 import { Button, cx, Empty, IconButton, Input, Menu, promptDialog, toast, useMenu } from '../../ui/primitives'
 import { resolvePageRefs } from '../../viewer/pageSource'
+import { useTerms } from '../browse/terms'
 import type { SongPatch } from './FieldsTab'
 import { formatPageOrder, normalizePageOrder, parsePageOrder } from './pageOrder'
 import { PageThumb } from './PageThumb'
@@ -63,6 +64,7 @@ export function FilesTab({
   const newMenu = useMenu()
   const [combining, setCombining] = useState(false)
   const capitalize = useSettings((s) => s.s.editor.capitalizeWords)
+  const terms = useTerms()
 
   // Takes a copy: clearing the input's value empties its live FileList (Chromium) mid-loop.
   const add = async (list: File[]) => {
@@ -112,13 +114,13 @@ export function FilesTab({
     let title = song.title.trim()
     if (!title) {
       // The template carries the title ({title: …} / T:), so ask for it first.
-      title = (await promptDialog({ title: 'New song', label: 'Song title' }))?.trim() ?? ''
+      title = (await promptDialog({ title: `New ${terms.song}`, label: `${terms.Song} title` }))?.trim() ?? ''
       if (!title) return
       if (capitalize && title === title.toLowerCase()) title = capitalizeWords(title)
     }
     const f = await makeTextFile(`${title}.${ext}`, textTemplate(kind, { ...song, title }), kind)
     update((s) => ({ ...addFiles(s, [f]), title: s.title.trim() || title }))
-    toast(`Created ${f.name} — open the song to edit its text`, 'ok')
+    toast(`Created ${f.name} — open the ${terms.song} to edit its text`, 'ok')
   }
 
   const rename = async (f: SongFile) => {
@@ -265,6 +267,7 @@ function FileRow({
   onRemove: () => void
 }) {
   const m = useMenu()
+  const terms = useTerms()
   return (
     <li
       data-sort-index={index}
@@ -307,7 +310,7 @@ function FileRow({
           { label: 'Move up', icon: <ArrowUp className="size-4" />, disabled: index === 0, onSelect: () => onMove(-1) },
           { label: 'Move down', icon: <ArrowDown className="size-4" />, disabled: index === count - 1, onSelect: () => onMove(1) },
           { divider: true, label: '' },
-          { label: 'Remove from song', icon: <Trash2 className="size-4" />, danger: true, onSelect: onRemove },
+          { label: `Remove from ${terms.song}`, icon: <Trash2 className="size-4" />, danger: true, onSelect: onRemove },
         ]}
       />
     </li>

@@ -19,6 +19,7 @@ import {
   searchText,
   setQuickGroup,
   shuffled,
+  sortArtist,
   sortGroups,
   sortSongs,
   sortTitle,
@@ -108,6 +109,13 @@ describe('sortSongs', () => {
   it('sorts by artist then title, artistless last', () => {
     const xs = [song('X'), song('B', { artists: ['Miles'] }), song('A', { artists: ['Miles'] }), song('C', { artists: ['Bill'] })]
     expect(titles(sortSongs(xs, { field: 'artist', dir: 'asc' }, opts))).toEqual(['C', 'A', 'B', 'X'])
+  })
+  it('ignores leading articles in artist names when asked', () => {
+    const xs = [song('1', { artists: ['The Police'] }), song('2', { artists: ['Queen'] }), song('3', { composers: ['A Composer'] })]
+    expect(titles(sortSongs(xs, { field: 'artist', dir: 'asc' }, opts))).toEqual(['3', '1', '2'])
+    expect(titles(sortSongs(xs, { field: 'artist', dir: 'asc' }, { ...opts, ignoreArticles: false }))).toEqual(['3', '2', '1'])
+    expect(sortArtist(xs[0], opts)).toBe('Police')
+    expect(sortArtist(song('none'), opts)).toBeUndefined()
   })
   it('sorts by musical key', () => {
     const xs = [song('1', { keys: ['G'] }), song('2', { keys: ['C#m'] }), song('3', { keys: ['Db'] }), song('4', { keys: ['C'] }), song('5')]

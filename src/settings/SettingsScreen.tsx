@@ -1,11 +1,11 @@
 import { ArrowLeft, ChevronRight, Download, MoreVertical, RotateCcw, Search, Upload, X } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNav } from '../state/nav'
-import { DEFAULT_SETTINGS, useSettings } from '../state/settings'
+import { useSettings } from '../state/settings'
 import { Button, confirmDialog, cx, Empty, IconButton, Menu, toast, useMenu } from '../ui/primitives'
-import { downloadText, pickFile, settingsFromJSON, settingsToJSON } from './io'
+import { downloadText, pickFile, resetAllSettings, settingsFromJSON, settingsToJSON } from './io'
 import { Group, matches, type SettingItem } from './kit'
-import { SECTIONS, type SectionDef } from './sections'
+import { useSections, type SectionDef } from './sections'
 
 function useMediaQuery(q: string) {
   const [m, setM] = useState(() => window.matchMedia(q).matches)
@@ -18,9 +18,9 @@ function useMediaQuery(q: string) {
   return m
 }
 
-function search(query: string): { section: SectionDef; items: SettingItem[] }[] {
+function search(sections: SectionDef[], query: string): { section: SectionDef; items: SettingItem[] }[] {
   if (!query.trim()) return []
-  return SECTIONS.map((section) => {
+  return sections.map((section) => {
     // Searching for a section name shows the whole section.
     const all = section.groups.flatMap((g) => g.items)
     const items = matches(query, section.title) ? all : all.filter((it) => matches(query, it.label, it.keywords))
@@ -65,10 +65,11 @@ function SearchBox({ value, onChange, autoFocus }: { value: string; onChange: (v
 }
 
 function SectionList({ current, onOpen }: { current?: string; onOpen: (id: string) => void }) {
+  const sections = useSections()
   return (
     <nav aria-label="Settings sections">
       <ul className="flex flex-col gap-0.5">
-        {SECTIONS.map((s) => {
+        {sections.map((s) => {
           const Icon = s.icon
           const active = s.id === current
           return (
@@ -101,7 +102,9 @@ function SectionContent({ section, showTitle }: { section: SectionDef; showTitle
     <div className="flex flex-col gap-6">
       {showTitle && (
         <div>
-          <h2 className="text-xl font-semibold">{section.title}</h2>
+          <h2 data-section-heading tabIndex={-1} className="text-xl font-semibold outline-none">
+            {section.title}
+          </h2>
           <p className="mt-0.5 text-sm text-muted">{section.summary}</p>
         </div>
       )}
@@ -133,7 +136,8 @@ function SectionContent({ section, showTitle }: { section: SectionDef; showTitle
 }
 
 function SearchResults({ query, onOpen }: { query: string; onOpen: (id: string) => void }) {
-  const results = useMemo(() => search(query), [query])
+  const sections = useSections()
+  const results = useMemo(() => search(sections, query), [sections, query])
   if (!results.length)
     return (
       <Empty icon={<Search className="size-6" />} title="No matching settings">
@@ -203,10 +207,11 @@ function MoreMenu() {
             icon: <RotateCcw className="size-4" />,
             danger: true,
             onSelect: async () => {
-              if (!(await confirmDialog({ title: 'Reset all settings?', message: 'Every setting goes back to its default. Your library is not affected.', confirmLabel: 'Reset all', danger: true })))
-                return
-              const { onboarded, recentSearches } = useSettings.getState().s
-              replace({ ...DEFAULT_SETTINGS, onboarded, recentSearches })
+              const message =
+                'Every setting goes back to its default, including key, pedal, MIDI and face-gesture bindings and tap zones. ' +
+                'Your library, annotation favourites and recent colours, import patterns, and this device’s name, sync room and MIDI ports are kept.'
+              if (!(await confirmDialog({ title: 'Reset all settings?', message, confirmLabel: 'Reset all', danger: true }))) return
+              replace(resetAllSettings(useSettings.getState().s))
               toast('All settings reset', 'ok')
             },
           },
@@ -223,18 +228,25 @@ export function SettingsScreen() {
   const wide = useMediaQuery('(min-width: 768px)')
   const [query, setQuery] = useState('')
   const page = route.name === 'settings' ? route.page : undefined
-  const selected = SECTIONS.find((s) => s.id === page)
-  const current = selected ?? (wide ? SECTIONS[0] : undefined)
+  const sections = useSections()
+  const selected = sections.find((s) => s.id === page)
+  const current = selected ?? (wide ? sections[0] : undefined)
   const searching = query.trim().length > 0
   const mainRef = useRef<HTMLDivElement>(null)
+  const focusHeading = useRef(false)
 
   const toLibrary = () => go(useNav.getState().lastLibrary)
   const open = (id?: string) => {
     setQuery('')
+    focusHeading.current = !!id
     go({ name: 'settings', page: id })
   }
   useEffect(() => {
     mainRef.current?.scrollTo({ top: 0 })
+    // A section opened from the list (or search): move focus to its heading, so keyboard and screen
+    // reader users land in the content rather than back at the top of the list.
+    if (focusHeading.current && current?.id) document.querySelector<HTMLElement>('[data-section-heading]')?.focus({ preventScroll: true })
+    focusHeading.current = false
   }, [current?.id, searching])
 
   if (wide) {
@@ -272,7 +284,9 @@ export function SettingsScreen() {
         <IconButton label={inSection ? 'Back to settings' : 'Back to library'} onClick={() => (inSection ? open(undefined) : toLibrary())}>
           <ArrowLeft className="size-5" />
         </IconButton>
-        <h1 className="min-w-0 flex-1 truncate text-base font-semibold">{inSection ? selected!.title : 'Settings'}</h1>
+        <h1 data-section-heading={inSection || undefined} tabIndex={inSection ? -1 : undefined} className="min-w-0 flex-1 truncate text-base font-semibold outline-none">
+          {inSection ? selected!.title : 'Settings'}
+        </h1>
         {!inSection && <MoreMenu />}
       </header>
       <main ref={mainRef} className="min-h-0 flex-1 overflow-y-auto">

@@ -1,5 +1,6 @@
 import { ArrowDownLeft, ArrowUpRight, Ear, Plus, Radio, Trash2, Usb } from 'lucide-react'
 import { useEffect, useState } from 'react'
+import { useTerms } from '../library/browse/terms'
 import { ActionSelect, Group, Row } from '../settings/kit'
 import { useSettings, type MidiBinding } from '../state/settings'
 import { Button, Dialog, Field, IconButton, Input, Select, Toggle, cx } from '../ui/primitives'
@@ -57,6 +58,8 @@ function LearnDialog({ open, initial, onClose, onSave }: { open: boolean; initia
     setKey(initial?.message ?? '')
     setAction((initial?.action as ActionId) ?? 'nextPage')
     setLast(null)
+    // Start from the edited control's own setting, not whatever the previous dialog left.
+    setAnyChannel(!!initial && !/^ch\d+:/.test(initial.message))
     return startCapture((e, port) => {
       if (!isTriggerEvent(e)) return
       const k = eventKey(e)
@@ -180,6 +183,7 @@ export function MidiSettings() {
   const m = useSettings((s) => s.s.midi)
   const setIn = useSettings((s) => s.setIn)
   const { inputs, outputs, status, sysex } = useMidi()
+  const t = useTerms()
   const ready = status === 'ready'
 
   return (
@@ -190,11 +194,11 @@ export function MidiSettings() {
         <Row label="Use MIDI" hint="Connect USB or Bluetooth MIDI devices (pair Bluetooth MIDI in your system settings first).">
           <Toggle checked={m.enabled} onChange={(enabled) => setIn('midi', { enabled })} label="Use MIDI" />
         </Row>
-        <Row label="Send song MIDI on open" hint="Each song’s commands (patch changes etc.) go out when it opens.">
-          <Toggle checked={m.sendOnLoad} onChange={(sendOnLoad) => setIn('midi', { sendOnLoad })} label="Send song MIDI on open" />
+        <Row label={`Send ${t.song} MIDI on open`} hint={`Each ${t.song}’s commands (patch changes etc.) go out when it opens.`}>
+          <Toggle checked={m.sendOnLoad} onChange={(sendOnLoad) => setIn('midi', { sendOnLoad })} label={`Send ${t.song} MIDI on open`} />
         </Row>
-        <Row label="Open songs from MIDI" hint="A song opens when its recall message arrives (set it in the song editor’s MIDI tab).">
-          <Toggle checked={m.recallSongs} onChange={(recallSongs) => setIn('midi', { recallSongs })} label="Open songs from MIDI" />
+        <Row label={`Open ${t.songs} from MIDI`} hint={`A ${t.song} opens when its recall message arrives (set it in the ${t.song} editor’s MIDI tab).`}>
+          <Toggle checked={m.recallSongs} onChange={(recallSongs) => setIn('midi', { recallSongs })} label={`Open ${t.songs} from MIDI`} />
         </Row>
         <Row label="Channel for new commands">
           <Select className="w-auto min-w-24" value={m.defaultChannel} onChange={(e) => setIn('midi', { defaultChannel: Number(e.target.value) })}>
@@ -231,7 +235,7 @@ export function MidiSettings() {
           <Group title="Inputs" description="Devices OpenStand listens to.">
             <PortList kind="input" ports={inputs} selected={m.inputs} onChange={(v) => setIn('midi', { inputs: v })} />
           </Group>
-          <Group title="Outputs" description={sysex ? 'Devices that receive song commands.' : 'Devices that receive song commands. SysEx was not permitted, so SysEx commands are skipped.'}>
+          <Group title="Outputs" description={`Devices that receive ${t.song} commands.${sysex ? '' : ' SysEx was not permitted, so SysEx commands are skipped.'}`}>
             <PortList kind="output" ports={outputs} selected={m.outputs} onChange={(v) => setIn('midi', { outputs: v })} />
           </Group>
           {!inputs.length && !outputs.length && (

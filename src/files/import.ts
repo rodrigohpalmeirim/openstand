@@ -1,8 +1,11 @@
 import { looksLikeChordPro, metaFirst, parseChordPro, stripMarkup, textToChordPro } from '../chordpro/parse'
 import { db, getBlob, putBlob, uid } from '../db/db'
 import { emptySong, GROUP_FIELDS, type FileKind, type GroupField, type Song, type SongFile } from '../db/schema'
+import { terms } from '../library/browse/terms'
+import { formatKey, parseKey, type NoteNaming } from '../music/chords'
+import { settings } from '../state/settings'
 import { parseAbcHeader } from './abcMeta'
-import { kindOf, mimeOf, stripExt } from './kinds'
+import { isAudioFile, kindOf, mimeOf, stripExt } from './kinds'
 
 /**
  * Filename metadata pattern, e.g. "%artist% - %title%". Tokens (case-insensitive): %title% %artist%
@@ -181,8 +184,11 @@ export async function readSourceText(src: ImportSource, maxBytes = 512 * 1024): 
   return (await src.file.text()).replace(/^\uFEFF/, '')
 }
 
-/** Fill song fields from ChordPro directives, plain-text "Title: …" headers or an ABC header. */
-export function metadataFromText(kind: FileKind, text: string, song: Song) {
+/**
+ * Fill song fields from ChordPro directives, plain-text "Title: …" headers or an ABC header. `naming`
+ * is how the file writes note names (settings' default); keys are stored in standard spelling.
+ */
+export function metadataFromText(kind: FileKind, text: string, song: Song, naming: NoteNaming = settings().text.sourceNaming ?? 'english') {
   if (kind === 'abc') {
     const h = parseAbcHeader(text)
     if (h.title) song.title = h.title
@@ -194,7 +200,7 @@ export function metadataFromText(kind: FileKind, text: string, song: Song) {
     return
   }
   const isCp = kind === 'chordpro' || looksLikeChordPro(text)
-  const cp = parseChordPro(isCp ? text : textToChordPro(text))
+  const cp = parseChordPro(isCp ? text : textToChordPro(text, naming), { naming })
   const t = metaFirst(cp, 'title')
   if (t) song.title = stripMarkup(t)
   const add = (field: GroupField, key: string) => {
@@ -206,6 +212,13 @@ export function metadataFromText(kind: FileKind, text: string, song: Song) {
   add('artists', 'artist')
   add('composers', 'composer')
   add('albums', 'album')
+  // German-style files: {key: B} is B flat.
+  const src = cp.notation?.source ?? naming
+  if (src !== 'english' && src !== 'nashville')
+    cp.meta.key = cp.meta.key?.map((k) => {
+      const parsed = parseKey(stripMarkup(k), src)
+      return parsed ? formatKey(parsed) : k
+    })
   add('keys', 'key')
   add('signatures', 'time')
   add('years', 'year')
@@ -214,11 +227,12 @@ export function metadataFromText(kind: FileKind, text: string, song: Song) {
   const dur = metaFirst(cp, 'duration')
   if (dur) song.duration = parseDuration(dur)
   const tempo = Number(metaFirst(cp, 'tempo'))
-  if (tempo > 0) {
-    song.metronome = { ...song.metronome, bpm: tempo }
-    if (!song.tempos?.length) song.tempos = [tempo]
-  }
+  // The tempo list is what the metronome plays (see songMetronome); no separate metronome BPM.
+  if (tempo > 0 && !song.tempos?.length) song.tempos = [tempo]
 }
+
+/** Whether typed duration text (m:ss, h:mm:ss or seconds) can be parsed; empty clears the duration. */
+export const isDurationText = (t: string) => t.trim() === '' || /^\d+(:\d{1,2}){0,2}$/.test(t.trim())
 
 export function parseDuration(s: string): number {
   const parts = s.trim().split(':').map(Number)
@@ -240,7 +254,7 @@ export type ReadFileResult = { file: SongFile; text?: string; pdfTitle?: string 
 export async function readImportFile(src: ImportSource): Promise<ReadFileResult> {
   const { file } = src
   const kind = kindOf(file.name, file.type)
-  if (!kind) return { error: 'Unsupported file type' }
+  if (!kind) return { error: isAudioFile(file.name, file.type) ? 'Audio files go in the Audio tab' : 'Unsupported file type' }
   if (!file.size) return { error: 'Empty file' }
   const buf = await file.arrayBuffer()
   let pageCount = 1
@@ -274,6 +288,8 @@ export async function importFiles(sources: ImportSource[], opts: ImportOptions =
   const result: ImportResult = { songs: [], updated: [], skipped: [] }
   const existingBlobs = new Set<string>()
   if (opts.skipDuplicates) await db.songs.each((s) => s.files.forEach((f) => existingBlobs.add(f.blobId)))
+  const libraryBlobs = new Set(existingBlobs)
+  const dupReason = (blobId: string) => (libraryBlobs.has(blobId) ? 'Already in library' : 'Duplicate of another file in this import')
   const byTitle = new Map<string, Song>()
   if (opts.conflict && opts.conflict !== 'create')
     await db.songs.each((s) => {
@@ -293,7 +309,7 @@ export async function importFiles(sources: ImportSource[], opts: ImportOptions =
     // Combining: every picked file is a page of the new song, so library duplicates are kept.
     const duplicate = opts.skipDuplicates && !opts.combine && existingBlobs.has(r.file.blobId)
     if (duplicate && opts.conflict !== 'update') {
-      result.skipped.push({ name: src.file.name, reason: 'Already in library' })
+      result.skipped.push({ name: src.file.name, reason: dupReason(r.file.blobId) })
       continue
     }
     existingBlobs.add(r.file.blobId)
@@ -311,7 +327,7 @@ export async function importFiles(sources: ImportSource[], opts: ImportOptions =
     const match = !opts.combine && opts.conflict && opts.conflict !== 'create' ? byTitle.get(song.title.trim().toLowerCase()) : undefined
     if (duplicate && !match) {
       // Same content already in the library under another title: still a duplicate.
-      result.skipped.push({ name: src.file.name, reason: 'Already in library' })
+      result.skipped.push({ name: src.file.name, reason: dupReason(r.file.blobId) })
       continue
     }
     if (match) {
@@ -437,11 +453,6 @@ export function refreshMetaFromText(song: Song, kind: FileKind, oldText: string,
   for (const f of META_FIELDS) if (!sameValues(now[f], was[f]) && (!song[f].length || sameValues(song[f], was[f]))) song[f] = [...now[f]]
   if (now.duration !== was.duration && (!song.duration || song.duration === was.duration)) song.duration = now.duration
   if (!sameValues(now.tempos, was.tempos) && (!song.tempos?.length || sameValues(song.tempos, was.tempos))) song.tempos = now.tempos?.length ? [...now.tempos] : undefined
-  const bpm = (s: Song) => s.metronome?.bpm
-  if (bpm(now) !== bpm(was) && (bpm(song) === undefined || bpm(song) === bpm(was))) {
-    if (bpm(now) !== undefined) song.metronome = { ...song.metronome, bpm: bpm(now) }
-    else if (song.metronome) delete song.metronome.bpm
-  }
   return song
 }
 
@@ -478,23 +489,42 @@ export async function updateTextFile(song: Song, fileId: string, body: string, k
   })
 }
 
+const JUNK_NAMES = /^(thumbs\.db|ehthumbs\.db|desktop\.ini|__macosx)$/i
+/** Hidden files and OS clutter (.DS_Store, Thumbs.db, __MACOSX/…): skipped silently, never reported as unsupported. */
+export const isJunkPath = (path: string) => path.split('/').some((p) => p.startsWith('.') || JUNK_NAMES.test(p))
+
 /** Recursively collect files from a directory handle (File System Access API). Paths exclude the root. */
-export async function collectDirectory(dir: FileSystemDirectoryHandle, prefix = ''): Promise<ImportSource[]> {
+export async function collectDirectory(dir: FileSystemDirectoryHandle, prefix = '', ignored?: string[]): Promise<ImportSource[]> {
   const out: ImportSource[] = []
   for await (const [name, handle] of dir.entries() as AsyncIterable<[string, FileSystemHandle]>) {
-    if (name.startsWith('.')) continue
+    if (isJunkPath(name)) continue
     const path = prefix ? `${prefix}/${name}` : name
-    if (handle.kind === 'directory') out.push(...(await collectDirectory(handle as FileSystemDirectoryHandle, path)))
+    if (handle.kind === 'directory') out.push(...(await collectDirectory(handle as FileSystemDirectoryHandle, path, ignored)))
     else if (kindOf(name)) out.push({ file: await (handle as FileSystemFileHandle).getFile(), path })
+    else ignored?.push(name)
   }
   return out.sort((a, b) => (a.path ?? '').localeCompare(b.path ?? '', undefined, { numeric: true }))
 }
 
-/** Files from an <input webkitdirectory> selection carry webkitRelativePath (which includes the root folder). */
-export function sourcesFromFileList(list: FileList | File[]): ImportSource[] {
+/**
+ * Files from an <input webkitdirectory> selection carry webkitRelativePath (which includes the root folder).
+ * Names of files of unsupported types are added to `ignored` (see `ignoredFilesMessage`).
+ */
+export function sourcesFromFileList(list: FileList | File[], ignored?: string[]): ImportSource[] {
   return [...list]
-    .filter((f) => kindOf(f.name, f.type))
+    // The relative path starts with the picked folder itself, which is never skipped.
+    .filter((f) => !isJunkPath(((f as File & { webkitRelativePath?: string }).webkitRelativePath || '').replace(/^[^/]*\//, '') || f.name))
+    .filter((f) => !!kindOf(f.name, f.type) || (ignored?.push(f.name), false))
     .map((file) => ({ file, path: (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name }))
+}
+
+/** What to tell the user about files an import left out because of their type (null when none). */
+export function ignoredFilesMessage(names: string[]): string | null {
+  const n = names.length
+  if (!n) return null
+  const list = names.slice(0, 3).join(', ') + (n > 3 ? ', …' : '')
+  const audio = names.some((x) => isAudioFile(x)) ? ` Audio files can be attached in a ${terms(settings()).song}’s Audio tab.` : ''
+  return `Ignored ${n} unsupported file${n === 1 ? '' : 's'} (${list}).${audio}`
 }
 
 /** Drop the shared first folder (the picked root) from relative paths, so levels match collectDirectory. */
@@ -505,16 +535,17 @@ export function stripCommonRoot(srcs: ImportSource[]): ImportSource[] {
 }
 
 /** Files (and dropped folders, recursively) from a drag-and-drop DataTransfer. */
-export async function sourcesFromDataTransfer(dt: DataTransfer): Promise<ImportSource[]> {
+export async function sourcesFromDataTransfer(dt: DataTransfer, ignored?: string[]): Promise<ImportSource[]> {
   const entries = [...dt.items].map((it) => it.webkitGetAsEntry?.()).filter(Boolean) as FileSystemEntry[]
-  if (!entries.length) return sourcesFromFileList(dt.files)
+  if (!entries.length) return sourcesFromFileList(dt.files, ignored)
   const out: ImportSource[] = []
   const walk = async (entry: FileSystemEntry, prefix: string): Promise<void> => {
-    if (entry.name.startsWith('.')) return
+    if (isJunkPath(entry.name)) return
     const path = prefix ? `${prefix}/${entry.name}` : entry.name
     if (entry.isFile) {
       const file = await new Promise<File>((res, rej) => (entry as FileSystemFileEntry).file(res, rej))
       if (kindOf(file.name, file.type)) out.push({ file, path })
+      else ignored?.push(file.name)
     } else if (entry.isDirectory) {
       const reader = (entry as FileSystemDirectoryEntry).createReader()
       // readEntries returns batches; call until empty.

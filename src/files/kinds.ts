@@ -43,6 +43,11 @@ export function kindOf(name: string, mime = ''): FileKind | null {
   return null
 }
 
+/** Audio recordings aren't sheet music: they're attached in a song's Audio tab instead. */
+export function isAudioFile(name: string, mime = ''): boolean {
+  return mime.startsWith('audio/') || /\.(mp3|m4a|aac|ogg|oga|opus|wav|flac|aiff?|wma)$/i.test(name)
+}
+
 export function mimeOf(kind: FileKind, name: string): string {
   switch (kind) {
     case 'pdf':

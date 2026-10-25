@@ -2,8 +2,10 @@ import { Music2, Square, X } from 'lucide-react'
 import { stopAbc, useAbcPlayback } from '../abc/playback'
 import { useEffect, useState } from 'react'
 import type { Song } from '../db/schema'
+import { useTerms } from '../library/browse/terms'
 import { useSettings } from '../state/settings'
 import { useViewer } from '../state/viewer'
+import { cx } from '../ui/primitives'
 import { PICK_PROMPTS } from './commands'
 import { cancelPick, useTools } from './store'
 
@@ -11,7 +13,9 @@ import { cancelPick, useTools } from './store'
 export function NotesPopup({ song }: { song: Song }) {
   const open = useTools((t) => t.notesPopup)
   const n = useSettings((st) => st.s.notes)
+  const terms = useTerms()
   const toolbar = useViewer((v) => v.toolbar || v.annotating)
+  const panel = useViewer((v) => !!v.panel)
   useEffect(() => {
     if (!open || !n.autoHideSeconds) return
     const t = setTimeout(() => useTools.setState({ notesPopup: false }), n.autoHideSeconds * 1000)
@@ -21,8 +25,12 @@ export function NotesPopup({ song }: { song: Song }) {
   return (
     <div
       role="dialog"
-      aria-label="Song notes"
-      className="absolute left-1/2 z-20 w-[min(36rem,calc(100%-1.5rem))] -translate-x-1/2 animate-pop-in"
+      aria-label={`${terms.Song} notes`}
+      className={cx(
+        'absolute left-1/2 w-[min(36rem,calc(100%-1.5rem))] -translate-x-1/2 animate-pop-in',
+        // Beside an open side panel; over the bottom sheet on phones.
+        panel ? 'z-40 sm:z-20 sm:left-[calc((100%-24.5rem)/2)] sm:w-[min(36rem,calc(100%-26rem))]' : 'z-20',
+      )}
       style={{ top: toolbar ? 64 : 12 }}
       onClick={() => useTools.setState({ notesPopup: false })}
     >

@@ -1,12 +1,13 @@
 import { Pause, Play, Plus, Repeat, RotateCcw, RotateCw, SkipBack, SkipForward, X } from 'lucide-react'
 import type { Song } from '../../db/schema'
+import { useTerms } from '../../library/browse/terms'
 import { useSettings } from '../../state/settings'
 import { useViewer } from '../../state/viewer'
 import { cx } from '../../ui/primitives'
 import { useTools } from '../store'
 import { fmtTime, player, stepTrack, useAudio } from './player'
 
-const btn = 'flex size-10 shrink-0 items-center justify-center rounded-xl text-white/85 hover:bg-white/10 disabled:opacity-30'
+const btn = 'flex size-10 pointer-coarse:size-11 shrink-0 items-center justify-center rounded-xl text-white/85 hover:bg-white/10 disabled:opacity-30'
 
 /** Seek bar with the A-B loop region drawn behind it. */
 export function SeekBar({ className }: { className?: string }) {
@@ -40,14 +41,20 @@ export function MiniPlayer({ song }: { song: Song }) {
   const visible = useTools((t) => t.playerVisible)
   const a = useAudio()
   const toolbar = useViewer((v) => v.toolbar || v.annotating)
+  const panel = useViewer((v) => !!v.panel)
   const skip = useSettings((st) => st.s.audio.skipSeconds)
+  const terms = useTerms()
   if (!visible) return null
   const track = song.audio.find((t) => t.id === a.trackId)
   const otherSong = a.trackId && a.songId !== song.id
   const loopLabel = a.loopEnd !== undefined ? 'Clear A-B loop' : a.settingLoop ? 'Set loop end (B)' : 'Set loop start (A)'
   return (
     <div
-      className="absolute left-1/2 z-20 w-[min(40rem,calc(100%-1rem))] -translate-x-1/2 rounded-2xl border border-white/10 bg-neutral-900/92 px-2 py-1.5 text-white shadow-2xl backdrop-blur-xl"
+      className={cx(
+        'absolute left-1/2 z-20 w-[min(40rem,calc(100%-1rem))] -translate-x-1/2 rounded-2xl border border-white/10 bg-neutral-900/92 px-2 py-1.5 text-white shadow-2xl backdrop-blur-xl',
+        // Centre beside an open side panel instead of under it (on phones the panel is a bottom sheet).
+        panel && 'sm:left-[calc((100%-24.5rem)/2)] sm:w-[min(40rem,calc(100%-25.5rem))]',
+      )}
       style={{ bottom: `calc(${toolbar ? 64 : 40}px + env(safe-area-inset-bottom))` }}
       role="region"
       aria-label="Audio player"
@@ -87,7 +94,7 @@ export function MiniPlayer({ song }: { song: Song }) {
         <div className="min-w-0 flex-1 px-1">
           <div className="flex items-baseline gap-2 text-xs">
             <span className="min-w-0 flex-1 truncate font-medium text-white/90">
-              {track?.name ?? (otherSong ? 'Track from previous song' : song.audio.length ? 'Ready' : 'No audio tracks')}
+              {track?.name ?? (otherSong ? a.trackName || `Track from previous ${terms.song}` : song.audio.length ? 'Ready' : 'No audio tracks')}
             </span>
             <span className="shrink-0 tabular-nums text-white/55">
               {fmtTime(a.time)} / {fmtTime(a.duration)}
@@ -96,7 +103,7 @@ export function MiniPlayer({ song }: { song: Song }) {
           <SeekBar />
         </div>
         <button
-          className={cx(btn, 'w-auto px-2 text-xs font-bold', (a.settingLoop || a.loopEnd !== undefined) && 'text-[var(--os-accent)]')}
+          className={cx(btn, 'w-auto px-2 text-xs font-bold pointer-coarse:w-auto', (a.settingLoop || a.loopEnd !== undefined) && 'text-[var(--os-accent)]')}
           aria-label={loopLabel}
           title={loopLabel}
           onClick={() => player.abLoop()}

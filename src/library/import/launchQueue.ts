@@ -1,5 +1,6 @@
 import { registerService } from '../../services'
 import { sourcesFromFileList } from '../../files/import'
+import { useNav } from '../../state/nav'
 import { useLibraryUI } from '../browse/ui'
 import { importPackagesIn } from './packages'
 
@@ -19,6 +20,9 @@ registerService(() => {
   if (!queue) return
   queue.setConsumer(async ({ files }) => {
     if (!files?.length) return
+    // The import dialog lives in the library view.
+    const nav = useNav.getState()
+    if (nav.route.name !== 'library') nav.go(nav.lastLibrary)
     const all = await Promise.all(files.map((h) => h.getFile()))
     const rest = await importPackagesIn(all)
     const sources = sourcesFromFileList(rest)

@@ -6,6 +6,7 @@ import { autoCropPage } from '../../files/cropPages'
 import { useSettings } from '../../state/settings'
 import { Button, cx, IconButton, Segmented, Toggle, toast } from '../../ui/primitives'
 import { displayAspect, pageSize, renderPage, resolvePageRefs } from '../../viewer/pageSource'
+import { useTerms } from '../browse/terms'
 import { Sheet } from './Sheet'
 import { croppablePages, pageKey, rotatePages, scopeKeys, tidySettings } from './songEdit'
 
@@ -37,6 +38,7 @@ export function CropEditor({
   onApply: (pageSettings: Record<string, PageSettings>) => void
   onClose: () => void
 }) {
+  const t = useTerms()
   const pages = useMemo(() => croppablePages(song), [song])
   const [idx, setIdx] = useState(() => {
     const want = resolvePageRefs(song)[startIndex]
@@ -137,7 +139,7 @@ export function CropEditor({
         {file && ref ? (
           <CropStage key={pageKey(ref)} file={file} page={ref.page} rotation={rotation} crop={crop} onChange={setCrop} onStart={snapshot} />
         ) : (
-          <p className="m-auto text-sm text-muted">This song has no PDF or image pages.</p>
+          <p className="m-auto text-sm text-muted">This {t.song} has no PDF or image pages.</p>
         )}
         <div className="flex shrink-0 items-center justify-center gap-2 border-t border-line bg-surface px-2 py-1.5">
           <IconButton label="Previous page" disabled={idx === 0} onClick={() => setIdx(idx - 1)} className="size-11">

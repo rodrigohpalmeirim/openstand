@@ -13,6 +13,10 @@ export function formatBytes(n: number): string {
   return `${(n / 1024 ** i).toFixed(i > 1 ? 1 : 0)} ${u[i]}`
 }
 
+/** Usage readouts to refresh after something below frees space. */
+const usageListeners = new Set<() => void>()
+const usageChanged = () => usageListeners.forEach((f) => f())
+
 function useStorageInfo() {
   const [info, setInfo] = useState<{ usage?: number; quota?: number; persisted?: boolean; supported: boolean }>({ supported: true })
   const refresh = useCallback(async () => {
@@ -23,6 +27,9 @@ function useStorageInfo() {
   }, [])
   useEffect(() => {
     void refresh()
+    const on = () => void refresh()
+    usageListeners.add(on)
+    return () => void usageListeners.delete(on)
   }, [refresh])
   return { info, refresh }
 }
@@ -89,26 +96,28 @@ export function LibraryStorage() {
           <HardDrive className="size-4" /> {stats ? formatBytes(stats.fileBytes) : '…'}
         </span>
       </Row>
-      <Row label="Thumbnail cache" hint={`${stats?.thumbs ?? 0} page previews. They are recreated when needed.`}>
+      <Row label="Thumbnail cache" hint={`${(stats?.thumbs ?? 0).toLocaleString()} page preview${stats?.thumbs === 1 ? '' : 's'}. They are recreated when needed.`}>
         <Button
           icon={<ImageOff className="size-4" />}
           disabled={!stats?.thumbs}
           onClick={async () => {
             await db.thumbs.clear()
             toast('Thumbnail cache cleared', 'ok')
+            usageChanged()
           }}
         >
           Clear
         </Button>
       </Row>
-      <Row label="Remove unused files" hint="Deletes stored files that no song uses any more (for example after deleting songs).">
+      <Row label="Remove unused files" hint={`Deletes stored files that no ${t.song} uses any more (for example after deleting ${t.songs}).`}>
         <Button
           icon={<Trash2 className="size-4" />}
           onClick={async () => {
-            if (!(await confirmDialog({ title: 'Remove unused files?', message: 'Files not used by any song are deleted permanently.', confirmLabel: 'Remove', danger: true })))
+            if (!(await confirmDialog({ title: 'Remove unused files?', message: `Files not used by any ${t.song} are deleted permanently.`, confirmLabel: 'Remove', danger: true })))
               return
             const n = await collectGarbage()
             toast(n ? `Removed ${n} unused file${n === 1 ? '' : 's'}` : 'No unused files found', 'ok')
+            usageChanged()
           }}
         >
           Clean up

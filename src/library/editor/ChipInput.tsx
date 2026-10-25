@@ -30,17 +30,20 @@ function rank(options: string[], q: string, exclude: string[]) {
   const s = q.trim().toLowerCase()
   const avail = options.filter((o) => !ex.has(o.toLowerCase()))
   if (!s) return avail.slice(0, 50)
+  // An exact match is listed first: dropping it would leave a longer value as the only (pre-selected)
+  // option, so Enter on "Bb" would take "Bbm".
+  const exact: string[] = []
   const starts: string[] = []
   const words: string[] = []
   const inner: string[] = []
   for (const o of avail) {
     const l = o.toLowerCase()
-    if (l === s) continue
-    if (l.startsWith(s)) starts.push(o)
+    if (l === s) exact.push(o)
+    else if (l.startsWith(s)) starts.push(o)
     else if (l.split(/[\s\-/(]+/).some((w) => w.startsWith(s))) words.push(o)
     else if (l.includes(s)) inner.push(o)
   }
-  return [...starts, ...words, ...inner].slice(0, 30)
+  return [...exact, ...starts, ...words, ...inner].slice(0, 30)
 }
 
 /**

@@ -1,4 +1,5 @@
 import pkgRaw from '../../package.json?raw'
+import { useLibSync } from '../libsync/api'
 import { useSettings } from '../state/settings'
 import { Kbd } from '../ui/primitives'
 import { keyLabel } from '../viewer/input'
@@ -22,6 +23,7 @@ const CREDITS: [string, string, string][] = [
 ]
 
 export function AboutInfo() {
+  const synced = useLibSync((st) => st.configured)
   return (
     <div className="flex flex-col gap-3 px-4 py-4">
       <div className="flex items-center gap-3">
@@ -32,7 +34,10 @@ export function AboutInfo() {
         </div>
       </div>
       <p className="text-sm text-muted">
-        An open-source, offline-first sheet music reader, library and performance tool. Your music stays on your device.{' '}
+        An open-source, offline-first sheet music reader, library and performance tool.{' '}
+        {synced
+          ? 'Your music is on this device and, end-to-end encrypted, in the storage you chose for library sync.'
+          : 'Your music stays on your device.'}{' '}
         <a href="/privacy" target="_blank" rel="noopener" className="text-accent hover:underline">
           Privacy policy
         </a>

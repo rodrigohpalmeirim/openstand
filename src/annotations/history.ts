@@ -14,10 +14,17 @@ export interface PageChange {
 
 export type CommandKind = 'create' | 'delete' | 'update' | 'mixed'
 
+/** Something besides page items that an undo step changes too (e.g. the song's layer list). */
+export interface SideEffect {
+  undo: () => void
+  redo: () => void
+}
+
 export interface Command {
   label: string
   kind: CommandKind
   changes: PageChange[]
+  effect?: SideEffect
 }
 
 export interface ItemDiff {
@@ -109,10 +116,10 @@ export function commandKind(changes: PageChange[]): CommandKind {
   return 'mixed'
 }
 
-export function makeCommand(label: string, changes: PageChange[]): Command | null {
+export function makeCommand(label: string, changes: PageChange[], effect?: SideEffect): Command | null {
   const real = changes.filter((ch) => ch.before !== ch.after)
-  if (!real.length) return null
-  return { label, kind: commandKind(real), changes: real }
+  if (!real.length) return effect ? { label, kind: 'mixed', changes: [], effect } : null
+  return { label, kind: commandKind(real), changes: real, effect }
 }
 
 export class UndoStack {
@@ -141,6 +148,24 @@ export class UndoStack {
     const c = this.redos.pop()
     if (c) this.undos.push(c)
     return c
+  }
+
+  /**
+   * Drop a page's changes from every step (its items were replaced outside the history, e.g. the page
+   * was rotated, so the recorded snapshots no longer apply). Steps left empty go. Returns whether any did.
+   */
+  forget(key: string): boolean {
+    let hit = false
+    const strip = (list: Command[]) =>
+      list.flatMap((c) => {
+        if (!c.changes.some((ch) => ch.key === key)) return [c]
+        hit = true
+        const changes = c.changes.filter((ch) => ch.key !== key)
+        return changes.length || c.effect ? [{ ...c, changes }] : []
+      })
+    this.undos = strip(this.undos)
+    this.redos = strip(this.redos)
+    return hit
   }
 
   clear() {

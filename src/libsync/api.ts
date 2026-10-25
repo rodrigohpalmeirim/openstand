@@ -118,6 +118,8 @@ export interface JoinPreview {
   remoteSongs: number
   remoteBytes: number
   localSongs: number
+  /** Untouched demo songs here (not in `localSongs`): joining into this library removes them. */
+  demoSongs?: number
   /** Local songs that `planJoin` would combine with remote ones (merge mode). */
   matches: number
   suggested: 'here' | 'newLibrary'
@@ -248,6 +250,8 @@ export const joinSync = guarded(async (p: PairingPayload, mode: JoinMode): Promi
     // This device signed in to the drive for the library it joins from; the new library gets a copy.
     const kind = p.b.kind
     const signIn = isDrive(kind) ? await (await tokens()).readTokens(db, kind) : undefined
+    // Edits kept from a library this one left are dropped: they have nothing to do with the new library.
+    await (await import('./state')).deleteState(db, 'unsynced')
     const { createLibrary, switchLibrary, useLibraries } = await libraries()
     const { useNav } = await import('../state/nav')
     const name = p.n?.trim() || 'Synced library'
@@ -275,9 +279,17 @@ export const joinSync = guarded(async (p: PairingPayload, mode: JoinMode): Promi
 export const syncNow = guarded(async (): Promise<void> => {
   const svc = await service()
   const e = svc.currentEngine()
-  if (e) await e.sync()
+  if (e) await svc.syncNowHere(e)
   else svc.requestSyncNow()
 })
+
+/** The Library sync page opened: re-read the device list (names, "last seen"); at most once a minute. Never rejects. */
+export function refreshDevices(): void {
+  if (!useLibSync.getState().configured) return
+  void service()
+    .then((m) => m.refreshDevices())
+    .catch(() => {})
+}
 
 export const setPaused = guarded(async (paused: boolean): Promise<void> => {
   const { getConfig, putState } = await import('./state')
@@ -297,7 +309,7 @@ export const setPaused = guarded(async (paused: boolean): Promise<void> => {
 export const leaveSync = guarded(async (o: { keepSignIn?: boolean } = {}): Promise<void> => {
   const svc = await service()
   const e = svc.currentEngine()
-  await svc.withEngineStopped(async () => (await flows()).leave(db, e ?? undefined, { keepSignIn: o.keepSignIn }))
+  await svc.withEngineStopped(async () => (await flows()).leave(db, e ?? undefined, { keepSignIn: o.keepSignIn, deviceName: svc.deviceName }))
 })
 
 /** "Delete synced data from storage…" (the UI confirms by typing the library name first). */

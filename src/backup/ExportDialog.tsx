@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { createRoot } from 'react-dom/client'
+import { useTerms } from '../library/browse/terms'
 import { Button, Dialog, Toggle } from '../ui/primitives'
 import type { FileExportOptions } from './exportSongs'
 
@@ -18,6 +19,7 @@ function Row({ label, hint, checked, onChange, disabled }: { label: string; hint
 }
 
 function ExportFilesDialog({ count, onDone }: { count: number; onDone: (o: FileExportOptions | null) => void }) {
+  const t = useTerms()
   const [o, setO] = useState<FileExportOptions>(() => {
     try {
       return { withAnnotations: true, cropRotate: true, merge: false, useTitles: false, ...JSON.parse(localStorage.getItem(KEY) ?? '{}') }
@@ -35,7 +37,7 @@ function ExportFilesDialog({ count, onDone }: { count: number; onDone: (o: FileE
       open
       size="sm"
       onClose={() => finish(null)}
-      title={count === 1 ? 'Export files' : `Export files of ${count} songs`}
+      title={count === 1 ? 'Export files' : `Export files of ${t.count(count)}`}
       footer={
         <>
           <Button variant="ghost" onClick={() => finish(null)}>
@@ -50,8 +52,8 @@ function ExportFilesDialog({ count, onDone }: { count: number; onDone: (o: FileE
       <div className="grid gap-1 px-5 py-3">
         <Row label="Include annotations" hint="Drawn into the PDF pages (they can no longer be edited there)" checked={!!o.withAnnotations} onChange={(withAnnotations) => set({ withAnnotations })} />
         <Row label="Apply crop and rotation" checked={!!o.cropRotate} onChange={(cropRotate) => set({ cropRotate })} />
-        <Row label="Join into one PDF" hint={count > 1 ? 'All songs in order, one file' : 'All files of the song in one PDF'} checked={!!o.merge} onChange={(merge) => set({ merge })} />
-        <Row label="Name files after song titles" checked={!!o.useTitles} onChange={(useTitles) => set({ useTitles })} disabled={!!o.merge} />
+        <Row label="Join into one PDF" hint={count > 1 ? `All ${t.songs} in order, one file` : `All files of the ${t.song} in one PDF`} checked={!!o.merge} onChange={(merge) => set({ merge })} />
+        <Row label={`Name files after ${t.song} titles`} checked={!!o.useTitles} onChange={(useTitles) => set({ useTitles })} disabled={!!o.merge} />
         <p className="pt-2 text-xs text-muted">
           {o.withAnnotations || o.cropRotate || o.merge
             ? 'PDF and image pages become PDFs. Text and ChordPro files are exported unchanged.'

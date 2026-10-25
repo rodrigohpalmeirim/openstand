@@ -133,7 +133,7 @@ export function segItem<T extends string | number>(path: string, label: string, 
       const wide = options.length > 3
       return (
         <Row label={label} hint={hint} stacked={wide}>
-          <Segmented value={v} options={options} onChange={set} className={wide ? 'w-full overflow-x-auto' : undefined} />
+          <Segmented label={label} value={v} options={options} onChange={set} className={wide ? 'w-full overflow-x-auto' : undefined} />
         </Row>
       )
     },
@@ -316,7 +316,20 @@ export function ActionMenu({
   return (
     <Popover anchor={anchor} open={open} onClose={onClose} align="center" className="w-64">
       {title && <div className="px-3 pb-1 pt-2 text-xs font-semibold text-fg">{title}</div>}
-      <div role="listbox" aria-label={title ?? 'Action'}>
+      <div
+        role="listbox"
+        aria-label={title ?? 'Action'}
+        onKeyDown={(e) => {
+          const list = [...e.currentTarget.querySelectorAll<HTMLElement>('[role="option"]')]
+          const at = list.indexOf(document.activeElement as HTMLElement)
+          const k = e.key
+          const next = k === 'ArrowDown' ? Math.min(list.length - 1, at + 1) : k === 'ArrowUp' ? Math.max(0, at - 1) : k === 'Home' ? 0 : k === 'End' ? list.length - 1 : -1
+          if (next < 0) return
+          e.preventDefault()
+          e.stopPropagation()
+          list[next].focus()
+        }}
+      >
         {actionGroups().map((g) => (
           <Fragment key={g.group}>
             <div className="px-3 pb-1 pt-2.5 text-[11px] font-semibold uppercase tracking-wide text-faint">{g.group}</div>
@@ -329,6 +342,7 @@ export function ActionMenu({
                 onClick={() => {
                   onChange(a)
                   onClose()
+                  anchor?.focus({ preventScroll: true })
                 }}
                 className={cx(
                   'flex min-h-10 w-full items-center gap-2 rounded-lg px-3 text-left text-sm transition hover:bg-surface-2',

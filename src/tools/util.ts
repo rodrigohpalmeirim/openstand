@@ -38,3 +38,15 @@ export function parseClock(text: string): number | undefined {
   if (parts.some((n) => !Number.isFinite(n) || n < 0)) return undefined
   return parts.reduce((acc, n) => acc * 60 + n, 0)
 }
+
+/**
+ * A song length typed as "m:ss" → whole seconds; empty → 0 (cleared); undefined when invalid. A bare
+ * number under 60 means minutes ("4" = 4:00): no song is a few seconds long.
+ */
+export function parseSongLength(text: string): number | undefined {
+  const t = text.trim()
+  if (!t) return 0
+  const v = parseClock(t)
+  if (v === undefined) return undefined
+  return Math.round(/^\d+(\.\d+)?$/.test(t) && v < 60 ? v * 60 : v)
+}

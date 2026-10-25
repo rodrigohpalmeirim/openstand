@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { layoutWidthFor, WRAP_BELOW, wrapFor } from './engine'
+import { layoutWidthFor, transposeAbcText, WRAP_BELOW, wrapFor } from './engine'
 
 describe('ABC narrow layout', () => {
   it('lays phones out near natural size instead of a 640px staff scaled down', () => {
@@ -14,5 +14,16 @@ describe('ABC narrow layout', () => {
   })
   it('text zoom enlarges notation (narrower layout width)', () => {
     expect(layoutWidthFor(700, 1.5)).toBeLessThan(layoutWidthFor(700))
+  })
+})
+
+describe('ABC transposition', () => {
+  it('transposes every tune of a multi-tune file and keeps the line structure', async () => {
+    const src = '%abc-2.1\nX:1\nT:One\nK:D\n"D"dfa "A"ece|\n\nX:2\nT:Two\nK:Em\n"Em"E2BE "D"D2AD|\n'
+    const out = await transposeAbcText(src, 2)
+    expect(out.split('\n').length).toBe(src.split('\n').length)
+    expect(out).toContain('%abc-2.1\nX:1')
+    expect(out).toContain('K:E\n"E"egb "B"fdf|')
+    expect(out).toContain('K:F#m\n"F#m"F2cF "E"E2BE|')
   })
 })

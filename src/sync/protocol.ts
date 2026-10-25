@@ -29,8 +29,11 @@ export interface SetlistItemRef {
 }
 
 export type Body =
-  /** Announce/heartbeat. `reply` marks answers so they aren't answered again. */
-  | { type: 'hello'; reply?: boolean }
+  /**
+   * Announce/heartbeat. `reply` marks answers so they aren't answered again. `replaces` is the id this
+   * tab had before a reload: receivers drop that entry at once, even if its bye never arrived.
+   */
+  | { type: 'hello'; reply?: boolean; replaces?: string }
   | { type: 'bye' }
   /** A new song is showing (also the answer to requestState). */
   | { type: 'openSong'; song: SongRef; position: number; queue: SongRef[]; index: number; setlistName?: string; page?: number }
@@ -124,6 +127,10 @@ export function rosterReduce(roster: Roster, e: Envelope, now: number): Roster {
     delete next[e.from]
     return next
   }
+  if (e.body.type === 'hello' && typeof e.body.replaces === 'string' && e.body.replaces !== e.from && roster[e.body.replaces]) {
+    roster = { ...roster }
+    delete roster[e.body.replaces as string]
+  }
   const prev = roster[e.from]
   const song = e.body.type === 'openSong' ? e.body.song.title : e.body.type === 'closeSong' ? undefined : prev?.song
   return { ...roster, [e.from]: { id: e.from, name: e.name || prev?.name || 'Device', role: e.role, lastSeen: now, song } }
@@ -138,6 +145,29 @@ export function rosterExpire(roster: Roster, now: number, ttl = PEER_TTL_MS): Ro
 }
 
 /* ----------------------------------------------------------------- dedupe */
+
+/**
+ * Senders that said bye, with the bye's seq. Messages travel over two transports, so one sent just
+ * before the bye can arrive after it; it must not bring the device back for another PEER_TTL_MS.
+ */
+export class DepartedSet {
+  private gone = new Map<string, number>()
+  private max: number
+  constructor(max = 200) {
+    this.max = max
+  }
+  /** Feed every accepted message; returns false for one that predates its sender's bye. */
+  accept(e: Pick<Envelope, 'from' | 'seq' | 'body'>): boolean {
+    const bye = this.gone.get(e.from)
+    if (e.body.type === 'bye') {
+      this.gone.set(e.from, Math.max(bye ?? 0, e.seq))
+      if (this.gone.size > this.max) this.gone.delete(this.gone.keys().next().value!)
+      return true
+    }
+    // A later seq is the same tab back again (restored from the back/forward cache).
+    return bye === undefined || e.seq > bye
+  }
+}
 
 /** Remembers recent (sender, seq) pairs; a device may hear a message over two transports. */
 export class SeenSet {
@@ -203,4 +233,64 @@ export function resolveQueue(queue: SongRef[], index: number, match: (r: SongRef
     ids.push(id)
   })
   return { ids, index: at, missing }
+}
+
+/* --------------------------------------------------- following page turns */
+
+/** Which local song a remote song was matched to (`local` undefined: not in this library). */
+export interface SongPair {
+  remote: string
+  local?: string
+}
+
+/**
+ * Whether a page turn for remote song `remoteId` applies to the local song `cur`: same id, or the song we
+ * matched it to. A remote song we couldn't match never drives whatever this device still shows.
+ */
+export function followsSong(cur: string, remoteId: string | undefined, pair: SongPair | undefined): boolean {
+  if (!remoteId || cur === remoteId) return true
+  return !!pair && pair.remote === remoteId && pair.local === cur
+}
+
+/**
+ * Remembers the page change this device is about to make because of a remote message, so only that echo
+ * is kept from going back out. A page the user turns at the same moment is still sent (with a time
+ * window, two-way sync between different layouts drifted apart).
+ */
+export class EchoGuard {
+  private expect: { page?: number; until: number } | null = null
+  private windowMs: number
+  constructor(windowMs = 700) {
+    this.windowMs = windowMs
+  }
+  /** A remote message is being applied; `page` when the resulting page is known (else the next change). */
+  arm(now: number, page?: number) {
+    this.expect = { page, until: now + this.windowMs }
+  }
+  /** True when this page change is the expected echo (consumed). */
+  isEcho(page: number | undefined, now: number): boolean {
+    const e = this.expect
+    if (!e || now > e.until) return false
+    if (e.page !== undefined && page !== undefined && e.page !== page) return false
+    this.expect = null
+    return true
+  }
+}
+
+/* ------------------------------------------------------------------ rooms */
+
+/** Room of older versions: one room shared by everyone using the public relay. */
+export const LEGACY_ROOM = 'band'
+const ROOM_CHARS = 'abcdefghjkmnpqrstuvwxyz23456789'
+
+/** An unguessable room name, readable and typeable: 16 characters (~79 bits) like "k7mq-2xpt-9bwr-4hcn". */
+export function randomRoom(): string {
+  const out: string[] = []
+  while (out.length < 16) {
+    for (const b of crypto.getRandomValues(new Uint8Array(24))) {
+      // Rejection sampling keeps every character equally likely.
+      if (b < 248 && out.length < 16) out.push(ROOM_CHARS[b % ROOM_CHARS.length])
+    }
+  }
+  return out.join('').replace(/(.{4})(?!$)/g, '$1-')
 }

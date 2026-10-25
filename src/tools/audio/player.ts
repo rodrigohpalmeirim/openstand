@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { db, getBlob, updateSong } from '../../db/db'
 import type { AudioTrack, Song } from '../../db/schema'
+import { terms } from '../../library/browse/terms'
 import { settings } from '../../state/settings'
 import { toast } from '../../ui/primitives'
 import { safeExternalUrl } from '../../util/safeUrl'
@@ -8,6 +9,8 @@ import { safeExternalUrl } from '../../util/safeUrl'
 interface AudioStatus {
   songId: string | null
   trackId: string | null
+  /** Name of the loaded track (it may belong to a previous song). */
+  trackName: string
   playing: boolean
   time: number
   duration: number
@@ -22,6 +25,7 @@ interface AudioStatus {
 export const useAudio = create<AudioStatus>(() => ({
   songId: null,
   trackId: null,
+  trackName: '',
   playing: false,
   time: 0,
   duration: 0,
@@ -45,6 +49,8 @@ class Player {
   private url: string | null = null
   private raf = 0
   private saveTimer: ReturnType<typeof setTimeout> | null = null
+  /** Track settings waiting for the debounced save (merged, so a volume change doesn't drop a speed change). */
+  private pending: { songId: string; trackId: string; patch: Partial<AudioTrack> } | null = null
 
   private audio(): HTMLAudioElement {
     if (this.el) return this.el
@@ -104,6 +110,7 @@ class Player {
       useAudio.setState({
         songId: song.id,
         trackId: track.id,
+        trackName: track.name,
         time: 0,
         duration: 0,
         volume: track.volume ?? 1,
@@ -142,7 +149,7 @@ class Player {
     this.el.load()
     if (this.url) URL.revokeObjectURL(this.url)
     this.url = null
-    useAudio.setState({ songId: null, trackId: null, playing: false, time: 0, duration: 0, loopStart: undefined, loopEnd: undefined, settingLoop: false })
+    useAudio.setState({ songId: null, trackId: null, trackName: '', playing: false, time: 0, duration: 0, loopStart: undefined, loopEnd: undefined, settingLoop: false })
   }
 
   /** Play/pause; with nothing loaded, starts the song's first (or auto-play) track. */
@@ -154,7 +161,7 @@ class Player {
       return
     }
     const track = song?.audio.find((t) => t.autoPlay) ?? song?.audio[0]
-    if (!song || !track) return toast('This song has no audio tracks')
+    if (!song || !track) return toast(`This ${terms(settings()).song} has no audio tracks`)
     await this.load(song, track, { play: true })
   }
 
@@ -205,14 +212,25 @@ class Player {
   private persist(patch: Partial<AudioTrack>, now = false) {
     const { songId, trackId } = useAudio.getState()
     if (!songId || !trackId) return
+    const p = this.pending
+    if (p && (p.songId !== songId || p.trackId !== trackId)) void this.flush()
+    this.pending = { songId, trackId, patch: { ...(this.pending?.patch ?? {}), ...patch } }
     if (this.saveTimer) clearTimeout(this.saveTimer)
-    const run = async () => {
-      const song = await db.songs.get(songId)
-      if (!song) return
-      await updateSong(songId, { audio: song.audio.map((t) => (t.id === trackId ? { ...t, ...patch } : t)) })
-    }
-    if (now) void run()
-    else this.saveTimer = setTimeout(() => void run(), 600)
+    this.saveTimer = null
+    if (now) void this.flush()
+    else this.saveTimer = setTimeout(() => void this.flush(), 600)
+  }
+
+  /** Write the pending track settings now. */
+  async flush() {
+    if (this.saveTimer) clearTimeout(this.saveTimer)
+    this.saveTimer = null
+    const p = this.pending
+    this.pending = null
+    if (!p) return
+    const song = await db.songs.get(p.songId)
+    if (!song) return
+    await updateSong(p.songId, { audio: song.audio.map((t) => (t.id === p.trackId ? { ...t, ...p.patch } : t)) })
   }
 }
 
@@ -220,7 +238,7 @@ export const player = new Player()
 
 /** Move to the previous/next track of the song (wraps), keeping play state. */
 export async function stepTrack(song: Song | undefined, dir: 1 | -1) {
-  if (!song?.audio.length) return toast('This song has no audio tracks')
+  if (!song?.audio.length) return toast(`This ${terms(settings()).song} has no audio tracks`)
   const st = useAudio.getState()
   const at = song.audio.findIndex((t) => t.id === st.trackId)
   const i = at < 0 ? 0 : (at + dir + song.audio.length) % song.audio.length

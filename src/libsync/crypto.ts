@@ -367,6 +367,7 @@ export async function openNotice(keys: LibraryKeys, frame: string): Promise<Noti
     const p = JSON.parse(new TextDecoder().decode(await open(keys, { kind: 'notice' }, fromB64url(f.n)))) as NoticePayload
     if (typeof p?.d !== 'string' || !DEVICE_ID.test(p.d) || !Number.isSafeInteger(p.s)) return null
     if (p.k === undefined) return p.s >= 1 ? { d: p.d, s: p.s } : null
+    if (p.k === 'devices') return p.s >= 0 ? { d: p.d, s: p.s, k: 'devices' } : null
     // ping/pong (connection test): s may be 0 (nothing written yet); the nonce and addressee are checked.
     if ((p.k !== 'ping' && p.k !== 'pong') || p.s < 0 || typeof p.p !== 'string' || !PING_NONCE.test(p.p)) return null
     if (p.k === 'ping') return { d: p.d, s: p.s, k: 'ping', p: p.p }

@@ -381,6 +381,7 @@ export function checkFailureText(check: BackendCheck, storage: StorageChoice = '
     case 'quota':
       return 'Your storage is full.'
     default: {
+      if (check.error?.providerCode === 'NotS3') return 'This address doesn’t look like S3 storage. Check the endpoint.'
       const failed = check.steps.find((s) => !s.ok)
       return failed?.id === 'etag'
         ? 'The bucket hides upload receipts. Add “ETag” to the exposed headers of the CORS rule below.'

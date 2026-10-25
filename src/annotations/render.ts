@@ -7,6 +7,7 @@ import type { Annotation, Layer, StrokeAnnotation } from '../db/schema'
 import {
   arrowHead,
   arrowHeadLen,
+  HAIRPIN_HEIGHT,
   hairpinEnds,
   hasPressure,
   pressureWidth,
@@ -96,7 +97,7 @@ export function itemNodes(it: Annotation, W: number, H: number): SvgNode[] {
         d = `M${n2(a.x)} ${n2(a.y)}L${n2(b.x)} ${n2(b.y)}M${n2(h1.x)} ${n2(h1.y)}L${n2(b.x)} ${n2(b.y)}L${n2(h2.x)} ${n2(h2.y)}`
       } else if (it.type === 'crescendo' || it.type === 'decrescendo') {
         const [apex, open] = it.type === 'crescendo' ? [a, b] : [b, a]
-        const [u1, u2] = hairpinEnds(apex, open, (it.height ?? 0.018) * W)
+        const [u1, u2] = hairpinEnds(apex, open, (it.height ?? HAIRPIN_HEIGHT) * W)
         d = `M${n2(u1.x)} ${n2(u1.y)}L${n2(apex.x)} ${n2(apex.y)}L${n2(u2.x)} ${n2(u2.y)}`
       } else if (it.type === 'rect') {
         const x0 = Math.min(a.x, b.x)
@@ -219,16 +220,29 @@ export function nodeToMarkup(n: SvgNode): string {
   return `<${n.tag}${a}>${inner}</${n.tag}>`
 }
 
+/**
+ * Drawing order: layers later in the stored list draw on top; within a layer, creation order. Items whose layer
+ * no longer exists draw first. Returns `items` itself when already in order.
+ */
+export function sortByLayer<T extends Annotation>(items: T[], layers: Layer[]): T[] {
+  if (layers.length < 2 || items.length < 2) return items
+  const rank = new Map(layers.map((l, i) => [l.id, i + 1]))
+  const r = (it: T) => rank.get(it.layer) ?? 0
+  for (let i = 1; i < items.length; i++) if (r(items[i]) < r(items[i - 1])) return items.slice().sort((a, b) => r(a) - r(b))
+  return items
+}
+
+/** Items on visible layers, in drawing order (see `sortByLayer`). */
 export function visibleItems(items: Annotation[], layers?: Layer[]): Annotation[] {
   if (!layers?.length) return items
   const hidden = new Set(layers.filter((l) => !l.visible).map((l) => l.id))
-  return hidden.size ? items.filter((it) => !hidden.has(it.layer)) : items
+  return sortByLayer(hidden.size ? items.filter((it) => !hidden.has(it.layer)) : items, layers)
 }
 
 /**
  * Convert a page's annotations into a standalone SVG document of `width` x `height` pixels
  * (the full uncropped page). Highlights are drawn first with multiply blending. Pass `layers` to
- * drop items on hidden layers.
+ * drop items on hidden layers and draw in layer order.
  */
 export function annotationsToSVG(items: Annotation[], width: number, height: number, opts: { layers?: Layer[] } = {}): string {
   const vis = visibleItems(items, opts.layers)

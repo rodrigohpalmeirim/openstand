@@ -5,11 +5,12 @@ import { create } from 'zustand'
 import { db, getKV, setKV } from '../db/db'
 import { useLibSync } from '../libsync/api'
 import { registerService } from '../services'
+import { activeLibraryName, useLibraries } from '../library/browse/libraries'
 import { terms } from '../library/browse/terms'
 import { settings, useSettings } from '../state/settings'
 import { toast } from '../ui/primitives'
 import { openArchive, restoreArchive, writeArchive, type Manifest, type OnProgress, type Progress, type RestoreOptions, type RestoreResult } from './archive'
-import { dateStamp, downloadBlob, pickDirectory, pickSaveFile } from './deliver'
+import { dateStamp, downloadBlob, pickDirectory, pickSaveFile, safeName } from './deliver'
 import { MemorySink, type ZipPart, type ZipSink } from './zip'
 
 export const BACKUP_EXT = '.osbackup'
@@ -24,11 +25,40 @@ const DAY = 86_400_000
 /** UI-observable state of the running backup/restore job. */
 export const useBackupJob = create<{ busy: null | 'backup' | 'restore'; progress?: Progress; lastAt?: number; autoDir?: string }>(() => ({ busy: null }))
 
-const libraryName = () => (db.name === 'openstand' ? undefined : db.name.replace(/^openstand-/, ''))
+/** Display name of the active library; none for an unrenamed default library. */
+const libraryName = () => {
+  const name = activeLibraryName()
+  return useLibraries.getState().active === 'default' && name === 'My Library' ? undefined : name
+}
+/** File-name part for the active library ('' for the default one). */
+const libraryFilePart = () => {
+  const lib = libraryName()
+  return lib ? `-${safeName(lib, 'Library').slice(0, 60).trim().replace(/\s+/g, '_')}` : ''
+}
 
 export function backupFileName(prefix = 'OpenStand') {
-  const lib = libraryName()
-  return `${prefix}${lib ? `-${lib.replace(/\s+/g, '_')}` : ''}-${dateStamp()}${BACKUP_EXT}`
+  return `${prefix}${libraryFilePart()}-${dateStamp()}${BACKUP_EXT}`
+}
+
+/** Short stable token for a library id: display names can collide once made file-safe, ids can't. */
+const libraryToken = (id: string) => {
+  let h = 0x811c9dc5
+  for (let i = 0; i < id.length; i++) h = Math.imul(h ^ id.charCodeAt(i), 0x01000193)
+  return (h >>> 0).toString(36).padStart(7, '0')
+}
+const AUTO_STAMP = /^\d{4}-\d\d-\d\d-\d\d-\d\d\.osbackup$/
+
+/** File-name prefix of an automatic backup: `OpenStand-auto[-<name>]-<token>-` (the name is only for people). */
+export const autoBackupPrefix = (id: string, filePart: string) => `OpenStand-auto${filePart}-${libraryToken(id)}-`
+
+/**
+ * Whether a file is one of this library's automatic backups, matched by library id so a rename or another
+ * library with a similar name can't confuse pruning. Also matches the older id-only names.
+ */
+export function isAutoBackupOf(file: string, id: string): boolean {
+  if (new RegExp(`^OpenStand-auto-(?:.*-)?${libraryToken(id)}-${AUTO_STAMP.source.slice(1)}`).test(file)) return true
+  const legacy = `OpenStand-auto${id === 'default' ? '' : `-${id.replace(/\s+/g, '_')}`}-`
+  return file.startsWith(legacy) && AUTO_STAMP.test(file.slice(legacy.length))
 }
 
 class WritableSink implements ZipSink {
@@ -161,11 +191,10 @@ export async function runAutoBackup(interactive: boolean): Promise<'ok' | 'no-di
   const dir = await getAutoDir()
   if (!dir) return 'no-dir'
   if (!(await ensurePermission(dir, interactive))) return 'no-permission'
-  const lib = libraryName()
-  const prefix = `OpenStand-auto${lib ? `-${lib.replace(/\s+/g, '_')}` : ''}-`
+  const libId = useLibraries.getState().active
   const stamp = new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-')
-  const name = `${prefix}${stamp}${BACKUP_EXT}`
-  const ours = (n: string) => n.startsWith(prefix) && /^\d{4}-/.test(n.slice(prefix.length)) && n.endsWith(BACKUP_EXT)
+  const name = `${autoBackupPrefix(libId, libraryFilePart())}${stamp}${BACKUP_EXT}`
+  const ours = (n: string) => isAutoBackupOf(n, libId)
   useBackupJob.setState({ busy: 'backup', progress: { phase: 'preparing', done: 0, total: 1 } })
   try {
     const fh = await dir.getFileHandle(name, { create: true })
@@ -245,13 +274,28 @@ async function check() {
   toast(msg, 'info', { label: 'Export', run: () => void createBackup() })
 }
 
+/** Backup state lives in each library's kv: reload it for the active library. */
+function loadState() {
+  const name = db.name
+  void Promise.all([lastBackupAt(), getAutoDir()]).then(([lastAt, d]) => {
+    if (db.name === name) useBackupJob.setState({ lastAt, autoDir: d?.name })
+  })
+}
+
 registerService(() => {
-  void lastBackupAt().then((lastAt) => useBackupJob.setState({ lastAt }))
-  void getAutoDir().then((d) => useBackupJob.setState({ autoDir: d?.name }))
+  loadState()
+  let active = useLibraries.getState().active
+  const unsub = useLibraries.subscribe((s) => {
+    if (s.active === active) return
+    active = s.active
+    useBackupJob.setState({ lastAt: undefined, autoDir: undefined })
+    loadState()
+  })
   // Give the app time to settle before touching the disk.
   const first = setTimeout(() => void check().catch((e) => console.warn(e)), 15_000)
   const timer = setInterval(() => void check().catch((e) => console.warn(e)), 3 * 3600_000)
   return () => {
+    unsub()
     clearTimeout(first)
     clearInterval(timer)
   }

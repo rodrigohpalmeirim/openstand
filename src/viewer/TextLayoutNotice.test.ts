@@ -13,4 +13,9 @@ describe('layoutChanges', () => {
   it('reports rotation as a screen change', () => {
     expect(layoutChanges(base, { ...base, width: 844, height: 390 })).toEqual(['screen'])
   })
+  it('treats any change of page height as a screen change when ABC pages are shown', () => {
+    const abc = { ...base, abc: true }
+    expect(layoutChanges(abc, { ...abc, height: 800 })).toEqual(['screen'])
+    expect(layoutChanges(abc, { ...abc, height: 840 })).toEqual([])
+  })
 })

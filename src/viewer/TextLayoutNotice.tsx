@@ -17,6 +17,8 @@ export interface TextLayoutSig {
   width: number
   height: number
   transpose: number
+  /** ABC pages are shown: their music scales with the page width, so any change of page shape moves it. */
+  abc?: boolean
 }
 
 export type LayoutChange = 'size' | 'columns' | 'key' | 'screen'
@@ -28,11 +30,12 @@ export function layoutChanges(drawn: TextLayoutSig, now: TextLayoutSig): LayoutC
   if (drawn.transpose !== now.transpose) out.push('key')
   // Width reflows every line; height only moves page breaks, and mobile browser bars nudge it.
   const off = (a: number, b: number, tol: number) => Math.abs(a - b) / Math.max(1, b) > tol
-  if (off(drawn.width, now.width, 0.03) || off(drawn.height, now.height, 0.12)) out.push('screen')
+  if (off(drawn.width, now.width, 0.03) || off(drawn.height, now.height, now.abc ? 0.03 : 0.12)) out.push('screen')
   return out
 }
 
-const TEXT_PAGE = (page: number) => page >= 1000 && page < 2000
+/** Annotation page numbers of text (1000+) and ABC (2000+) pages. */
+const TEXT_PAGE = (page: number) => page >= 1000 && page < 3000
 const kvKey = (songId: string) => `textLayout:${songId}`
 const HINT_KEY = 'openstand:hint:textAnnotations'
 /** Songs whose warning was dismissed this session. */
@@ -61,7 +64,7 @@ export function TextLayoutNotice({ song, pages, currentPage, sig, top, fontScale
   const [drawn, setDrawn] = useState<TextLayoutSig | null>(null)
   const [hint, setHint] = useState(false)
   const [, rerender] = useState(0)
-  const hasText = pages.some((p) => p.type === 'text')
+  const hasText = pages.some((p) => p.type === 'text' || p.type === 'abc')
 
   useEffect(() => {
     let alive = true
@@ -80,7 +83,8 @@ export function TextLayoutNotice({ song, pages, currentPage, sig, top, fontScale
     const was = wasAnnotating.current
     wasAnnotating.current = annotating
     if (annotating) {
-      if (pages[currentPage]?.type === 'text' && !localStorage.getItem(HINT_KEY)) setHint(true)
+      const t = pages[currentPage]?.type
+      if ((t === 'text' || t === 'abc') && !localStorage.getItem(HINT_KEY)) setHint(true)
       return
     }
     setHint(false)
@@ -105,7 +109,7 @@ export function TextLayoutNotice({ song, pages, currentPage, sig, top, fontScale
       <div role="status" className={box} style={{ top: top + 8 }}>
         <Info className="mt-2.5 size-4 shrink-0 text-[var(--os-accent)]" />
         <p className="flex-1 py-1.5 leading-snug text-white/85">
-          Annotations on chord and lyric pages stay where you draw them. Changing the text size, columns, key or screen orientation moves the text underneath, so OpenStand will offer to restore this layout.
+          Annotations on chord, lyric and ABC pages stay where you draw them. Changing the text size, columns, key or screen orientation moves the text underneath, so OpenStand will offer to restore this layout.
         </p>
         <button
           type="button"

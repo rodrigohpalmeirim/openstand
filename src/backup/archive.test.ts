@@ -3,8 +3,8 @@ import 'fake-indexeddb/auto'
 import { beforeEach, describe, expect, it } from 'vitest'
 import { db, putBlob, setKV, sha256, uid, updateSong } from '../db/db'
 import { emptySong, type PageAnnotations, type Setlist, type Song } from '../db/schema'
-import { importPackageArchive, openArchive, restoreArchive, writeArchive } from './archive'
-import { MemorySink } from './zip'
+import { importPackageArchive, mergeKvValue, openArchive, restoreArchive, writeArchive } from './archive'
+import { MemorySink, ZipWriter } from './zip'
 
 const bytes = (s: string) => new TextEncoder().encode(s).buffer as ArrayBuffer
 
@@ -108,6 +108,83 @@ describe('backup archive', () => {
   })
 })
 
+const hidden = { layers: [{ id: 'default', name: 'Default', visible: true }, { id: 'l2', name: 'Fingering', visible: false }], current: 'l2' }
+
+async function rawArchive(files: Record<string, string>) {
+  const sink = new MemorySink()
+  const zip = new ZipWriter(sink)
+  for (const [n, t] of Object.entries(files)) await zip.addText(n, t)
+  await zip.finish()
+  return sink.blob()
+}
+const MANIFEST = JSON.stringify({ format: 'openstand', kind: 'backup', version: 1, appVersion: '0', createdAt: 1, counts: { songs: 9, setlists: 9, annotations: 0, blobs: 0, bytes: 0 } })
+
+describe('backup merge details', () => {
+  it('keep-both copies carry the song’s layers; keep-newer replaces stale local layers', async () => {
+    const a = await addSong('Song A', '%PDF-a', { modifiedAt: 100 })
+    await setKV(`layers:${a.id}`, hidden)
+    const { blob } = await archive('backup')
+
+    await db.songs.put({ ...a, modifiedAt: 200 })
+    await setKV(`layers:${a.id}`, { layers: [{ id: 'default', name: 'Default', visible: true }], current: 'default' })
+    await restoreArchive(await openArchive(blob), { mode: 'merge', conflict: 'keepBoth' })
+    const copy = (await db.songs.where('title').equals('Song A').toArray()).find((s) => s.id !== a.id)!
+    expect((await db.kv.get(`layers:${copy.id}`))?.value).toEqual(hidden)
+
+    await db.songs.delete(copy.id)
+    await db.songs.put({ ...a, modifiedAt: 50 })
+    await setKV(`layers:${a.id}`, { layers: [{ id: 'x', name: 'Stale', visible: true }], current: 'x' })
+    await setKV(`textLayout:${a.id}`, 'stale')
+    const r = await restoreArchive(await openArchive(blob), { mode: 'merge', conflict: 'newer' })
+    expect(r.songsUpdated).toBe(1)
+    expect((await db.kv.get(`layers:${a.id}`))?.value).toEqual(hidden)
+    expect(await db.kv.get(`textLayout:${a.id}`)).toBeUndefined()
+  })
+
+  it('unions list-valued kv keys instead of dropping the backup’s values', async () => {
+    await addSong('S', '%PDF-s')
+    await setKV('library:emptyCollections', ['Gigs', 'Jazz'])
+    await setKV('library:savedFilters', [{ name: 'Easy', query: '' }])
+    await setKV('library:recentClearedAt', 5)
+    const { blob } = await archive('backup')
+    await setKV('library:emptyCollections', ['Jazz', 'Duo'])
+    await setKV('library:savedFilters', [{ name: 'Easy', query: 'mine' }, { name: 'Hard', query: '' }])
+    await setKV('library:recentClearedAt', 9)
+    await restoreArchive(await openArchive(blob), { mode: 'merge', conflict: 'newer' })
+    expect((await db.kv.get('library:emptyCollections'))?.value).toEqual(['Jazz', 'Duo', 'Gigs'])
+    expect((await db.kv.get('library:savedFilters'))?.value).toEqual([{ name: 'Easy', query: 'mine' }, { name: 'Hard', query: '' }])
+    expect((await db.kv.get('library:recentClearedAt'))?.value).toBe(9)
+    expect(mergeKvValue([{ id: 1 }], [{ id: 1 }, { id: 2 }, { id: 2 }])).toEqual([{ id: 1 }, { id: 2 }])
+  })
+
+  it('matches songs by id only: one added separately with the same title and file stays separate', async () => {
+    const a = await addSong('Same Tune', '%PDF-same', { modifiedAt: 100 })
+    const { blob } = await archive('backup')
+    await wipe()
+    const mine = await addSong('Same Tune', '%PDF-same', { modifiedAt: 300 })
+    await annotate(mine, 'local note')
+    const r = await restoreArchive(await openArchive(blob), { mode: 'merge', conflict: 'newer' })
+    expect(r).toMatchObject({ songsAdded: 1, songsKept: 0, songsUpdated: 0 })
+    expect((await db.songs.toArray()).map((s) => s.id).sort()).toEqual([a.id, mine.id].sort())
+    expect(await db.annotations.where('songId').equals(mine.id).count()).toBe(1)
+  })
+
+  it('reports damaged library data clearly and repairs malformed records', async () => {
+    await expect(openArchive(await rawArchive({ 'manifest.json': MANIFEST, 'library.json': '{"songs": [ {broken' }))).rejects.toThrow(/damaged/)
+    const opened = await openArchive(
+      await rawArchive({
+        'manifest.json': MANIFEST,
+        'library.json': JSON.stringify({ songs: [{ id: 'x1', title: 'Weird', files: null }, { title: 'no id' }, 7], setlists: [{ id: 's', name: 'S' }], annotations: [{ id: 'bad' }] }),
+      }),
+    )
+    expect(opened.manifest.counts).toMatchObject({ songs: 1, setlists: 1, annotations: 0 })
+    const r = await restoreArchive(opened, { mode: 'merge', conflict: 'newer' })
+    expect(r).toMatchObject({ songsAdded: 1, setlists: 1 })
+    expect((await db.songs.get('x1'))?.files).toEqual([])
+    expect((await db.setlists.get('s'))?.entries).toEqual([])
+  })
+})
+
 describe('song packages', () => {
   it('exports selected songs and setlists, imports as copies or updates by title', async () => {
     const a = await addSong('Autumn Leaves', '%PDF-autumn', { artists: ['Kosma'], keys: ['Gm'] })
@@ -138,6 +215,22 @@ describe('song packages', () => {
     const imported = (await db.setlists.where('name').equals('Jazz').toArray()).find((s) => s.id !== sl.id)!
     expect(imported.entries[0].songId).toBe(b.id)
     expect((await db.annotations.where('songId').equals(a.id).first())?.items[0]).toMatchObject({ text: 'pkg note' })
+  })
+
+  it('carries annotation layers, re-keyed to the imported song', async () => {
+    const a = await addSong('Layered', '%PDF-layered')
+    await annotate(a, 'hidden note')
+    await setKV(`layers:${a.id}`, hidden)
+    const { blob, manifest } = await archive('package', { songIds: [a.id], settings: null })
+    expect(manifest.counts.songs).toBe(1)
+    await importPackageArchive(await openArchive(blob), { onConflict: 'copy' })
+    const copy = (await db.songs.where('title').equals('Layered').toArray()).find((s) => s.id !== a.id)!
+    expect((await db.kv.get(`layers:${copy.id}`))?.value).toEqual(hidden)
+
+    await setKV(`layers:${a.id}`, { layers: [{ id: 'default', name: 'Default', visible: true }], current: 'default' })
+    await db.songs.delete(copy.id)
+    await importPackageArchive(await openArchive(blob), { onConflict: 'update' })
+    expect((await db.kv.get(`layers:${a.id}`))?.value).toEqual(hidden)
   })
 })
 

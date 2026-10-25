@@ -6,7 +6,7 @@ import { deriveLibraryKeys, newSecret, openNotice, sealNotice } from './crypto'
 import type { Engine, EngineEnv, EngineTimers } from './engine'
 import type { NoticePayload } from './model'
 import { libRelayUrl, NoticeChannel, PING_INTERVAL, PONG_TIMEOUT } from './relay'
-import { adoptSiteRelay } from './join'
+import { adoptSiteRelay, deleteRemote } from './join'
 import { getConfig } from './state'
 import { addSong, enableDevice, joinDevice, pairing, world } from './sync.test-helper'
 
@@ -122,6 +122,7 @@ function manualTimers() {
   }
 }
 
+const A_DB = (e: Engine) => e.db
 const tick = (ms = 10) => new Promise((r) => setTimeout(r, ms))
 const dev = (i: number) => `${i}`.padStart(16, 'a')
 
@@ -342,6 +343,34 @@ describe('engine scheduling with the relay', () => {
     await A.table('songs').update('s1', { title: 'Again' })
     await tick(50)
     expect(ta.pending()).toContain(1500)
+    stop(eA, eB)
+  })
+
+  it('deleting the synced data tells the other devices at once; they check the storage and stop', async () => {
+    const { w, hub, B, eA, eB, tb } = await pair()
+    await tb.fire(2000) // B's start-up pulls are done; only its poll is left
+    expect(await eventually(async () => eB.status.phase === 'idle' && tb.pending().every((ms) => ms >= 30_000))).toBe(true)
+    await deleteRemote(A_DB(eA), eA, { ...w.opts(), relayTransport: hub.transport })
+    // No timer of B's fires: the notice alone makes it pull.
+    expect(await eventually(async () => eB.status.error?.code === 'libraryGone')).toBe(true)
+    expect(eB.status.diag.noticeReceived?.device).toBe(eA.config.deviceId)
+    expect(await B.songs.count()).toBe(1)
+    stop(eA, eB)
+  })
+
+  it('a rename tells the other devices to re-read the device list', async () => {
+    const { w, eA, eB, ta } = await pair()
+    const seenOnB = () => eB.status.devices.find((d) => d.id === eA.config.deviceId)?.lastSeenAt
+    const before = seenOnB()
+    w.advance(60_000)
+    await eA.rename()
+    // The frame waits out the send gap after the head announced at open (A's timers are fired by hand).
+    for (let i = 0; i < 6 && seenOnB() !== w.now(); i++) {
+      await tick(60)
+      await ta.fire(250)
+    }
+    expect(await eventually(async () => seenOnB() === w.now())).toBe(true)
+    expect(before).toBeLessThan(w.now())
     stop(eA, eB)
   })
 

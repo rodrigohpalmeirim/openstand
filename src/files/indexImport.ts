@@ -7,7 +7,9 @@
  * the columns are positional: title;pages;artist;composer;album;genre;key;year. The pages cell uses the
  * page-order grammar ("12", "12-14", "12-13, 15"), 1-based, optionally shifted by a page offset.
  */
+import { terms } from '../library/browse/terms'
 import { parsePageOrder } from '../library/editor/pageOrder'
+import { settings } from '../state/settings'
 
 export interface IndexEntry {
   title: string
@@ -118,7 +120,7 @@ export function parseIndexCsv(text: string, opts: { pageCount?: number; offset?:
     i++
     skipBlank()
   }
-  if (i >= lines.length) return { ...res, error: 'No songs found in the CSV file' }
+  if (i >= lines.length) return { ...res, error: `No ${terms(settings()).songs} found in the CSV file` }
   const delim = opts.delimiter ?? detectDelimiter(lines[i])
   const head = splitCsvLine(lines[i], delim)
   const mapped = head.map(columnOf)
@@ -156,7 +158,7 @@ export function parseIndexCsv(text: string, opts: { pageCount?: number; offset?:
     }
     res.entries.push({ title, pages: r.refs.map((x) => x.page), fields })
   }
-  if (!res.entries.length && !res.error) res.error = res.warnings.length ? 'No valid rows in the CSV file' : 'No songs found in the CSV file'
+  if (!res.entries.length && !res.error) res.error = res.warnings.length ? 'No valid rows in the CSV file' : `No ${terms(settings()).songs} found in the CSV file`
   return res
 }
 

@@ -273,6 +273,21 @@ describe('S3Backend requests', () => {
     ])
   })
 
+  it('a web page answering 200 is not an empty bucket: the check fails at “List the bucket”', async () => {
+    const m = mockFetch(() => new Response('<!doctype html><html><body>Welcome</body></html>', { headers: { 'content-type': 'text/html' } }))
+    const b = new S3Backend(cfg, { fetch: m.fetch })
+    await expect(b.list('os1/')).rejects.toMatchObject({ code: 'unknown', providerCode: 'NotS3' })
+    const check = await b.check()
+    expect(check.ok).toBe(false)
+    expect(check.steps.map((s) => [s.id, s.ok])).toEqual([
+      ['reach', true],
+      ['cors', true],
+      ['auth', true],
+      ['list', false],
+    ])
+    expect(check.steps[3].detail).toBe('This address doesn’t look like S3 storage')
+  })
+
   it('aborts are passed through untouched', async () => {
     const m = mockFetch(() => new Response(null))
     const ac = new AbortController()

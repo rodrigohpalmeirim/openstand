@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { updateSong } from '../db/db'
+import { useTerms } from '../library/browse/terms'
 import { useSettings } from '../state/settings'
 import { Segmented, Slider, Textarea, Toggle } from '../ui/primitives'
 import type { PanelProps } from '../viewer/panels'
@@ -10,6 +11,7 @@ import { PanelBody, PanelButton, Row, Section } from './ui'
 export function NotesPanel({ song }: PanelProps) {
   const n = useSettings((st) => st.s.notes)
   const setIn = useSettings((st) => st.setIn)
+  const terms = useTerms()
   const [text, setText] = useState(song.notes)
   const [saved, setSaved] = useState(true)
   const pending = useRef<{ id: string; text: string } | null>(null)
@@ -48,7 +50,7 @@ export function NotesPanel({ song }: PanelProps) {
           placeholder="Reminders, cues, lyrics, setlist chat…"
           className="min-h-56 !bg-white/5 leading-snug"
           style={{ fontSize: n.fontSize }}
-          aria-label="Song notes"
+          aria-label={`${terms.Song} notes`}
         />
         <div className="mt-1 flex items-center justify-between text-xs text-white/45">
           <span>{saved ? 'Saved' : 'Saving…'}</span>
@@ -59,7 +61,7 @@ export function NotesPanel({ song }: PanelProps) {
       </div>
       <Section title="Popup">
         <div className="divide-y divide-white/10">
-          <Row label="Show when a song opens" hint="Only songs that have notes">
+          <Row label={`Show when a ${terms.song} opens`} hint={`Only ${terms.songs} that have notes`}>
             <Toggle checked={n.showOnLoad} onChange={(v) => setIn('notes', { showOnLoad: v })} />
           </Row>
           <Row label="Hide after">

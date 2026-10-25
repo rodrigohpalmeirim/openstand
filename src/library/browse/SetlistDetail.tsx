@@ -155,6 +155,7 @@ function EntryRow({
   menu: () => MenuItem[]
   onKeyMove: (to: number) => void
 }) {
+  const t = useTerms()
   const style = { transform: offset ? `translateY(${offset}px)` : undefined, transition: animate && !dragging ? 'transform 150ms ease' : undefined }
   const grip = (
     <button
@@ -211,11 +212,11 @@ function EntryRow({
       )}
     >
       {grip}
-      <span className="w-6 shrink-0 text-right text-sm font-semibold tabular-nums text-faint">{num}</span>
+      <span className="w-6 shrink-0 text-right text-sm font-semibold tabular-nums text-faint">{song ? num : ''}</span>
       <button type="button" className="flex min-w-0 flex-1 items-center gap-3 rounded-lg py-0.5 text-left" onClick={onOpen} disabled={!song}>
         {song ? <Thumb song={song} className="h-11 w-8" /> : <div className="h-11 w-8 rounded-md border border-dashed border-line" />}
         <div className="min-w-0 flex-1">
-          <div className={cx('truncate font-medium', !song && 'italic text-faint')}>{song?.title ?? 'Missing song (deleted)'}</div>
+          <div className={cx('truncate font-medium', !song && 'italic text-faint')}>{song?.title ?? `Missing ${t.song} (deleted)`}</div>
           {song && <div className="truncate text-sm text-muted">{songCaption(song, ['artists', 'composers'])}</div>}
           {e.note && (
             <div className="flex items-center gap-1 truncate text-xs font-medium text-accent">
@@ -285,7 +286,7 @@ export function SetlistDetail({ id }: { id: string }) {
   const current: Setlist = { ...sl, entries }
   const exists = (sid: string) => lib.byId.has(sid)
   const open = (i: number) => (loadEntire ? performSetlist(current, i, exists) : perform([entries[i].songId], 0, { setlistId: id }))
-  const labels = entries.map((e) => (e.isBreak ? `— ${e.breakLabel || 'Set break'} —` : (lib.byId.get(e.songId)?.title ?? 'Missing song')))
+  const labels = entries.map((e) => (e.isBreak ? `— ${e.breakLabel || 'Set break'} —` : (lib.byId.get(e.songId)?.title ?? `Missing ${t.song}`)))
 
   const addBreak = async (at = entries.length) => {
     const label = await promptDialog({ title: 'Add set break', label: 'Label', initial: 'Set break' })
@@ -413,7 +414,7 @@ export function SetlistDetail({ id }: { id: string }) {
         ) : (
           <div className="no-select relative">
             {entries.map((e, i) => {
-              if (!e.isBreak) num++
+              if (!e.isBreak && lib.byId.has(e.songId)) num++
               return (
                 <EntryRow
                   key={e.key}

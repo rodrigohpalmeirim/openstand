@@ -70,7 +70,9 @@ function RestoreDialog({ file, archive, onClose }: { file: File; archive: Opened
   const [mode, setMode] = useState<'replace' | 'merge'>('merge')
   const t = useTerms()
   const [conflict, setConflict] = useState<'newer' | 'keepBoth'>('newer')
-  const [withSettings, setWithSettings] = useState(true)
+  // Settings come along by default only when replacing everything; a merge shouldn't change preferences.
+  const [settingsChoice, setWithSettings] = useState<boolean | null>(null)
+  const withSettings = settingsChoice ?? mode === 'replace'
   const [result, setResult] = useState<RestoreResult | null>(null)
   const { busy, progress } = useBackupJob()
   const m = archive.manifest
@@ -82,8 +84,8 @@ function RestoreDialog({ file, archive, onClose }: { file: File; archive: Opened
       const ok = await confirmDialog({
         title: 'Replace your library?',
         message: synced
-          ? 'This replaces the library on all your synced devices: all songs, setlists and annotations are replaced by the backup. This cannot be undone.'
-          : 'All songs, setlists and annotations on this device are replaced by the backup. This cannot be undone.',
+          ? `This replaces the library on all your synced devices: all ${t.songs}, setlists and annotations are replaced by the backup. This cannot be undone.`
+          : `All ${t.songs}, setlists and annotations on this device are replaced by the backup. This cannot be undone.`,
         confirmLabel: 'Replace library',
         danger: true,
       })
@@ -124,7 +126,7 @@ function RestoreDialog({ file, archive, onClose }: { file: File; archive: Opened
         <div className="rounded-xl border border-line bg-surface-2 px-4 py-3 text-sm">
           <div className="truncate font-medium">{file.name}</div>
           <div className="mt-0.5 text-muted">
-            {new Date(m.createdAt).toLocaleString()} · {t.count(m.counts.songs)} · {m.counts.setlists} setlists · {fmtBytes(m.counts.bytes)}
+            {new Date(m.createdAt).toLocaleString()} · {t.count(m.counts.songs)} · {plural(m.counts.setlists, 'setlist')} · {fmtBytes(m.counts.bytes)}
             {m.library ? ` · library “${m.library}”` : ''}
           </div>
         </div>
@@ -134,7 +136,7 @@ function RestoreDialog({ file, archive, onClose }: { file: File; archive: Opened
             {result.songsUpdated > 0 && <li>{plural(result.songsUpdated, t.song)} updated from the backup</li>}
             {result.songsKept > 0 && <li>{plural(result.songsKept, t.song)} kept as they are on this device</li>}
             <li>{plural(result.setlists, 'setlist')} restored</li>
-            {result.missingFiles > 0 && <li className="text-warn">{result.missingFiles} files were missing from the backup</li>}
+            {result.missingFiles > 0 && <li className="text-warn">{result.missingFiles === 1 ? '1 file was' : `${result.missingFiles} files were`} missing from the backup</li>}
             {result.settingsRestored && <li>Settings restored</li>}
           </ul>
         ) : busy ? (
@@ -153,13 +155,13 @@ function RestoreDialog({ file, archive, onClose }: { file: File; archive: Opened
             </Field>
             <p className="-mt-2 text-sm text-muted">
               {mode === 'merge'
-                ? 'Adds songs and setlists from the backup. Songs already on this device are matched by identity.'
+                ? `Adds ${t.songs} and setlists from the backup. ${t.Songs} that came from the same library count as the same ${t.song}; ${t.songs} added separately on each device may appear twice.`
                 : synced
                   ? 'Deletes the library on this device and on all your synced devices, and restores the backup exactly.'
                   : 'Deletes this device’s library and restores the backup exactly.'}
             </p>
             {mode === 'merge' && (
-              <Field label="When a song exists on both">
+              <Field label={`When a ${t.song} exists on both`}>
                 <Segmented
                   value={conflict}
                   onChange={setConflict}
@@ -182,6 +184,7 @@ function LastBackup() {
   const lastAt = useBackupJob((j) => j.lastAt)
   const reminderDays = useSettings((s) => s.s.backup.reminderDays)
   const synced = useLibSync((st) => st.configured)
+  const t = useTerms()
   const d = lastAt ? daysSince(lastAt) : undefined
   // With library sync on, the storage already holds a copy, so an old (or missing) export isn't a warning.
   const stale = !synced && (d === undefined || (reminderDays > 0 && d >= reminderDays))
@@ -196,7 +199,7 @@ function LastBackup() {
         {synced ? (
           <div className="text-xs text-muted">
             Your library is synced to your storage and your other devices. An export is an independent copy, handy as an extra backup or to move
-            songs to another library.
+            {t.songs} to another library.
           </div>
         ) : (
           d === undefined && <div className="text-xs text-muted">Your music lives only in this browser. Export a copy and keep it somewhere safe.</div>
@@ -208,6 +211,7 @@ function LastBackup() {
 
 /** Export & import section of the settings screen. */
 export function BackupSettings() {
+  const t = useTerms()
   const b = useSettings((s) => s.s.backup)
   const synced = useLibSync((st) => st.configured)
   const setIn = useSettings((s) => s.setIn)
@@ -241,7 +245,7 @@ export function BackupSettings() {
 
   return (
     <div className="grid gap-8">
-      <Section title="Export library" icon={<HardDriveDownload className="size-4" />} description={`One ${BACKUP_EXT} file with every song, file, setlist and annotation.`}>
+      <Section title="Export library" icon={<HardDriveDownload className="size-4" />} description={`One ${BACKUP_EXT} file with every ${t.song}, file, setlist and annotation.`}>
         <LastBackup />
         {busy === 'backup' ? (
           <ProgressBar progress={progress} />
@@ -347,7 +351,7 @@ export function BackupSettings() {
         </div>
       </Section>
 
-      <Section title="Song packages" icon={<PackageOpen className="size-4" />} description={`Import ${PACKAGE_EXT} files shared by other OpenStand users. Export them from a song or setlist menu.`}>
+      <Section title={`${t.Song} packages`} icon={<PackageOpen className="size-4" />} description={`Import ${PACKAGE_EXT} files shared by other OpenStand users. Export them from a ${t.song} or setlist menu.`}>
         <div className="flex items-center gap-3">
           <Button onClick={() => pkgInput.current?.click()} disabled={importing}>
             {importing && <Loader2 className="size-4 animate-spin" />}

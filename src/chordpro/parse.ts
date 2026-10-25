@@ -2,7 +2,7 @@
  * ChordPro parser (ChordPro 6 directive set incl. aliases, selectors, attributes, %{meta}
  * substitution, ABC/SVG/textblock environments) and plain-text chord sheet converter.
  */
-import { isChordLine, isChordToken, lineTokens, type NoteNaming } from '../music/chords'
+import { formatKey, isChordLine, isChordToken, lineTokens, makeTransposer, type NoteNaming } from '../music/chords'
 import { parseDefine, type ChordDefinition } from '../music/diagrams'
 import { hasMarkup, parseMarkup, stripMarkup, type Run, type TagStack } from './markup'
 
@@ -69,6 +69,10 @@ export interface ParseOptions {
   instrument?: string
   /** Optional user name, also accepted as a selector. */
   user?: string
+  /** Semitones the song is shown transposed by, so %{key} gives the key actually played. */
+  transpose?: number
+  /** Note names the file's chords are written in (overridden by {meta: notation …}). */
+  naming?: NoteNaming
 }
 
 const ALIASES: Record<string, string> = {
@@ -165,6 +169,52 @@ export function parseLyricLine(line: string): ChordSegment[] {
   const tail = line.slice(last)
   if (tail || pendingChord !== undefined) segs.push({ chord: pendingChord, text: tail })
   return segs
+}
+
+/**
+ * Group a lyric line into pieces that must stay on one row when it wraps: line breaks are only
+ * allowed after whitespace, so a chord stays glued to the word (or word part) under it.
+ */
+export function lyricGroups(segments: ChordSegment[]): ChordSegment[][] {
+  const groups: ChordSegment[][] = []
+  let cur: ChordSegment[] = []
+  let breakAfter = false
+  const add = (p: ChordSegment) => {
+    if (breakAfter && cur.length) {
+      groups.push(cur)
+      cur = []
+    }
+    cur.push(p)
+    // A chord over no text is shown with a space after it.
+    breakAfter = /\s$/.test(p.text) || (!p.text && !!p.chord)
+  }
+  const splitWords = (t: string) => t.split(/(?<=\s)(?=\S)/)
+  for (const seg of segments) {
+    let parts: ChordSegment[]
+    if (seg.runs) {
+      parts = []
+      let runs: Run[] = []
+      let endsWs = false
+      for (const r of seg.runs)
+        splitWords(r.text).forEach((t, i) => {
+          if ((i > 0 || (endsWs && /^\S/.test(t))) && runs.length) {
+            parts.push({ text: runs.map((x) => x.text).join(''), runs })
+            runs = []
+          }
+          runs.push({ text: t, style: r.style })
+          if (t) endsWs = /\s$/.test(t)
+        })
+      if (runs.length) parts.push({ text: runs.map((x) => x.text).join(''), runs })
+    } else parts = splitWords(seg.text).map((text) => ({ text }))
+    // Leading spaces belong with the first word (the chord sits over them).
+    if (parts.length > 1 && !parts[0].text.trim()) {
+      const [a, b] = parts.splice(0, 2)
+      parts.unshift({ text: a.text + b.text, runs: a.runs && b.runs ? [...a.runs, ...b.runs] : undefined })
+    }
+    parts.forEach((p, i) => add({ ...p, chord: i === 0 ? seg.chord : undefined }))
+  }
+  if (cur.length) groups.push(cur)
+  return groups
 }
 
 /** Split a directive value into key="value" attributes and the remaining plain text. */
@@ -307,11 +357,37 @@ export function parseChordPro(src: string, opts: ParseOptions = {}): ChordProSon
   const addMeta = (k: string, v: string) => {
     ;(song.meta[k] ??= []).push(v)
   }
+  const lines = src.replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n').split('\n')
+  // %{name} may refer to metadata set further down ({subtitle: by %{artist}} before {artist}), so
+  // collect the plain metadata directives up front.
+  const ahead: Record<string, string[]> = {}
+  let aheadTranspose = 0
+  for (const l of lines) {
+    const m = /^\s*\{\s*([A-Za-z_]\w*)\s*(?:[:\s]\s*(.*?))?\s*\}\s*$/.exec(l)
+    if (!m) continue
+    let k = ALIASES[m[1].toLowerCase()] ?? m[1].toLowerCase()
+    let v = m[2] ?? ''
+    if (k === 'meta') {
+      const mm = /^(\S+)\s*(.*)$/.exec(v)
+      if (!mm) continue
+      k = ALIASES[mm[1].toLowerCase()] ?? mm[1].toLowerCase()
+      v = mm[2]
+    }
+    if (META_KEYS.has(k)) (ahead[k] ??= []).push(v)
+    else if (k === 'transpose') aheadTranspose = Number(v) || 0
+  }
   const lookup = (name: string) => {
     if (name === 'instrument' || name === 'instrument.type') return opts.instrument ?? 'guitar'
     if (name === 'user' || name === 'user.name') return opts.user
-    const v = song.meta[name]
-    return v?.length ? v.join(', ') : undefined
+    const v = song.meta[name]?.length ? song.meta[name] : ahead[name]
+    if (!v?.length) return undefined
+    const semis = (opts.transpose ?? 0) + aheadTranspose
+    if (name === 'key' && semis) {
+      const naming = song.notation?.source ?? opts.naming ?? 'english'
+      const k = makeTransposer({ key: v[0], semitones: semis, naming }).key
+      if (k) return formatKey(k, naming)
+    }
+    return v.join(', ')
   }
 
   const directive = (name: string, value: string) => {
@@ -403,7 +479,6 @@ export function parseChordPro(src: string, opts: ParseOptions = {}): ChordProSon
     // Unknown directives (x_*, pagetype, grid…) are ignored on purpose.
   }
 
-  const lines = src.replace(/^﻿/, '').replace(/\r\n?/g, '\n').split('\n')
   for (let li = 0; li < lines.length; li++) {
     let line = lines[li].replace(/\s+$/, '')
     const raw = current.kind === 'abc' || current.kind === 'svg'
@@ -516,6 +591,8 @@ export function looksLikeChordPro(src: string): boolean {
 }
 
 const NEUTRAL = /^(-+|\|+|\|[.:]|:\||:\|:|%+|\/|:|\.\.\.)$/
+/** A line that only says "no chord". */
+const NO_CHORD = /^\s*\(?N\.?C\.?\)?\s*$/
 
 /**
  * Convert a plain-text "chords over lyrics" sheet into ChordPro, merging each chord line into the
@@ -527,11 +604,16 @@ export function textToChordPro(src: string, naming: NoteNaming = 'english'): str
   const wrap = (tok: string) => (NEUTRAL.test(tok) ? tok : isChordToken(tok, naming) ? `[${tok.replace(/^\[|\]$/g, '')}]` : `[*${tok}]`)
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i].replace(/\t/g, '    ').replace(/\s+$/, '')
-    if (isChordLine(line, naming)) {
+    if (isChordLine(line, naming) || NO_CHORD.test(line)) {
       const next = lines[i + 1]?.replace(/\t/g, '    ').replace(/\s+$/, '')
-      if (next !== undefined && next.trim() && !isChordLine(next, naming) && !isHeading(next) && !/^\s*#/.test(next)) {
+      if (next !== undefined && next.trim() && !isChordLine(next, naming) && !NO_CHORD.test(next) && !isHeading(next) && !/^\s*#/.test(next)) {
         out.push(mergeChordLine(line, escapeLyrics(next), wrap))
         i++
+      } else if (lineTokens(line).some((t) => BAR_RE.test(t.text))) {
+        // A bar chart ("| E | B/D# | A |") becomes a grid so the bars stay between the chords.
+        if (out.at(-1) === '{end_of_grid}') out.pop()
+        else out.push('{start_of_grid label=""}')
+        out.push(line.trim(), '{end_of_grid}')
       } else {
         out.push(line.replace(/\S+/g, wrap))
       }

@@ -5,17 +5,19 @@ import { AbcView } from '../abc/AbcView'
 import { textContainerStyle } from '../chordpro/render'
 import { db, recordPlay, updateSong } from '../db/db'
 import type { DisplayMode, Song } from '../db/schema'
+import { terms } from '../library/browse/terms'
 import { BlobPending } from '../libsync/ui/BlobPending'
-import { useSettings } from '../state/settings'
+import { settings, useSettings } from '../state/settings'
 import { useViewer } from '../state/viewer'
 import { toast } from '../ui/primitives'
 import { registerActions, runAction } from './actions'
 import { setViewerApi, ZOOM_PREVIEW_ATTR } from './api'
 import { askGoToPage } from './askPage'
+import { MODE_LABELS } from './DisplayPanel'
 import { emit } from './events'
 import { exitFullscreen, isFullscreen, requestFullscreen } from './fullscreen'
 import { useKeyBindings, useStageGestures } from './input'
-import { computeStops, firstPageOf, fitPage, fitSpread, prefetchPages, scrollPageSize, stopForPage, type Box, type Stop } from './layout'
+import { anchorOffset, computeStops, firstPageOf, fitPage, fitSpread, pageAtOffset, prefetchPages, scrollPageSize, stopForPage, stripAnchor, type Box, type Stop, type StripAnchor, type StripItem } from './layout'
 import { LinkMarkers } from './LinkMarkers'
 import { PAPER, PageView } from './PageView'
 import { TEXT_BLOCK_STYLE, TEXT_PAGE_PADDING } from './textPagination'
@@ -129,10 +131,15 @@ export function Viewer() {
   // The layout text pages were paginated at (annotations on them only line up at the same layout).
   const firstText = pages.find((p) => p.type === 'text')
   const textCols = firstText?.type === 'text' ? firstText.columns : 0
+  // ABC music scales with the page width, so its annotations depend on the page box too.
+  const hasAbc = pages.some((p) => p.type === 'abc')
   const fontScale = song?.text?.fontScale ?? 1
   const layoutSig = useMemo<TextLayoutSig | null>(
-    () => (textCols ? { zoom: textZoom * fontScale, columns: textCols, width: Math.round(textBox.width), height: Math.round(textBox.height), transpose } : null),
-    [textCols, textZoom, fontScale, textBox, transpose],
+    () =>
+      textCols || hasAbc
+        ? { zoom: textZoom * fontScale, columns: textCols || 1, width: Math.round(textBox.width), height: Math.round(textBox.height), transpose, ...(hasAbc ? { abc: true } : {}) }
+        : null,
+    [textCols, hasAbc, textZoom, fontScale, textBox, transpose],
   )
   const stops = useMemo(
     () => computeStops(pages.length, mode, s.display.halfPageSplit, s.display.twoPageTurn),
@@ -177,6 +184,8 @@ export function Viewer() {
   /* ------------------------------------------------------------ navigation */
 
   const [direction, setDirection] = useState<1 | -1>(1)
+  /** Set when turning back: the page that comes up taller than the screen shows its end, read last. */
+  const enterAtEnd = useRef(false)
   /** `toEnd`: turning back past page one lands on the previous song's last page. */
   const goSong = useCallback((delta: number, toEnd = false) => {
     const v = useViewer.getState()
@@ -186,6 +195,7 @@ export function Viewer() {
       return false
     }
     setDirection(delta > 0 ? 1 : -1)
+    enterAtEnd.current = toEnd
     v.goSong(next, toEnd ? -1 : 0)
     return true
   }, [])
@@ -196,7 +206,9 @@ export function Viewer() {
     const horizontal = mode === 'horizontalScroll'
     const max = horizontal ? el.scrollWidth - el.clientWidth : el.scrollHeight - el.clientHeight
     const cur = horizontal ? el.scrollLeft : el.scrollTop
-    if ((dir > 0 && cur >= max - 2) || (dir < 0 && cur <= 2)) return false
+    // A page that overflows by a sliver (its margin) turns at once instead of costing a press.
+    const slack = mode === 'verticalScroll' || horizontal ? 2 : Math.min(48, el.clientHeight * 0.06)
+    if ((dir > 0 && cur >= max - slack) || (dir < 0 && cur <= slack)) return false
     const step = (horizontal ? el.clientWidth : el.clientHeight) * 0.85 * dir
     el.scrollBy({ [horizontal ? 'left' : 'top']: step, behavior: 'smooth' })
     return true
@@ -209,36 +221,35 @@ export function Viewer() {
     if (autoHide && v.toolbar && !v.panel && !v.annotating) setV({ toolbar: false })
   }, [autoHide, setV])
 
+  // Whatever overflows the screen (scroll modes, fit width or height, zoom, in any layout) is read to
+  // its end before the page turns; scrollStep does nothing when nothing overflows.
   const next = useCallback((source?: string) => {
     hideChrome()
-    if (!paged || (fit === 'width' && zoom === 1 && mode === 'single') || zoom > 1) {
-      if (scrollStep(1)) return
-    }
+    if (scrollStep(1)) return
     const v = useViewer.getState()
     const max = paged ? stops.length - 1 : pages.length - 1
     if (paged && v.position < max) {
       setDirection(1)
       v.setPosition(v.position + 1)
     } else if (s.pageTurn.pedalStopsAtSongEnd && (source === 'key' || source === 'midi' || source === 'face')) {
-      toast('End of song — tap to continue')
+      toast(`End of ${terms(settings()).song} — tap to continue`)
     } else if (s.pageTurn.continueToNextSong) goSong(1)
-    else toast('End of song')
-  }, [paged, fit, zoom, mode, scrollStep, stops.length, pages.length, s.pageTurn.continueToNextSong, s.pageTurn.pedalStopsAtSongEnd, goSong, hideChrome])
+    else toast(`End of ${terms(settings()).song}`)
+  }, [paged, scrollStep, stops.length, pages.length, s.pageTurn.continueToNextSong, s.pageTurn.pedalStopsAtSongEnd, goSong, hideChrome])
 
   const prev = useCallback((source?: string) => {
     hideChrome()
-    if (!paged || (fit === 'width' && zoom === 1 && mode === 'single') || zoom > 1) {
-      if (scrollStep(-1)) return
-    }
+    if (scrollStep(-1)) return
     const v = useViewer.getState()
     if (paged && v.position > 0) {
       setDirection(-1)
+      enterAtEnd.current = true
       v.setPosition(v.position - 1)
     } else if (s.pageTurn.pedalStopsAtSongEnd && (source === 'key' || source === 'midi' || source === 'face')) {
-      toast('Start of song')
+      toast(`Start of ${terms(settings()).song}`)
     } else if (s.pageTurn.backToPrevSong) goSong(-1, true)
-    else toast('Start of song')
-  }, [paged, fit, zoom, mode, scrollStep, s.pageTurn.backToPrevSong, s.pageTurn.pedalStopsAtSongEnd, goSong, hideChrome])
+    else toast(`Start of ${terms(settings()).song}`)
+  }, [paged, scrollStep, s.pageTurn.backToPrevSong, s.pageTurn.pedalStopsAtSongEnd, goSong, hideChrome])
 
   const goToPage = useCallback(
     (page: number) => {
@@ -269,10 +280,16 @@ export function Viewer() {
     }
   })
 
-  // When a page turns in fit-width/zoomed mode, start at the top of the new page.
+  // When a page turns in fit-width/zoomed mode, start at the top of the new page (its end when turning back).
+  // A position of -1 ("last page of the song") is still to be resolved once the song is laid out.
+  const unresolved = position < 0
   useEffect(() => {
-    if (paged) scrollRef.current?.scrollTo({ top: direction > 0 ? 0 : 0, left: 0 })
-  }, [pos, paged, direction])
+    if (!paged || unresolved) return
+    const el = scrollRef.current
+    const end = enterAtEnd.current
+    enterAtEnd.current = false
+    el?.scrollTo({ top: end ? el.scrollHeight : 0, left: 0 })
+  }, [pos, paged, songId, unresolved])
 
   // Scroll modes: the strip reports the page in view.
   const onStripPage = useCallback((page: number) => {
@@ -294,6 +311,14 @@ export function Viewer() {
   // around the old viewport.
   const zoomRef = useRef(zoom)
   zoomRef.current = zoom
+  /** Performance lock blocks zooming and layout changes; says so at most every couple of seconds (wheel and pinch stream events). */
+  const lockNotice = useRef(0)
+  const locked = useCallback(() => {
+    if (!settings().display.performanceLock) return false
+    if (Date.now() - lockNotice.current > 2000) toast('Performance lock is on')
+    lockNotice.current = Date.now()
+    return true
+  }, [])
   const preview = useRef<ZoomPreview | null>(null)
   /** Set when a commit changes the zoom; consumed by the layout effect below once the new size is laid out. */
   const zoomFocus = useRef<ZoomPreview | null>(null)
@@ -317,7 +342,7 @@ export function Viewer() {
     const c = content.getBoundingClientRect()
     const from = zoomRef.current
     const at = { fx: clientX - r.left, fy: clientY - r.top, dx: 0, dy: 0, sx: el.scrollLeft, sy: el.scrollTop, ox: clientX - c.left, oy: clientY - c.top }
-    const p: ZoomPreview = { kind, el, content, from, z: from, ...at, raf: 0, timer: 0, anchor: zoomAnchor(content, clientX, clientY) }
+    const p: ZoomPreview = { kind, el, content, from, z: from, ...at, raf: 0, timer: 0, anchor: zoomAnchor(content, clientX, clientY), bounds: pageBounds(el, content, mode === 'verticalScroll') }
     // Scaling the content down shrinks the scroll range, and the browser would clamp the scroll offset
     // mid-gesture. So scroll to 0,0 and fold the offset into the transform (in the same frame).
     el.setAttribute(ZOOM_PREVIEW_ATTR, '')
@@ -394,9 +419,18 @@ export function Viewer() {
   useStageGestures(stageRef, {
     enabled: !annotating,
     pinchOnly: annotating,
+    fingerTurns: annotating && s.annotations.stylusOnly,
     zoomed: zoom > 1.01,
     onPinch: (scale, cx, cy, sx, sy) => {
       if (pinchDead.current) return
+      if (settings().display.performanceLock) {
+        // Jitter of a two/three-finger tap isn't a pinch: only a real one earns the lock notice.
+        if (Math.abs(scale - 1) > 0.05 || Math.hypot(cx - sx, cy - sy) > 24) {
+          locked()
+          pinchDead.current = true
+        }
+        return
+      }
       let p = preview.current
       if (p && p.kind !== 'pinch') {
         commitPreview()
@@ -422,6 +456,7 @@ export function Viewer() {
     const onWheel = (e: WheelEvent) => {
       if (!e.ctrlKey && !e.metaKey) return
       e.preventDefault()
+      if (locked()) return
       let p = preview.current
       if (p && p.kind !== 'wheel') return
       p ??= startPreview('wheel', e.clientX, e.clientY)
@@ -435,7 +470,7 @@ export function Viewer() {
     }
     el.addEventListener('wheel', onWheel, { passive: false })
     return () => el.removeEventListener('wheel', onWheel)
-  }, [startPreview, updatePreview, commitPreview])
+  }, [startPreview, updatePreview, commitPreview, locked])
 
   useEffect(
     () =>
@@ -465,6 +500,7 @@ export function Viewer() {
           const v = useViewer.getState()
           if (paged && v.position <= 0) {
             setDirection(-1)
+            enterAtEnd.current = true
             setV({ position: stops.length - 1 })
           } else prev()
         },
@@ -474,8 +510,8 @@ export function Viewer() {
         scrollUp: (src) => scrollStep(-1) || prev(src),
         nextSong: () => goSong(1),
         prevSong: () => goSong(-1),
-        zoomIn: () => setZoomNow((z) => Math.min(4, z * 1.25)),
-        zoomOut: () => setZoomNow((z) => Math.max(1, z / 1.25)),
+        zoomIn: () => locked() || setZoomNow((z) => Math.min(4, z * 1.25)),
+        zoomOut: () => locked() || setZoomNow((z) => Math.max(1, z / 1.25)),
         resetZoom: () => setZoomNow(() => 1),
         toggleToolbar: () => setV({ toolbar: !useViewer.getState().toolbar }),
         toggleAnnotations: () => setV({ hideAnnotations: !useViewer.getState().hideAnnotations }),
@@ -490,15 +526,17 @@ export function Viewer() {
           setV({ position: r, linkReturn: v.linkReturn.slice(0, -1) })
           if (!paged) goToPage(r)
         },
-        textBigger: () => setV({ textZoom: Math.min(3, useViewer.getState().textZoom * 1.1) }),
-        textSmaller: () => setV({ textZoom: Math.max(0.4, useViewer.getState().textZoom / 1.1) }),
+        // Text size is kept per song, like columns and capo.
+        textBigger: () => !locked() && song && updateSong(song.id, { text: { ...song.text, fontScale: Math.min(3, (song.text?.fontScale ?? 1) * 1.1) } }),
+        textSmaller: () => !locked() && song && updateSong(song.id, { text: { ...song.text, fontScale: Math.max(0.4, (song.text?.fontScale ?? 1) / 1.1) } }),
         transposeUp: () => setV({ transpose: { ...useViewer.getState().transpose, [songId]: (useViewer.getState().transpose[songId] ?? 0) + 1 } }),
         transposeDown: () => setV({ transpose: { ...useViewer.getState().transpose, [songId]: (useViewer.getState().transpose[songId] ?? 0) - 1 } }),
         cycleDisplayMode: () => {
+          if (locked()) return
           const order: DisplayMode[] = ['single', 'double', 'halfPage', 'verticalScroll']
           const nextMode = order[(order.indexOf(mode) + 1) % order.length]
           if (song) updateSong(song.id, { display: { ...song.display, mode: nextMode } })
-          toast(`Display: ${nextMode}`)
+          toast(`Display: ${MODE_LABELS[nextMode]}`)
         },
         goToPage: () => askGoToPage(pages.length, currentPage, goToPage),
         showBookmarks: () => setV({ panel: 'bookmarks', toolbar: true }),
@@ -517,7 +555,7 @@ export function Viewer() {
           else v.close()
         },
       }),
-    [next, prev, goSong, paged, stops.length, pages.length, goToPage, scrollStep, setV, s.display.performanceLock, s.display.twoPageTurn, songId, mode, song, currentPage, setZoomNow],
+    [next, prev, goSong, paged, stops.length, pages.length, goToPage, scrollStep, setV, s.display.performanceLock, s.display.twoPageTurn, songId, mode, song, currentPage, setZoomNow, locked],
   )
 
   useEffect(() => {
@@ -566,6 +604,11 @@ export function Viewer() {
 
   if (!songId) return null
 
+  // A scroller lets its children pan again whatever its ancestors say, so the stage's touch-action
+  // doesn't reach the pages: their wrappers repeat it. Panning is left only along the axis that can
+  // overflow, so swipes the other way reach the gesture handler instead of scrolling (pointercancel).
+  const contentTouch: CSSProperties['touchAction'] =
+    zoom > 1 ? 'pan-x pan-y' : !paged ? (mode === 'horizontalScroll' ? 'pan-x' : 'pan-y') : fit === 'width' ? 'pan-y' : fit === 'height' ? 'pan-x' : 'none'
   const night = s.display.nightMode
   const stageBg = night ? '#000' : 'var(--os-stage, #1a1a1c)'
   const ctx: PageCtx = {
@@ -587,7 +630,7 @@ export function Viewer() {
       <div ref={stageRef} className="relative min-h-0 flex-1 overflow-hidden" style={{ background: stageBg, touchAction: zoom > 1 || !paged || fit !== 'page' ? 'pan-x pan-y' : 'none' }}>
         {song && pages.length > 0 && box.width > 0 && (
           paged ? (
-            <div ref={scrollRef} className="absolute inset-x-0 bottom-0 overflow-auto" style={{ scrollbarWidth: 'none', top: topInset }}>
+            <div ref={scrollRef} className="absolute inset-x-0 bottom-0 overflow-auto" style={{ scrollbarWidth: 'none', top: topInset, touchAction: contentTouch }}>
               <PagedStop
                 key={`${songId}:${pos}`}
                 stop={stops[pos]}
@@ -599,6 +642,7 @@ export function Viewer() {
                 ctx={ctx}
                 direction={direction}
                 transition={s.display.transition}
+                touchAction={contentTouch}
               />
               {/* Pre-render neighbours off-screen so turns are instant. */}
               <Prefetch stops={stops} pos={pos} pages={pages} box={box} fit={fit} gap={gap} />
@@ -617,11 +661,12 @@ export function Viewer() {
               horizontal={mode === 'horizontalScroll'}
               topPad={barH}
               scrollPad={toolbar || annotating ? barH : 0}
+              touchAction={contentTouch}
             />
           )
         )}
         {song && !loading && pages.length === 0 && (
-          <div className="absolute inset-0 flex items-center justify-center text-sm text-white/60">This song has no files.</div>
+          <div className="absolute inset-0 flex items-center justify-center text-sm text-white/60">This {terms(s).song} has no files.</div>
         )}
         {(!song || loading) && pages.length === 0 && (
           <div className="absolute inset-0 flex items-center justify-center">
@@ -688,6 +733,50 @@ interface ZoomPreview {
   raf: number
   timer: number
   anchor: ZoomAnchor | null
+  /** Where the pages are, in the scroller's unscrolled coordinates, and the viewport size (see pageBounds). */
+  bounds: PageBounds
+}
+
+interface PageBounds {
+  x0: number
+  x1: number
+  y0: number
+  y1: number
+  cw: number
+  ch: number
+  /** The vertical strip is never centred vertically: it starts at its top padding and ends `padEnd` above the bottom. */
+  strip: boolean
+  padEnd: number
+}
+
+function pageBounds(el: HTMLElement, content: HTMLElement, strip: boolean): PageBounds {
+  const r = el.getBoundingClientRect()
+  const padEnd = strip ? parseFloat(getComputedStyle(el).paddingBottom) || 0 : 0
+  const b = { x0: Infinity, x1: -Infinity, y0: Infinity, y1: -Infinity, cw: el.clientWidth, ch: el.clientHeight, strip, padEnd }
+  for (const child of content.children) {
+    const c = child.getBoundingClientRect()
+    if (c.width < 1 || c.height < 1) continue
+    b.x0 = Math.min(b.x0, c.left - r.left + el.scrollLeft)
+    b.x1 = Math.max(b.x1, c.right - r.left + el.scrollLeft)
+    b.y0 = Math.min(b.y0, c.top - r.top + el.scrollTop)
+    b.y1 = Math.max(b.y1, c.bottom - r.top + el.scrollTop)
+  }
+  return b
+}
+
+/**
+ * Shift needed to put the scaled pages where the layout will put them once the zoom commits: centred
+ * when smaller than the viewport, else with no gap at either edge (the scroll offset gets clamped).
+ * `f` is the focus in unscrolled coordinates, `t` the translation so far.
+ */
+function boundsShift(lo: number, hi: number, view: number, f: number, k: number, t: number, strip?: { padEnd: number }): number {
+  if (!Number.isFinite(lo)) return 0
+  const left = f + (lo - f) * k + t
+  const size = (hi - lo) * k
+  const target = strip
+    ? lo + size + strip.padEnd <= view ? lo : Math.min(lo, Math.max(view - strip.padEnd - size, left))
+    : size <= view ? (view - size) / 2 : Math.min(0, Math.max(view - size, left))
+  return target - left
 }
 
 const clampZoom = (z: number) => Math.max(1, Math.min(4, z))
@@ -697,8 +786,14 @@ const clampZoom = (z: number) => Math.max(1, Math.min(4, z))
  * translating by the old scroll offset puts it back under the start point, and the pan moves it along.
  */
 function paintZoomTransform(p: ZoomPreview) {
+  const k = p.z / p.from
+  const b = p.bounds
+  const tx = p.dx - p.sx
+  const ty = p.dy - p.sy
+  const x = tx + boundsShift(b.x0, b.x1, b.cw, p.fx + p.sx, k, tx)
+  const y = ty + boundsShift(b.y0, b.y1, b.ch, p.fy + p.sy, k, ty, b.strip ? b : undefined)
   p.content.style.transformOrigin = `${p.ox}px ${p.oy}px`
-  p.content.style.transform = `translate(${p.dx - p.sx}px, ${p.dy - p.sy}px) scale(${p.z / p.from})`
+  p.content.style.transform = `translate(${x}px, ${y}px) scale(${k})`
 }
 
 function clearZoomTransform(p: ZoomPreview) {
@@ -860,7 +955,7 @@ function stopBoxes(stop: Stop, pages: DisplayPage[], box: Box, fit: 'page' | 'wi
   return fitSpread(stop.pages.map((i) => pages[i].aspect), box, fit, gap).map(z)
 }
 
-function PagedStop({ stop, pages, box, fit, zoom, gap, ctx, direction, transition }: { stop: Stop | undefined; pages: DisplayPage[]; box: Box; fit: 'page' | 'width' | 'height'; zoom: number; gap: number; ctx: PageCtx; direction: 1 | -1; transition: string }) {
+function PagedStop({ stop, pages, box, fit, zoom, gap, ctx, direction, transition, touchAction }: { stop: Stop | undefined; pages: DisplayPage[]; box: Box; fit: 'page' | 'width' | 'height'; zoom: number; gap: number; ctx: PageCtx; direction: 1 | -1; transition: string; touchAction: CSSProperties['touchAction'] }) {
   if (!stop) return null
   const anim =
     transition === 'slide' ? (direction > 0 ? 'os-turn-next' : 'os-turn-prev') : transition === 'fade' ? 'os-turn-fade' : transition === 'curl' ? (direction > 0 ? 'os-turn-curl' : 'os-turn-prev') : ''
@@ -870,7 +965,7 @@ function PagedStop({ stop, pages, box, fit, zoom, gap, ctx, direction, transitio
     <div
       data-zoom-content
       className={`flex items-center justify-center ${anim}`}
-      style={{ minWidth: '100%', minHeight: '100%', width: total.width, height: total.height, gap, margin: '0 auto' }}
+      style={{ minWidth: '100%', minHeight: '100%', width: total.width, height: total.height, gap, margin: '0 auto', touchAction }}
     >
       {stop.kind === 'spread' ? (
         stop.pages.map((pi, i) => <DisplayPageView key={pages[pi].key} dp={pages[pi]} index={pi} size={sizes[i]} ctx={ctx} />)
@@ -901,23 +996,46 @@ function Prefetch({ stops, pos, pages, box, fit, gap }: { stops: Stop[]; pos: nu
   )
 }
 
-function ScrollStrip({ scrollRef, pages, box, fit, zoom, gap, ctx, horizontal, onPage, topPad, scrollPad }: { scrollRef: React.RefObject<HTMLDivElement | null>; pages: DisplayPage[]; box: Box; fit: 'page' | 'width' | 'height'; zoom: number; gap: number; ctx: PageCtx; horizontal: boolean; onPage: (page: number) => void; topPad: number; scrollPad: number }) {
+function stripItems(el: HTMLElement, horizontal: boolean): StripItem[] {
+  return [...el.querySelectorAll<HTMLElement>('[data-page]')].map((it) => ({
+    page: Number(it.dataset.page),
+    start: horizontal ? it.offsetLeft : it.offsetTop,
+    size: horizontal ? it.offsetWidth : it.offsetHeight,
+  }))
+}
+
+function ScrollStrip({ scrollRef, pages, box, fit, zoom, gap, ctx, horizontal, onPage, topPad, scrollPad, touchAction }: { scrollRef: React.RefObject<HTMLDivElement | null>; pages: DisplayPage[]; box: Box; fit: 'page' | 'width' | 'height'; zoom: number; gap: number; ctx: PageCtx; horizontal: boolean; onPage: (page: number) => void; topPad: number; scrollPad: number; touchAction: CSSProperties['touchAction'] }) {
   const [visible, setVisible] = useState<Set<number>>(() => new Set([0, 1, 2]))
+  // The reading position, kept across stage resizes (rotation, window resize): the page at the leading
+  // edge and how far into it. Not updated while the scroller has a size the pages aren't laid out for
+  // yet, when the browser may clamp the offset.
+  const anchor = useRef<StripAnchor | null>(null)
+  const laidOut = useRef({ w: 0, h: 0 })
   // Report the page in view (the strip owns the element, so this is attached whenever it exists).
+  const report = useCallback(() => {
+    const el = scrollRef.current
+    if (!el) return
+    const items = stripItems(el, horizontal)
+    const offset = horizontal ? el.scrollLeft : el.scrollTop
+    if (Math.abs(el.clientWidth - laidOut.current.w) <= 1 && Math.abs(el.clientHeight - laidOut.current.h) <= 1) anchor.current = stripAnchor(items, offset)
+    onPage(pageAtOffset(items, offset + (horizontal ? el.clientWidth : el.clientHeight) * 0.3))
+  }, [scrollRef, horizontal, onPage])
   useEffect(() => {
     const el = scrollRef.current
     if (!el) return
-    const onScroll = () => {
-      const ref = horizontal ? el.scrollLeft + el.clientWidth * 0.3 : el.scrollTop + el.clientHeight * 0.3
-      let cur = 0
-      el.querySelectorAll<HTMLElement>('[data-page]').forEach((it) => {
-        if ((horizontal ? it.offsetLeft : it.offsetTop) <= ref) cur = Number(it.dataset.page)
-      })
-      onPage(cur)
-    }
-    el.addEventListener('scroll', onScroll, { passive: true })
-    return () => el.removeEventListener('scroll', onScroll)
-  }, [scrollRef, horizontal, onPage])
+    el.addEventListener('scroll', report, { passive: true })
+    return () => el.removeEventListener('scroll', report)
+  }, [scrollRef, report])
+  useLayoutEffect(() => {
+    const el = scrollRef.current
+    if (!el) return
+    laidOut.current = { w: el.clientWidth, h: el.clientHeight }
+    const to = anchor.current && anchorOffset(stripItems(el, horizontal), anchor.current)
+    if (to == null) return
+    if (horizontal) el.scrollLeft = to
+    else el.scrollTop = to
+    report()
+  }, [scrollRef, box.width, box.height, horizontal, report])
   useEffect(() => {
     const root = scrollRef.current
     if (!root) return
@@ -965,10 +1083,12 @@ function ScrollStrip({ scrollRef, pages, box, fit, zoom, gap, ctx, horizontal, o
   // A thin seam between pages (the page-gap setting widens it); the strip starts below the top bar and
   // ends above the bottom bar so neither hides the first or last system.
   const seam = Math.max(gap, 4)
+  // While annotating, horizontal pages fit below the top bars so their tops stay drawable.
+  const hPad = horizontal && ctx.annotating ? topPad : 0
   const items = pages.map((dp, i) => {
-    const size = horizontal ? fitPage(dp.aspect, box, 'page') : scrollPageSize(dp.aspect, box, fit, zoom)
+    const size = horizontal ? fitPage(dp.aspect, { width: box.width, height: Math.max(1, box.height - hPad) }, 'page') : scrollPageSize(dp.aspect, box, fit, zoom)
     return (
-      <div key={dp.key} data-page={i} className={horizontal ? 'flex shrink-0 snap-start items-center justify-center' : 'mx-auto'} style={horizontal ? { width: box.width, height: box.height } : { width: size.width, height: size.height, marginTop: i ? seam : 0 }}>
+      <div key={dp.key} data-page={i} className={horizontal ? 'flex shrink-0 snap-start items-center justify-center' : 'mx-auto'} style={horizontal ? { width: box.width, height: box.height, paddingTop: hPad, touchAction } : { width: size.width, height: size.height, marginTop: i ? seam : 0 }}>
         {visible.has(i) ? <DisplayPageView dp={dp} index={i} size={size} ctx={ctx} /> : <div style={size} className="bg-white/5" />}
       </div>
     )
@@ -977,11 +1097,11 @@ function ScrollStrip({ scrollRef, pages, box, fit, zoom, gap, ctx, horizontal, o
     <div
       ref={scrollRef}
       className={`absolute inset-0 overflow-auto ${horizontal ? 'flex snap-x snap-mandatory' : ''}`}
-      style={horizontal ? { gap: Math.max(gap, 8) } : { paddingTop: topPad, paddingBottom: 56, scrollPaddingTop: scrollPad }}
+      style={horizontal ? { gap: Math.max(gap, 8), touchAction } : { paddingTop: topPad, paddingBottom: 56, scrollPaddingTop: scrollPad, touchAction }}
     >
       {/* The vertical strip's pages share one wrapper for the zoom preview to transform (horizontal never zooms).
           It is a static block, so the pages' offsetParent is still the scroller. */}
-      {horizontal ? items : <div data-zoom-content>{items}</div>}
+      {horizontal ? items : <div data-zoom-content style={{ touchAction }}>{items}</div>}
     </div>
   )
 }

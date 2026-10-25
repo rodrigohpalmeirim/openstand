@@ -1,19 +1,34 @@
 import { useLiveQuery } from 'dexie-react-hooks'
-import { AlertTriangle, AppWindow, ListMusic, RadioTower, RefreshCw } from 'lucide-react'
+import { AlertTriangle, AppWindow, Copy, Dices, ListMusic, RadioTower, RefreshCw } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { db } from '../db/db'
+import { useTerms, type Terms } from '../library/browse/terms'
 import { useSettings } from '../state/settings'
-import { Button, Field, Input, Segmented, Select, Toggle, cx } from '../ui/primitives'
-import { sends, type Role } from './protocol'
+import { Button, Field, IconButton, Input, Segmented, Select, Toggle, cx, toast } from '../ui/primitives'
+import { randomRoom, sends, type Role } from './protocol'
 import { PeerList, ROLE_LABEL, syncLabel } from './SyncStatus'
-import { connect, defaultDeviceName, disconnect, shareSetlist, syncNow, useSync } from './sync'
+import {
+  connect,
+  defaultDeviceName,
+  disconnect,
+  ensureRoom,
+  secondWindowUrl,
+  setMyDeviceName,
+  setMyRole,
+  shareSetlist,
+  switchToSiteRelay,
+  syncNow,
+  useMyDeviceName,
+  useMyRole,
+  useSync,
+} from './sync'
 import { SAME_SITE_RELAY, mixedContentProblem, sameSiteRelayAvailable } from './transports'
 
-const ROLE_HINT: Record<Role, string> = {
-  leader: 'This device controls the others: page turns and songs go out, nothing comes in.',
-  follower: 'This device obeys the leader: it turns pages and opens songs when the leader does.',
+const roleHint = (t: Terms): Record<Role, string> => ({
+  leader: `This device controls the others: page turns and ${t.songs} go out, nothing comes in.`,
+  follower: `This device obeys the leader: it turns pages and opens ${t.songs} when the leader does.`,
   peer: 'Everyone turns everyone’s pages — good for two screens of one musician.',
-}
+})
 
 function SwitchRow({ label, hint, checked, onChange }: { label: string; hint?: string; checked: boolean; onChange: (v: boolean) => void }) {
   return (
@@ -27,12 +42,17 @@ function SwitchRow({ label, hint, checked, onChange }: { label: string; hint?: s
   )
 }
 
-/** Devices & sync section of the settings screen. */
+/** Page sync section of the settings screen. */
 export function SyncSettings() {
-  const s = useSettings((st) => st.s.sync)
+  const t = useTerms()
+  const settingsSync = useSettings((st) => st.s.sync)
+  const role = useMyRole()
+  const deviceName = useMyDeviceName()
+  const s = { ...settingsSync, role }
   const setIn = useSettings((st) => st.setIn)
   const status = useSync((st) => st.status)
   const error = useSync((st) => st.error)
+  const configError = useSync((st) => st.configError)
   const relay = useSync((st) => st.relay)
   const peerCount = useSync((st) => Object.keys(st.peers).length)
   const active = useSync((st) => st.active)
@@ -40,6 +60,15 @@ export function SyncSettings() {
   const [share, setShare] = useState('')
   const [relayDraft, setRelayDraft] = useState(s.relayUrl)
   const [roomDraft, setRoomDraft] = useState(s.room)
+  // Follow changes made elsewhere (a generated room, "Use this site").
+  const [saved, setSaved] = useState({ room: s.room, relay: s.relayUrl })
+  if (saved.room !== s.room || saved.relay !== s.relayUrl) {
+    setSaved({ room: s.room, relay: s.relayUrl })
+    if (saved.room !== s.room) setRoomDraft(s.room)
+    if (saved.relay !== s.relayUrl) setRelayDraft(s.relayUrl)
+  }
+  // Show the room this device will use (a private one is made on first use).
+  useEffect(() => void ensureRoom(), [])
   const mixed = mixedContentProblem(relayDraft)
   const [siteRelay, setSiteRelay] = useState(false)
   useEffect(() => {
@@ -58,13 +87,18 @@ export function SyncSettings() {
         ? `${syncLabel(status, peerCount, s.role)} other device${peerCount === 1 ? '' : 's'}${s.relayUrl ? '' : ' (this browser only)'}`
         : status === 'connecting'
           ? 'Connecting to the relay…'
-          : `Can’t reach the relay — retrying${error ? ` (${error})` : ''}`
+          : (configError ?? `Can’t reach the relay — retrying${error ? ` (${error})` : ''}`)
 
   const commit = () => {
-    const room = roomDraft.trim() || 'band'
+    const room = roomDraft.trim() || s.room || randomRoom()
     if (room !== s.room || relayDraft.trim() !== s.relayUrl) setIn('sync', { room, relayUrl: relayDraft.trim() })
     if (room !== roomDraft) setRoomDraft(room)
   }
+  const copyRoom = () =>
+    navigator.clipboard?.writeText(s.room).then(
+      () => toast('Room name copied', 'ok'),
+      () => toast('Couldn’t copy — select the name and copy it instead', 'error'),
+    )
 
   return (
     <div className="grid gap-6">
@@ -98,18 +132,40 @@ export function SyncSettings() {
       <Field label="This device">
         <Segmented
           value={s.role}
-          onChange={(role) => setIn('sync', { role })}
+          onChange={setMyRole}
           options={(['leader', 'follower', 'peer'] as Role[]).map((r) => ({ value: r, label: ROLE_LABEL[r] }))}
         />
       </Field>
-      <p className="-mt-4 text-sm text-muted">{ROLE_HINT[s.role]}</p>
+      <p className="-mt-4 text-sm text-muted">{roleHint(t)[s.role]}</p>
 
       <div className="grid gap-4 sm:grid-cols-2">
         <Field label="Device name">
-          <Input value={s.deviceName} placeholder={defaultDeviceName()} onChange={(e) => setIn('sync', { deviceName: e.target.value })} />
+          <Input value={deviceName} placeholder={defaultDeviceName()} onChange={(e) => setMyDeviceName(e.target.value)} />
         </Field>
-        <Field label="Room" hint="Devices with the same room see each other.">
-          <Input value={roomDraft} onChange={(e) => setRoomDraft(e.target.value)} onBlur={commit} onKeyDown={(e) => e.key === 'Enter' && commit()} placeholder="band" />
+        <Field label="Room" hint="Use the same room name on every device. Anyone who knows it can join, so keep it private.">
+          <div className="flex gap-1">
+            <Input
+              className="min-w-0 flex-1 font-mono"
+              value={roomDraft}
+              onChange={(e) => setRoomDraft(e.target.value)}
+              onBlur={commit}
+              onKeyDown={(e) => {
+                if (e.key !== 'Enter') return
+                e.preventDefault()
+                commit()
+              }}
+              placeholder="Private room name"
+              autoCapitalize="off"
+              autoCorrect="off"
+              spellCheck={false}
+            />
+            <IconButton label="Copy room name" onClick={() => void copyRoom()}>
+              <Copy className="size-4" />
+            </IconButton>
+            <IconButton label="New private room" onClick={() => setIn('sync', { room: randomRoom() })}>
+              <Dices className="size-4" />
+            </IconButton>
+          </div>
         </Field>
       </div>
 
@@ -124,7 +180,9 @@ export function SyncSettings() {
           ) : (
             <>
               Leave empty to sync only windows of this browser.{' '}
-              {siteRelay ? (
+              {relayDraft.trim() === SAME_SITE_RELAY ? (
+                <>Using this site’s built-in relay: phones and tablets anywhere can join with the same room name.</>
+              ) : siteRelay ? (
                 <>
                   This site has a built-in relay: enter <span className="font-mono">{SAME_SITE_RELAY}</span> to connect phones and tablets over the internet.
                 </>
@@ -139,12 +197,28 @@ export function SyncSettings() {
         }
       >
         <div className="flex gap-2">
-          <Input className="min-w-0 flex-1" value={relayDraft} onChange={(e) => setRelayDraft(e.target.value)} onBlur={commit} onKeyDown={(e) => e.key === 'Enter' && commit()} placeholder={siteRelay ? SAME_SITE_RELAY : 'ws://192.168.1.20:8787'} inputMode="url" autoCapitalize="off" autoCorrect="off" spellCheck={false} />
+          <Input
+            className="min-w-0 flex-1"
+            value={relayDraft}
+            onChange={(e) => setRelayDraft(e.target.value)}
+            onBlur={commit}
+            onKeyDown={(e) => {
+              if (e.key !== 'Enter') return
+              e.preventDefault()
+              commit()
+            }}
+            placeholder={siteRelay ? SAME_SITE_RELAY : 'ws://192.168.1.20:8787'}
+            inputMode="url"
+            autoCapitalize="off"
+            autoCorrect="off"
+            spellCheck={false}
+          />
           {siteRelay && relayDraft.trim() !== SAME_SITE_RELAY && (
             <Button
               onClick={() => {
                 setRelayDraft(SAME_SITE_RELAY)
-                setIn('sync', { relayUrl: SAME_SITE_RELAY })
+                // Never land in the shared room older versions used.
+                switchToSiteRelay()
               }}
             >
               Use this site
@@ -156,7 +230,7 @@ export function SyncSettings() {
       {s.role !== 'leader' && (
         <div className="grid gap-1">
           <SwitchRow label="Turn pages with the others" checked={s.followPages} onChange={(followPages) => setIn('sync', { followPages })} />
-          <SwitchRow label="Open the same songs and setlists" hint="Songs are matched by title when libraries differ" checked={s.followSongs} onChange={(followSongs) => setIn('sync', { followSongs })} />
+          <SwitchRow label={`Open the same ${t.songs} and setlists`} hint={`${t.Songs} are matched by title when libraries differ`} checked={s.followSongs} onChange={(followSongs) => setIn('sync', { followSongs })} />
         </div>
       )}
       <SwitchRow label="Connect when OpenStand starts" checked={s.autoConnect} onChange={(autoConnect) => setIn('sync', { autoConnect })} />
@@ -170,7 +244,7 @@ export function SyncSettings() {
           {sends(s.role) && (
             <div className="flex flex-wrap gap-2 pt-1">
               <Button size="sm" icon={<RefreshCw className="size-4" />} onClick={() => void syncNow()} disabled={!peerCount}>
-                Sync others to my song
+                Sync others to my {t.song}
               </Button>
               <div className="flex items-center gap-2">
                 <Select className="h-8 w-auto min-w-40 text-sm" value={share} onChange={(e) => setShare(e.target.value)} aria-label="Setlist to share">
@@ -191,10 +265,13 @@ export function SyncSettings() {
       )}
 
       <div>
-        <Button size="sm" variant="ghost" icon={<AppWindow className="size-4" />} onClick={() => window.open(location.href, '_blank', 'popup,width=900,height=700')}>
+        <Button size="sm" variant="ghost" icon={<AppWindow className="size-4" />} onClick={() => window.open(secondWindowUrl(), '_blank', 'popup,width=900,height=700')}>
           Open a second window
         </Button>
-        <p className="mt-1 text-xs text-muted">For a second screen or a laptop with a page-turn pedal. Connect both windows with the same room.</p>
+        <p className="mt-1 text-xs text-muted">
+          For a second screen or a laptop with a page-turn pedal. It opens as {s.role === 'leader' ? 'a follower' : s.role === 'follower' ? 'the leader' : '“Both ways”'}
+          {' '}(each window keeps its own role); connect both windows.
+        </p>
       </div>
     </div>
   )

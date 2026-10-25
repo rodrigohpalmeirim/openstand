@@ -67,7 +67,8 @@ export function setlistMenu(sl: Setlist, lib: LibraryData, t: Terms, editDetails
       },
     },
     { divider: true, label: '' },
-    ...exportItems([...new Set(ids)], sl.name, { setlistIds: [sl.id] }),
+    // In setlist order, repeats included: a joined PDF plays through like the setlist.
+    ...exportItems(ids, sl.name, { setlistIds: [sl.id] }),
     { divider: true, label: '' },
     { label: 'Delete setlist', icon: <Trash2 className="size-4" />, danger: true, onSelect: () => deleteSetlistFlow(sl) },
   ]
@@ -165,7 +166,8 @@ function SetlistRow({ sl, lib, t, onDetails }: { sl: Setlist; lib: LibraryData; 
       </IconButton>
       <IconButton
         size="sm"
-        label="More actions"
+        label={`More actions for ${sl.name}`}
+        title="More actions"
         className="text-muted!"
         onClick={(e) => {
           e.stopPropagation()

@@ -53,7 +53,13 @@ const APPLY_GROUP = 500
 const MAINTENANCE_TICK = 60_000
 const REPAIR_INTERVAL = 7 * DAY
 const RECONCILE_INTERVAL = DAY
-const DEVICE_REFRESH = DAY
+/** This device rewrites its record (its "last seen") this often while open, and on start when it's older. */
+const DEVICE_REFRESH = 6 * 60 * 60_000
+const DEVICE_REWRITE_ON_START = 60 * 60_000
+/** The device list (a LIST and one GET per device) is re-read at most this often, unless asked for explicitly. */
+const DEVICES_THROTTLE = 60_000
+/** Another device's rename notice re-reads the list at most this often. */
+const DEVICES_NOTICE_GAP = 10_000
 const MAX_BACKOFF = 5 * 60_000
 /** Capture this soon after the last change, but at most once per CAPTURE_DEBOUNCE, so bursts still batch. */
 const CAPTURE_FAST = 300
@@ -357,6 +363,10 @@ export class Engine {
   private more = false
   /** When `meta` was last seen (undefined: not yet in this write cycle; every locked run starts a new one). */
   private libraryOkAt?: number
+  /** When the device list was last read (or a read started). */
+  private devicesListedAt = -Infinity
+  /** Device id -> when its newest head object was written (from the heads LIST): fresher than its record. */
+  private seen = new Map<string, number>()
 
   private constructor(core: Core, o: EngineOptions) {
     this.core = core
@@ -470,10 +480,10 @@ export class Engine {
   }
 
   private scheduleStatus() {
-    if (this.statusTimer) return
+    if (this.statusTimer || this.stopped) return
     this.statusTimer = this.timers.setTimeout(() => {
       this.statusTimer = undefined
-      void this.refreshStatus().catch(() => {})
+      if (!this.stopped) void this.refreshStatus().catch(() => {})
     }, 250)
   }
 
@@ -488,12 +498,18 @@ export class Engine {
     const missing = new Set(rows.filter((r) => r.dir === 'down').map((r) => r.hash))
     let have = 0
     for (const h of refs.keys()) if (!missing.has(h) && (await localBlob(db, h))) have++
-    const devices = ((await getState(db, 'devices')) ?? []).map((d) => ({ ...d, self: d.id === this.config.deviceId }))
+    const devices = this.devicesView((await getState(db, 'devices')) ?? [])
     const lastSync = await getState(db, 'lastSync')
     const busy = stats.upload.files > stats.upload.doneFiles || stats.download.files > stats.download.doneFiles || pending > 0
     let phase = this.status.phase
-    if (phase === 'idle' || phase === 'syncing') phase = busy ? 'syncing' : 'idle'
+    // A rate-limited sync waiting for its retry stays "syncing" (see `sync`).
+    if (phase === 'idle' || phase === 'syncing') phase = busy || this.retryAt > this.core.now() ? 'syncing' : 'idle'
     this.setStatus({ pendingChanges: pending, upload: stats.upload, download: stats.download, offlineReady: { have, total: refs.size }, devices, lastSyncAt: lastSync?.at, phase })
+  }
+
+  /** Devices for the status: "last seen" is the newer of the record's and the device's last push. */
+  private devicesView(list: DeviceRecord[]): EngineStatus['devices'] {
+    return list.map((d) => ({ ...d, lastSeenAt: Math.max(d.lastSeenAt, this.seen.get(d.id) ?? 0), self: d.id === this.config.deviceId }))
   }
 
   private deviceName(device: string) {
@@ -608,7 +624,13 @@ export class Engine {
   /** Each device's latest seq (one LIST). Unverified: anyone with bucket access can write heads. */
   async heads(): Promise<Record<string, number>> {
     const lib = this.core.keys.libraryId
-    return latestHeads(lib, (await this.listAll(headsPrefix(lib))).map((i) => i.key))
+    const items = await this.listAll(headsPrefix(lib))
+    const now = this.core.now()
+    for (const i of items) {
+      const p = parseKey(i.key)
+      if (p?.type === 'head' && i.lastModified) this.seen.set(p.deviceId, Math.max(this.seen.get(p.deviceId) ?? 0, Math.min(i.lastModified, now)))
+    }
+    return latestHeads(lib, items.map((i) => i.key))
   }
 
   /** Cached device records by id. */
@@ -1165,7 +1187,7 @@ export class Engine {
     const cached = (await getState(this.core.db, 'devices')) ?? []
     const devices = [...cached.filter((d) => d.id !== rec.id), rec]
     await putState(this.core.db, 'devices', devices)
-    this.setStatus({ devices: devices.map((d) => ({ ...d, self: d.id === config.deviceId })) })
+    this.setStatus({ devices: this.devicesView(devices) })
     return rec
   }
 
@@ -1173,9 +1195,26 @@ export class Engine {
     return this.locked(() => this.refreshDevicesInner())
   }
 
-  /** The user renamed this device: overwrite its record now. */
-  rename() {
-    return this.locked(() => this.putDevice())
+  /**
+   * Re-read the device list unless it was read less than `maxAge` ago (the Library sync page opened, "Sync
+   * now", another device renamed itself). Never throws.
+   */
+  refreshDevicesIfStale(maxAge = DEVICES_THROTTLE): Promise<void> {
+    if (this.config.paused || this.fatal() || this.core.now() - this.devicesListedAt < maxAge) return Promise.resolve()
+    this.devicesListedAt = this.core.now()
+    return this.refreshDevices().then(
+      () => {},
+      (e) => this.core.log?.('devices refresh failed', e),
+    )
+  }
+
+  /** The user renamed this device: overwrite its record now, and tell the other devices to re-read the list. */
+  async rename() {
+    await this.locked(async () => {
+      await this.putDevice()
+      await this.refreshDevicesInner().catch((e) => this.core.log?.('devices refresh failed', e))
+    })
+    void this.relay?.postDevices().catch(() => {})
   }
 
   private async refreshDevicesInner(): Promise<DeviceRecord[]> {
@@ -1193,7 +1232,8 @@ export class Engine {
       }
     }
     await putState(db, 'devices', out)
-    this.setStatus({ devices: out.map((d) => ({ ...d, self: d.id === this.config.deviceId })) })
+    this.devicesListedAt = this.core.now()
+    this.setStatus({ devices: this.devicesView(out) })
     return out
   }
 
@@ -1354,6 +1394,7 @@ export class Engine {
         this.retryAt = Math.max(this.retryAt, this.core.now() + wait)
         this.setStatus({ phase: 'syncing' })
       } else this.setStatus(err.code === 'network' ? { phase: 'offline' } : { phase: 'error', error: err })
+      this.scheduleStatus()
       throw e
     }
   }
@@ -1448,9 +1489,10 @@ export class Engine {
     this.captureTimer = this.timers.setTimeout(() => {
       this.captureTimer = undefined
       this.lastCaptureAt = this.core.now()
+      // The count of changes waiting to upload is refreshed either way (offline, the push fails).
       void this.capturePush()
-        .then(() => this.scheduleStatus())
         .catch(() => this.runSoon(this.backoff || 5000, 'retry'))
+        .finally(() => this.scheduleStatus())
     }, delay)
   }
 
@@ -1477,8 +1519,8 @@ export class Engine {
       if (this.captureTimer) this.timers.clearTimeout(this.captureTimer)
       this.captureTimer = undefined
       void this.capturePush()
-        .then(() => this.scheduleStatus())
         .catch(() => {})
+        .finally(() => this.scheduleStatus())
     }
     this.transfers.kick()
   }
@@ -1572,7 +1614,8 @@ export class Engine {
   }
 
   /** Straight from the socket's message handler to the pull: no timer in between (see `pullNow`). */
-  private async onNotice(p: { d: string; s: number; k?: 'ping' | 'pong' }) {
+  private async onNotice(p: { d: string; s: number; k?: 'ping' | 'pong' | 'devices' }) {
+    if (p.k === 'devices') void this.refreshDevicesIfStale(DEVICES_NOTICE_GAP)
     if (!p.k) this.setDiag({ noticeReceived: { device: p.d, seq: p.s, at: this.core.now(), hidden: !this.env.visible() } })
     const cur = (await getState(this.core.db, 'cursors'))?.[p.d] ?? 0
     if (p.s > cur) this.pullNow('notice')
@@ -1584,8 +1627,14 @@ export class Engine {
     this.started = true
     this.stopped = false
     await this.transfers.start()
+    // Dexie re-emits on every write to the table, even with the count unchanged (each keystroke of an edit).
+    let dirty = -1
     this.dirtySub = liveQuery(() => this.db.syncDirty.count()).subscribe({
-      next: (n) => n > 0 && this.scheduleCapture(),
+      next: (n) => {
+        if (n !== dirty) this.scheduleStatus()
+        dirty = n
+        if (n > 0) this.scheduleCapture()
+      },
       error: () => {},
     })
     this.maintTimer = this.timers.setInterval(() => {
@@ -1599,13 +1648,15 @@ export class Engine {
   }
 
   /**
-   * This device's record names it by default (no name of the user's own) or its platform changed, e.g. a
-   * newer version detects the device better: rewrite it now rather than at the next daily refresh.
+   * This device's record names it by default (no name of the user's own), its platform changed (e.g. a
+   * newer version detects the device better) or its "last seen" is over an hour old: rewrite it now rather
+   * than at the next refresh.
    */
   private async refreshOwnRecord() {
     const own = this.status.devices.find((d) => d.self)
     if (!own || this.config.paused) return
-    if (own.name === (await this.ownName()) && own.platform === platformName()) return
+    const fresh = this.core.now() - own.lastSeenAt < DEVICE_REWRITE_ON_START
+    if (fresh && own.name === (await this.ownName()) && own.platform === platformName()) return
     await this.locked(async () => {
       if (!this.stopped) await this.putDevice()
     })

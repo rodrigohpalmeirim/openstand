@@ -46,6 +46,8 @@ function scanName(d = new Date()) {
 }
 
 const isTouch = () => typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0
+/** "Take photo" (the system camera app) is only offered on touch devices. */
+const photoChoice = () => (isTouch() ? 'take or choose photos' : 'choose photos')
 
 /**
  * Camera scanner for paper sheet music: capture (or pick) photos, mark each page's corners,
@@ -181,7 +183,7 @@ export function Scanner({ title = 'Scan sheet music', onDone, onCancel }: { titl
 
   const close = async () => {
     if (saving) return
-    if (pagesRef.current.length && !(await confirmDialog({ title: 'Discard this scan?', message: 'The photos you took will be lost.', confirmLabel: 'Discard', danger: true })))
+    if (pagesRef.current.length && !(await confirmDialog({ title: 'Discard this scan?', message: 'The pages of this scan will be lost.', confirmLabel: 'Discard', danger: true })))
       return
     onCancel()
   }
@@ -189,6 +191,16 @@ export function Scanner({ title = 'Scan sheet music', onDone, onCancel }: { titl
   const save = async () => {
     const ready = pages.filter((p) => p.status === 'ready')
     if (!ready.length) return
+    const bad = pages.filter((p) => p.status === 'error').length
+    if (
+      bad &&
+      !(await confirmDialog({
+        title: `Leave out ${bad} unreadable page${bad === 1 ? '' : 's'}?`,
+        message: `${bad === 1 ? 'One photo' : `${bad} photos`} couldn't be read, so the PDF will have ${ready.length} page${ready.length === 1 ? '' : 's'}.`,
+        confirmLabel: 'Save PDF',
+      }))
+    )
+      return
     setSaving({ done: 0, total: ready.length })
     try {
       const out: EncodedPage[] = []
@@ -355,7 +367,7 @@ function CameraStage({
     let dead = false
     let s: CameraSession | null = null
     if (!cameraApiAvailable()) {
-      failRef.current('This browser has no camera access here. You can still take or choose photos.')
+      failRef.current(`This browser has no camera access here. You can still ${photoChoice()}.`)
       return
     }
     openCamera()
@@ -370,7 +382,7 @@ function CameraStage({
       .catch((e: Error) => {
         if (dead) return
         const denied = e?.name === 'NotAllowedError' || e?.name === 'SecurityError'
-        failRef.current(denied ? 'Camera permission was denied. You can still take or choose photos.' : "Couldn't start the camera. You can still take or choose photos.")
+        failRef.current(`${denied ? 'Camera permission was denied.' : "Couldn't start the camera."} You can still ${photoChoice()}.`)
       })
     return () => {
       dead = true
@@ -455,7 +467,7 @@ function CameraStage({
           </button>
         )}
       </div>
-      <div className="flex shrink-0 items-center justify-between px-6 pt-4" style={{ paddingBottom: 'max(1rem, env(safe-area-inset-bottom))' }}>
+      <div data-bottom-bar className="flex shrink-0 items-center justify-between px-6 pt-4" style={{ paddingBottom: 'max(1rem, env(safe-area-inset-bottom))' }}>
         <button type="button" onClick={onPick} aria-label="Choose photos" title="Choose photos" className="flex size-12 items-center justify-center rounded-full bg-white/10 hover:bg-white/20">
           <Images className="size-5" />
         </button>
@@ -526,7 +538,7 @@ function EditStage({
       <div className="relative min-h-0 flex-1 bg-surface-2">
         {page.status === 'loading' && <Spinner label="Reading photo…" />}
         {page.status === 'error' && (
-          <div className="flex h-full items-center justify-center p-6 text-center text-sm text-muted">This photo couldn't be read. Retake it or delete the page.</div>
+          <div className="flex h-full items-center justify-center p-6 text-center text-sm text-muted">This photo couldn't be read. {canRetake ? 'Retake it or delete the page.' : 'Delete the page, or add another photo.'}</div>
         )}
         {page.status === 'ready' &&
           (view === 'corners' ? (
@@ -724,7 +736,7 @@ function PageStrip({
 }) {
   const sort = useDragSort(onReorder, { longPress: true })
   return (
-    <div className="shrink-0 border-t border-line bg-surface" style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}>
+    <div data-bottom-bar className="shrink-0 border-t border-line bg-surface" style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}>
       <ol ref={sort.ref} className="flex gap-2 overflow-x-auto px-3 py-2" aria-label="Scanned pages">
         {pages.map((p, i) => (
           <li key={p.id} data-sort-index={i} className="shrink-0">
