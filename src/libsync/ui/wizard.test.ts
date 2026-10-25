@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { BackendError, type BackendCheck } from '../backends/types'
-import { checkFailureText, emptyForm, formFromConfig, initialWizard, needsCors, toConfig, validateForm, wizardReducer, type S3Form, type WizardState } from './wizard'
+import { checkFailureText, checkLabel, emptyForm, formFromConfig, initialWizard, needsCors, stepOrder, toConfig, validateForm, visibleSteps, wizardReducer, type S3Form, type WizardState } from './wizard'
 
 const R2_ID = '0123456789abcdef0123456789abcdef'
 const keys = { bucket: 'my-music', accessKeyId: 'AKIA', secretAccessKey: 'shh' }
@@ -122,5 +122,64 @@ describe('check results', () => {
     expect(checkFailureText(cors)).toMatch(/doesn’t allow this site/)
     expect(checkFailureText({ ok: false, steps: [], error: new BackendError('auth') })).toMatch(/access key/)
     expect(checkFailureText({ ok: false, steps: [{ id: 'write', ok: false }], error: new BackendError('unknown', 'boom') })).toBe('The test failed at “Write a test file”: boom')
+  })
+})
+
+describe('drive steps (SYNC-DRIVES.md §7.1)', () => {
+  const ok = { ok: true, steps: (['reach', 'auth', 'cors', 'list', 'write', 'etag', 'delete'] as const).map((id) => ({ id, ok: true })) }
+  const cfg = { kind: 'dropbox' as const, root: '', account: 'rod@example.com', accountId: 'dbid:1' }
+
+  it('storage → sign in; "Next" never skips the sign-in', () => {
+    let s = wizardReducer(initialWizard(), { type: 'storage', storage: 'dropbox' })
+    s = wizardReducer(s, { type: 'next' })
+    expect(s.step).toBe('signin')
+    expect(wizardReducer(s, { type: 'next' }).step).toBe('signin')
+    expect(wizardReducer(s, { type: 'back' }).step).toBe('storage')
+    expect(stepOrder('gdrive')).toEqual(['storage', 'signin', 'check', 'start', 'pair'])
+    expect(initialWizard('onedrive').step).toBe('signin')
+  })
+
+  it('a failed redirect stays on the sign-in step with the reason', () => {
+    let s = wizardReducer(initialWizard('gdrive'), { type: 'signInStart' })
+    expect(s.signingIn).toBe(true)
+    expect(wizardReducer(s, { type: 'back' })).toBe(s)
+    s = wizardReducer(s, { type: 'signInFailed', problem: { message: 'Sign-in was cancelled.', action: 'retry' } })
+    expect(s).toMatchObject({ step: 'signin', signingIn: false, signInError: { message: 'Sign-in was cancelled.' } })
+  })
+
+  it('resumes at the check after the redirect, then tests and starts', () => {
+    let s = wizardReducer(initialWizard(), { type: 'resume', kind: 'dropbox' })
+    expect(s).toMatchObject({ storage: 'dropbox', step: 'check', resuming: true, checking: true })
+    expect(wizardReducer(s, { type: 'back' })).toBe(s)
+    s = wizardReducer(s, { type: 'signedIn', account: { id: 'dbid:1', email: 'rod@example.com' }, config: cfg })
+    expect(s).toMatchObject({ resuming: false, driveConfig: cfg, account: { email: 'rod@example.com' } })
+    s = wizardReducer(s, { type: 'checkDone', check: ok })
+    s = wizardReducer(s, { type: 'next' })
+    expect(s.step).toBe('start')
+  })
+
+  it('a failed completion goes back to the sign-in step; Back from the check forgets the account', () => {
+    const r = wizardReducer(initialWizard(), { type: 'resume', kind: 'gdrive' })
+    expect(wizardReducer(r, { type: 'signInFailed', problem: { message: 'x' } })).toMatchObject({ step: 'signin', resuming: false, checking: false })
+    let s = wizardReducer(r, { type: 'signedIn', account: { id: '1' }, config: cfg })
+    s = wizardReducer(s, { type: 'checkDone', check: ok })
+    s = wizardReducer(s, { type: 'back' })
+    expect(s).toMatchObject({ step: 'signin', account: undefined, driveConfig: undefined, check: undefined })
+  })
+
+  it('names the drive in the checklist and hides the S3-only steps', () => {
+    expect(visibleSteps(ok, 'dropbox').map((st) => st.id)).toEqual(['reach', 'auth', 'list', 'write', 'delete'])
+    expect(visibleSteps(ok).length).toBe(7)
+    expect(checkLabel('auth', 'gdrive')).toBe('Signed in to Google Drive')
+    expect(checkLabel('list', 'onedrive')).toBe('Open the OpenStand folder')
+    expect(checkLabel('auth')).toBe('Sign in with the access key')
+  })
+
+  it('explains drive check failures', () => {
+    const fail = (code: BackendError['code']) => ({ ok: false, steps: [{ id: 'auth' as const, ok: false }], error: new BackendError(code) })
+    expect(checkFailureText(fail('forbidden'), 'gdrive')).toBe('Google Drive refused access to the OpenStand folder.')
+    expect(checkFailureText(fail('quota'), 'dropbox')).toBe('Your Dropbox storage is full.')
+    expect(checkFailureText(fail('network'), 'onedrive')).toBe('Can’t reach OneDrive. Check your connection.')
+    expect(checkFailureText(fail('unknown'), 'dropbox')).toBe('The test failed at “Signed in to Dropbox”.')
   })
 })

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { LibSyncFailure, offStatus, type LibSyncErrorCode, type LibSyncStatus } from '../api'
-import { controls, downloadLine, errorText, failureText, fmtBytes, indicatorState, initialLine, phaseLine, relayNote, stepLabel, syncProblem, timeAgo, uploadLine } from './format'
+import { controls, downloadLine, errorText, failureText, fmtBytes, pairingWarning, indicatorState, initialLine, phaseLine, relayNote, stepLabel, syncProblem, timeAgo, uploadLine } from './format'
 
 const NOW = 1_800_000_000_000
 const on = (p: Partial<LibSyncStatus> = {}): LibSyncStatus => ({ ...offStatus(), configured: true, phase: 'idle', ...p })
@@ -160,5 +160,54 @@ describe('instant updates: never a bare "off"', () => {
     expect(relayNote(on({ relay: 'connecting', relayConfigured: true }))).toBe('Instant updates connecting…')
     expect(relayNote(on({ phase: 'paused', relay: 'off' }))).toBeUndefined()
     expect(relayNote(on({ phase: 'offline', relay: 'error' }))).toBeUndefined()
+  })
+})
+
+describe('cloud drives (SYNC-DRIVES.md §7.4)', () => {
+  const t = (code: LibSyncErrorCode, kind?: Parameters<typeof errorText>[1], want?: string, message: string = code) => errorText({ code, message }, kind, want)
+  it('names the provider and offers to sign in again', () => {
+    expect(t('reauth', 'gdrive')).toMatchObject({
+      message: 'Sign in to Google Drive again to keep syncing. Your changes are kept on this device until then.',
+      action: 'signIn',
+      actionLabel: 'Sign in again',
+    })
+    expect(t('auth', 'dropbox')).toMatchObject({ message: 'Dropbox refused access to the OpenStand folder.', actionLabel: 'Sign in again' })
+    expect(t('quota', 'onedrive')).toMatchObject({ message: 'Your OneDrive storage is full.', action: 'openProvider', actionLabel: 'Open OneDrive' })
+  })
+  it('wrong account: whose drive the library is in, and another account', () => {
+    expect(t('wrongAccount', 'dropbox', 'rod@example.com')).toMatchObject({
+      message: 'This library is in rod@example.com’s Dropbox, not in the account you signed in with.',
+      actionLabel: 'Sign in with another account',
+    })
+    expect(t('wrongAccount', 'gdrive').message).toBe('This library isn’t in the Google Drive account you signed in with.')
+  })
+  it('S3 wording is unchanged; the new codes have a fallback without a kind', () => {
+    expect(t('auth', 's3').actionLabel).toBe('Update storage keys')
+    expect(t('quota').actionLabel).toBe('Open provider')
+    expect(t('reauth').actionLabel).toBe('Sign in again')
+    expect(t('wrongAccount').actionLabel).toBe('Sign in with another account')
+  })
+  it('the status headline uses the backend kind', () => {
+    expect(phaseLine(on({ phase: 'error', backendKind: 'dropbox', error: { code: 'reauth', message: 'reauth', at: 0 } }))).toBe(
+      'Sign in to Dropbox again to keep syncing. Your changes are kept on this device until then.',
+    )
+  })
+  it('signed out: no Sync now or Re-check until signed in; Sign in again and pairing stay', () => {
+    for (const code of ['reauth', 'wrongAccount'] as const)
+      expect(controls(on({ phase: 'error', backendKind: 'gdrive', error: { code, message: code, at: 0 } }))).toMatchObject({ syncNow: false, recheck: false, storageKeys: true, addDevice: true })
+  })
+  it('toasts name the drive too', () => {
+    expect(failureText(new LibSyncFailure('reauth'), undefined, 'onedrive')).toBe('Sign in to OneDrive again to keep syncing. Your changes are kept on this device until then.')
+  })
+})
+
+describe('pairing-code warning per backend', () => {
+  it('S3 codes carry the storage keys; drive codes the library key and account, never a sign-in', () => {
+    expect(pairingWarning('s3')).toBe('Anyone with this code can read and change your library and use your storage keys.')
+    expect(pairingWarning(undefined)).toBe(pairingWarning('s3'))
+    const g = pairingWarning('gdrive')
+    expect(g).toMatch(/^Treat this code like a password: anyone with it can read and change your library\./)
+    expect(g).toMatch(/names your Google Drive account but holds no sign-in, so the other device still signs in to Google Drive with the same account/)
+    expect(g).not.toMatch(/storage keys/)
   })
 })

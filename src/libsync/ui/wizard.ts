@@ -1,5 +1,6 @@
 /** Setup-wizard state: S3 provider presets (§7.1), form validation and the step machine. Pure. */
-import type { BackendCheck, BackendCheckStepId, S3Config, S3Provider } from '../backends/types'
+import type { AccountInfo, BackendCheck, BackendCheckStepId, BackendConfig, BackendDescription, OAuthKind, S3Config, S3Provider } from '../backends/types'
+import { drive, type SignInProblem } from './signin'
 
 export interface ProviderPreset {
   id: S3Provider
@@ -187,10 +188,18 @@ export function toConfig(f: S3Form): S3Config {
 
 /* ------------------------------------------------------------------ Steps */
 
-export type WizardStep = 'storage' | 'form' | 'check' | 'start' | 'pair'
+/**
+ * S3: storage → form → check → start → pair. Cloud drives (SYNC-DRIVES.md §7.1): storage → signin → (redirect
+ * to the provider and back) → check → start → pair.
+ */
+export type WizardStep = 'storage' | 'form' | 'signin' | 'check' | 'start' | 'pair'
+
+/** Where the library goes: an S3-compatible bucket or a cloud drive. */
+export type StorageChoice = 's3' | OAuthKind
 
 export interface WizardState {
   step: WizardStep
+  storage: StorageChoice
   form: S3Form
   /** Show field errors only after the first attempt to continue. */
   showErrors: boolean
@@ -199,9 +208,22 @@ export interface WizardState {
   /** A thrown (not reported) failure of the check or the start. */
   failure?: string
   starting: boolean
+  /** Drives: leaving for the provider's sign-in page (the page is about to unload). */
+  signingIn?: boolean
+  /** Drives: finishing a sign-in that came back from the provider. */
+  resuming?: boolean
+  /** Drives: why the last sign-in didn't work (shown on the sign-in step). */
+  signInError?: SignInProblem
+  /** Drives: who signed in. */
+  account?: AccountInfo
+  /** Drives: the config `driveBackendConfig` made after sign-in (what `enableSync` gets). */
+  driveConfig?: BackendConfig
+  /** Drives: where the data lives and free space (`describeBackend`; optional). */
+  description?: BackendDescription
 }
 
 export type WizardAction =
+  | { type: 'storage'; storage: StorageChoice }
   | { type: 'provider'; provider: S3Provider }
   | { type: 'field'; field: keyof S3Form; value: string | boolean }
   | { type: 'next' }
@@ -212,13 +234,36 @@ export type WizardAction =
   | { type: 'startBegin' }
   | { type: 'startDone' }
   | { type: 'startFailed'; message: string }
+  /** Drives: about to redirect to the provider. */
+  | { type: 'signInStart' }
+  /** Drives: the redirect didn't happen, or the sign-in came back with an error. */
+  | { type: 'signInFailed'; problem: SignInProblem }
+  /** Drives: a sign-in came back from the provider and is being completed. */
+  | { type: 'resume'; kind: OAuthKind }
+  /** Drives: signed in, and the drive's config is ready for the connection test. */
+  | { type: 'signedIn'; account: AccountInfo; config: BackendConfig }
+  | { type: 'described'; description: BackendDescription }
 
-export const initialWizard = (): WizardState => ({ step: 'storage', form: emptyForm(), showErrors: false, checking: false, starting: false })
+export const initialWizard = (storage: StorageChoice = 's3'): WizardState => ({
+  step: storage === 's3' ? 'storage' : 'signin',
+  storage,
+  form: emptyForm(),
+  showErrors: false,
+  checking: false,
+  starting: false,
+})
 
-const ORDER: WizardStep[] = ['storage', 'form', 'check', 'start', 'pair']
+const S3_ORDER: WizardStep[] = ['storage', 'form', 'check', 'start', 'pair']
+const DRIVE_ORDER: WizardStep[] = ['storage', 'signin', 'check', 'start', 'pair']
+export const stepOrder = (storage: StorageChoice) => (storage === 's3' ? S3_ORDER : DRIVE_ORDER)
+
+/** Forgets everything a drive sign-in produced (another storage, or "Back" to the sign-in step). */
+const noDrive = { account: undefined, driveConfig: undefined, description: undefined, check: undefined, signInError: undefined, failure: undefined }
 
 export function wizardReducer(s: WizardState, a: WizardAction): WizardState {
   switch (a.type) {
+    case 'storage':
+      return s.step === 'storage' && a.storage !== s.storage ? { ...s, ...noDrive, storage: a.storage } : s
     case 'provider':
       return { ...s, form: { ...s.form, provider: a.provider, pathStyle: preset(a.provider).pathStyle }, check: undefined, failure: undefined }
     case 'field':
@@ -227,26 +272,41 @@ export function wizardReducer(s: WizardState, a: WizardAction): WizardState {
     case 'next': {
       if (s.step === 'form' && Object.keys(validateForm(s.form)).length) return { ...s, showErrors: true }
       if (s.step === 'check' && !s.check?.ok) return s
-      const i = ORDER.indexOf(s.step)
-      return { ...s, step: ORDER[Math.min(ORDER.length - 1, i + 1)], failure: undefined }
+      // A drive moves past the sign-in step only by coming back from the provider.
+      if (s.step === 'signin') return s
+      const order = stepOrder(s.storage)
+      const i = order.indexOf(s.step)
+      return { ...s, step: order[Math.min(order.length - 1, i + 1)], failure: undefined }
     }
     case 'back': {
-      if (s.checking || s.starting || s.step === 'pair') return s
-      const i = ORDER.indexOf(s.step)
-      return { ...s, step: ORDER[Math.max(0, i - 1)], failure: undefined }
+      if (s.checking || s.starting || s.signingIn || s.resuming || s.step === 'pair') return s
+      const order = stepOrder(s.storage)
+      const i = order.indexOf(s.step)
+      const step = order[Math.max(0, i - 1)]
+      return { ...s, ...(step === 'signin' || step === 'storage' ? noDrive : {}), step, failure: undefined }
     }
     case 'checkStart':
       return { ...s, step: 'check', checking: true, check: undefined, failure: undefined }
     case 'checkDone':
       return { ...s, checking: false, check: a.check }
     case 'checkFailed':
-      return { ...s, checking: false, failure: a.message }
+      return { ...s, checking: false, resuming: false, failure: a.message }
     case 'startBegin':
       return { ...s, step: 'start', starting: true, failure: undefined }
     case 'startDone':
       return { ...s, starting: false, step: 'pair' }
     case 'startFailed':
       return { ...s, starting: false, failure: a.message }
+    case 'signInStart':
+      return s.storage === 's3' ? s : { ...s, signingIn: true, signInError: undefined }
+    case 'signInFailed':
+      return s.storage === 's3' ? s : { ...s, ...noDrive, step: 'signin', signingIn: false, resuming: false, checking: false, signInError: a.problem }
+    case 'resume':
+      return { ...s, ...noDrive, storage: a.kind, step: 'check', resuming: true, checking: true, signingIn: false }
+    case 'signedIn':
+      return { ...s, resuming: false, account: a.account, driveConfig: a.config }
+    case 'described':
+      return { ...s, description: a.description }
   }
 }
 
@@ -266,8 +326,45 @@ export const CHECK_LABEL: Record<BackendCheckStepId, string> = {
 /** Optional steps don't block syncing (conditional puts just aren't used when missing). */
 export const OPTIONAL_STEPS: BackendCheckStepId[] = ['conditional']
 
+/** Steps that only mean something for S3 (§7.1): not shown for a drive. */
+const S3_ONLY: BackendCheckStepId[] = ['cors', 'etag']
+
+/** The checklist label for a step; drives name the sign-in and their folder (§7.1). */
+export function checkLabel(id: BackendCheckStepId, storage: StorageChoice = 's3'): string {
+  if (storage !== 's3' && id === 'auth') return `Signed in to ${drive(storage).name}`
+  if (storage !== 's3' && id === 'list') return 'Open the OpenStand folder'
+  if (storage !== 's3' && id === 'reach') return `Reach ${drive(storage).name}`
+  return CHECK_LABEL[id]
+}
+
+/** The steps to list for this storage. */
+export const visibleSteps = (check: BackendCheck | undefined, storage: StorageChoice = 's3') =>
+  (check?.steps ?? []).filter((st) => storage === 's3' || !S3_ONLY.includes(st.id))
+
 /** The sentence for a failed check, by `BackendError` code. */
-export function checkFailureText(check: BackendCheck): string {
+export function checkFailureText(check: BackendCheck, storage: StorageChoice = 's3'): string {
+  if (storage !== 's3') {
+    const name = drive(storage).name
+    switch (check.error?.code) {
+      case 'reauth':
+        return `${name} wants you to sign in again.`
+      case 'auth':
+      case 'forbidden':
+        return `${name} refused access to the OpenStand folder.`
+      case 'network':
+        return `Can’t reach ${name}. Check your connection.`
+      case 'quota':
+        return `Your ${name} storage is full.`
+      case 'rateLimited':
+        return `${name} is busy right now. Wait a minute, then test again.`
+      case 'server':
+        return `${name} had a problem answering. Test again in a moment.`
+      default: {
+        const failed = visibleSteps(check, storage).find((st) => !st.ok && !OPTIONAL_STEPS.includes(st.id))
+        return `The test failed${failed ? ` at “${checkLabel(failed.id, storage)}”` : ''}${check.error?.message && /\s/.test(check.error.message) ? `: ${check.error.message}` : '.'}`
+      }
+    }
+  }
   switch (check.error?.code) {
     case 'cors':
       return 'Your bucket doesn’t allow this site yet. Add the CORS rule below, then test again.'

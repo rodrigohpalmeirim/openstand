@@ -1,17 +1,34 @@
-/** Join-flow state (§10.3, §12.2): scan or paste → preview → mode → progress. Pure. */
-import type { JoinPreview } from '../api'
+/**
+ * Join-flow state (§10.3, §12.2): scan or paste → preview → mode → progress. A cloud-drive code
+ * (SYNC-DRIVES.md §7.2) adds a sign-in step after the scan: redirect to the provider, back to the sign-in
+ * step's success state, then the preview. Pure.
+ */
+import type { AccountInfo, JoinPreview } from '../api'
 import { LibSyncFailure } from '../api'
 import { PairingError, type JoinMode, type PairingPayload } from '../model'
 import { errorText, failureText, fmtBytes, plural } from './format'
+import { drive, isDrive, type SignInProblem } from './signin'
 
-export type JoinStep = 'scan' | 'checking' | 'preview' | 'joining' | 'done'
+export type JoinStep = 'scan' | 'checking' | 'signin' | 'preview' | 'joining' | 'done'
 
 export interface JoinState {
   step: JoinStep
   payload?: PairingPayload
+  /** The code as scanned (drives: carried across the sign-in redirect). */
+  code?: string
   preview?: JoinPreview
   mode: JoinMode
   error?: string
+  /** Drives: who this device signed in as. */
+  account?: AccountInfo
+  /** Drives: leaving for the provider's sign-in page. */
+  signingIn?: boolean
+  /** Drives: why the sign-in (or the check right after it) didn't work. */
+  signInError?: SignInProblem
+  /** Drives: the code names another account than the one signed in (§7.2 step 4; a hint, can be overridden). */
+  mismatch?: boolean
+  /** Drives: the library isn't in the signed-in account (§7.3); offers "Scan another code". */
+  wrongAccount?: boolean
 }
 
 export type JoinAction =
@@ -23,21 +40,42 @@ export type JoinAction =
   | { type: 'join' }
   | { type: 'joined' }
   | { type: 'back' }
+  /** Drives: the code is for a cloud drive; sign in before anything can be read. */
+  | { type: 'needsSignIn'; payload: PairingPayload; code: string }
+  | { type: 'signInStart' }
+  | { type: 'signInFailed'; problem: SignInProblem; wrongAccount?: boolean }
+  /** Drives: back from the provider, completing the sign-in. */
+  | { type: 'resume' }
+  /** Drives: signed in; checks the account against the code's hint. */
+  | { type: 'signedIn'; payload: PairingPayload; code: string; account: AccountInfo }
+  /** Drives: the account hint didn't match, and the user goes on anyway. */
+  | { type: 'continueAnyway' }
+  /** Drives: run the preview (again) with the signed-in account. */
+  | { type: 'check' }
 
 export const initialJoin = (): JoinState => ({ step: 'scan', mode: 'newLibrary' })
+
+/** §7.3 layer 1: both ids known and different. Emails change, so this is a hint, never a block. */
+export const accountsDiffer = (p: PairingPayload, a?: AccountInfo) => {
+  const want = isDrive(p.b.kind) ? (p.b as { accountId?: string }).accountId : undefined
+  return !!(want && a?.id && want !== a.id)
+}
+
+const noSignIn = { account: undefined, signingIn: false, signInError: undefined, mismatch: false, wrongAccount: false }
 
 export function joinReducer(s: JoinState, a: JoinAction): JoinState {
   switch (a.type) {
     case 'code':
-      return { ...s, step: 'checking', error: undefined, payload: undefined, preview: undefined }
+      return { ...s, ...noSignIn, step: 'checking', error: undefined, payload: undefined, code: undefined, preview: undefined }
     case 'parsed':
       return { ...s, payload: a.payload }
     case 'previewed':
       // §15.4: a non-empty library defaults to a separate new library; merge is an explicit choice.
-      return { ...s, step: 'preview', preview: a.preview, mode: a.preview.suggested }
+      return { ...s, step: 'preview', preview: a.preview, mode: a.preview.suggested, signInError: undefined }
     case 'failed':
-      // A failed join goes back to the preview so the user can retry; a bad code back to scanning.
-      return { ...s, step: s.step === 'joining' ? 'preview' : 'scan', error: a.error }
+      // A failed join goes back to the preview so the user can retry; a bad code back to scanning; a
+      // signed-in drive check back to the sign-in step (its "Continue" retries).
+      return { ...s, step: s.step === 'joining' ? 'preview' : s.account ? 'signin' : 'scan', error: a.error }
     case 'mode':
       return s.step === 'preview' ? { ...s, mode: a.mode } : s
     case 'join':
@@ -45,12 +83,28 @@ export function joinReducer(s: JoinState, a: JoinAction): JoinState {
     case 'joined':
       return { ...s, step: 'done' }
     case 'back':
-      return s.step === 'preview' ? { ...initialJoin() } : s
+      return s.step === 'preview' || s.step === 'signin' ? { ...initialJoin() } : s
+    case 'needsSignIn':
+      return { ...s, ...noSignIn, step: 'signin', payload: a.payload, code: a.code, preview: undefined, error: undefined }
+    case 'signInStart':
+      return s.step === 'signin' ? { ...s, signingIn: true, signInError: undefined, error: undefined } : s
+    case 'signInFailed':
+      return { ...s, step: 'signin', signingIn: false, signInError: a.problem, wrongAccount: !!a.wrongAccount, mismatch: false, error: undefined }
+    case 'resume':
+      return { ...initialJoin(), step: 'checking' }
+    case 'signedIn': {
+      const mismatch = accountsDiffer(a.payload, a.account)
+      return { ...s, ...noSignIn, payload: a.payload, code: a.code, account: a.account, mismatch, step: mismatch ? 'signin' : 'checking', error: undefined }
+    }
+    case 'continueAnyway':
+      return s.mismatch ? { ...s, mismatch: false, step: 'checking' } : s
+    case 'check':
+      return s.account ? { ...s, step: 'checking', error: undefined, signInError: undefined, wrongAccount: false } : s
   }
 }
 
 /** What to tell the user when a code can't be read or checked. */
-export function joinErrorText(e: unknown): string {
+export function joinErrorText(e: unknown, p?: PairingPayload): string {
   if (e instanceof PairingError || (e as Error)?.name === 'PairingError') {
     return (e as PairingError).code === 'version'
       ? 'This code comes from a newer OpenStand. Update this device, then try again.'
@@ -58,8 +112,9 @@ export function joinErrorText(e: unknown): string {
   }
   if (e instanceof LibSyncFailure || (e as Error)?.name === 'LibSyncFailure') {
     const f = e as LibSyncFailure
-    if (f.code === 'network') return 'Can’t reach the storage. Check your connection and try again.'
-    return errorText({ code: f.code, message: f.message, detail: f.detail }).message
+    const kind = p?.b.kind
+    if (f.code === 'network') return `Can’t reach ${isDrive(kind) ? drive(kind).name : 'the storage'}. Check your connection and try again.`
+    return errorText({ code: f.code, message: f.message, detail: f.detail }, kind, isDrive(kind) ? (p!.b as { account?: string }).account : undefined).message
   }
   return failureText(e)
 }
@@ -81,8 +136,10 @@ export function mergeLine(p: JoinPreview): string {
 
 /** Where a pairing code sends this library, for the join preview (so a joiner can spot a code that isn't theirs). */
 export interface JoinTarget {
-  /** Storage endpoint host (or the backend kind for non-S3 backends). */
+  /** Storage endpoint host, the drive's name, or the backend kind for other backends. */
   storage: string
+  /** Cloud drives: the account the library is in (the code's hint). */
+  account?: string
   /** `bucket/prefix`, when the backend has one. */
   bucket?: string
   /** Relay host for instant updates; undefined = polling only. */
@@ -106,6 +163,7 @@ export function joinTarget(p: PairingPayload, here: { host: string } | undefined
   const r = p.r?.trim()
   if (r) relay = r.startsWith('/') ? (here ? `${here.host} (this site)` : 'this site') : (hostOf(r, 'wss')?.host ?? r)
   const b = p.b
+  if (isDrive(b.kind)) return { storage: drive(b.kind).name, ...('account' in b && b.account ? { account: b.account } : {}), relay, insecure: false }
   if (b.kind !== 's3') return { storage: b.kind, relay, insecure: false }
   const u = hostOf(b.endpoint, 'https')
   const host = u?.host || b.endpoint || 'unknown'

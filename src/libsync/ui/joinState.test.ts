@@ -86,3 +86,48 @@ describe('joinTarget', () => {
     expect(joinTarget(payload)).toEqual({ storage: 'memory', relay: undefined, insecure: false })
   })
 })
+
+describe('drive codes (SYNC-DRIVES.md §7.2, §7.3)', () => {
+  const drive = { v: 1, s: 'x', n: 'Band book', b: { kind: 'gdrive', folder: '1AbCdEfGhIjK', account: 'rod@example.com', accountId: 'perm-1' } } as PairingPayload
+  const rod = { id: 'perm-1', email: 'rod@example.com' }
+  const sam = { id: 'perm-2', email: 'sam@example.org' }
+
+  it('a drive code goes to the sign-in step with its code', () => {
+    const s = run({ type: 'code' }, { type: 'needsSignIn', payload: drive, code: 'OSJ1.abc' })
+    expect(s).toMatchObject({ step: 'signin', payload: drive, code: 'OSJ1.abc' })
+    expect(joinReducer(s, { type: 'signInStart' }).signingIn).toBe(true)
+    expect(joinReducer(s, { type: 'back' })).toEqual(initialJoin())
+  })
+
+  it('resumes after the redirect: the same account goes on to the check', () => {
+    const s = run({ type: 'resume' })
+    expect(s.step).toBe('checking')
+    const t = joinReducer(s, { type: 'signedIn', payload: drive, code: 'OSJ1.abc', account: rod })
+    expect(t).toMatchObject({ step: 'checking', account: rod, mismatch: false })
+    expect(joinReducer(t, { type: 'previewed', preview })).toMatchObject({ step: 'preview', account: rod })
+  })
+
+  it('another account than the code’s: a warning that can be overridden', () => {
+    const s = run({ type: 'resume' }, { type: 'signedIn', payload: drive, code: 'OSJ1.abc', account: sam })
+    expect(s).toMatchObject({ step: 'signin', mismatch: true })
+    expect(joinReducer(s, { type: 'continueAnyway' })).toMatchObject({ step: 'checking', mismatch: false })
+    // No id in the code (or none from the provider): nothing to compare.
+    const noHint = { ...drive, b: { kind: 'gdrive', folder: '1AbCdEfGhIjK' } } as PairingPayload
+    expect(run({ type: 'signedIn', payload: noHint, code: 'c', account: sam }).mismatch).toBe(false)
+  })
+
+  it('a failed sign-in or wrong account stays on the sign-in step; a failed check after sign-in too', () => {
+    const s = run({ type: 'needsSignIn', payload: drive, code: 'c' }, { type: 'signInStart' }, { type: 'signInFailed', problem: { message: 'Sign-in was cancelled.', action: 'retry' } })
+    expect(s).toMatchObject({ step: 'signin', signingIn: false, signInError: { message: 'Sign-in was cancelled.' }, wrongAccount: false })
+    const w = run({ type: 'signedIn', payload: drive, code: 'c', account: rod }, { type: 'signInFailed', problem: { message: 'x', action: 'chooseAccount' }, wrongAccount: true })
+    expect(w).toMatchObject({ step: 'signin', wrongAccount: true })
+    const n = run({ type: 'signedIn', payload: drive, code: 'c', account: rod }, { type: 'failed', error: 'Can’t reach Google Drive.' })
+    expect(n).toMatchObject({ step: 'signin', error: 'Can’t reach Google Drive.' })
+    expect(joinReducer(n, { type: 'check' })).toMatchObject({ step: 'checking', error: undefined })
+  })
+
+  it('names the drive and the account in the target box and the errors', () => {
+    expect(joinTarget(drive)).toEqual({ storage: 'Google Drive', account: 'rod@example.com', relay: undefined, insecure: false })
+    expect(joinErrorText(new LibSyncFailure('network'), drive)).toBe('Can’t reach Google Drive. Check your connection and try again.')
+  })
+})

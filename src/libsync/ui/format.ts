@@ -1,5 +1,6 @@
 /** Wording and number formatting for the library-sync UI (docs/SYNC.md §12.3). Pure. */
-import { LibSyncFailure, type BlobState, type LibSyncError, type LibSyncErrorCode, type LibSyncStatus, type TransferProgress } from '../api'
+import { LibSyncFailure, type BackendKind, type BlobState, type OAuthKind, type LibSyncError, type LibSyncErrorCode, type LibSyncStatus, type TransferProgress } from '../api'
+import { drive, isDrive, wrongAccountText } from './signin'
 
 export const fmtBytes = (n: number) =>
   n < 1000 ? `${n} B` : n < 1000 ** 2 ? `${Math.round(n / 1000)} KB` : n < 1000 ** 3 ? `${Math.round(n / 1000 ** 2)} MB` : `${(n / 1000 ** 3).toFixed(1)} GB`
@@ -84,7 +85,7 @@ export function phaseLine(s: LibSyncStatus, now = Date.now()): string {
     case 'paused':
       return 'Sync is paused'
     case 'error':
-      return s.error ? errorText(s.error).message : 'Sync stopped'
+      return s.error ? errorText(s.error, s.backendKind).message : 'Sync stopped'
     case 'idle':
       return s.lastSyncAt ? `Up to date · ${timeAgo(s.lastSyncAt, now)}` : 'Up to date'
   }
@@ -99,7 +100,21 @@ export function relayNote(s: Pick<LibSyncStatus, 'phase' | 'relay' | 'relayConfi
   return 'Instant updates connecting…'
 }
 
-export type ErrorAction ='updateKeys' | 'showCors' | 'openProvider' | 'storageSettings' | 'retry' | 'joinAgain' | 'joinNew' | 'stopSyncing' | 'reload' | 'rejoin'
+export type ErrorAction =
+  | 'updateKeys'
+  | 'showCors'
+  | 'openProvider'
+  | 'storageSettings'
+  | 'retry'
+  | 'joinAgain'
+  | 'joinNew'
+  | 'stopSyncing'
+  | 'reload'
+  | 'rejoin'
+  /** Cloud drives: sign in to the same account again (`startSignIn(kind, {type: 'reauth'})`). */
+  | 'signIn'
+  /** Cloud drives: sign in, picking the account (`chooseAccount: true`). */
+  | 'chooseAccount'
 
 export interface ErrorText {
   message: string
@@ -126,6 +141,8 @@ const ACTION_LABEL: Record<ErrorAction, string> = {
   stopSyncing: 'Stop syncing',
   reload: 'Reload app',
   rejoin: 'Rejoin',
+  signIn: 'Sign in again',
+  chooseAccount: 'Sign in with another account',
 }
 
 /** Engine-provided sentences (with a device name or an amount) win for the parameterised codes. */
@@ -151,14 +168,40 @@ const FIXED: Record<LibSyncErrorCode, Omit<ErrorText, 'actionLabel' | 'secondary
   network: { message: OFFLINE_LINE, warning: true },
   server: { message: 'Your storage had a problem answering. Sync will try again.', action: 'retry' },
   unknown: { message: 'Something went wrong while syncing.', action: 'retry' },
-  // Cloud drives (SYNC-DRIVES.md §7.4). Step-0 placeholders: WP-U adds the provider name and the sign-in actions.
-  reauth: { message: 'Sign in to your storage again to keep syncing. Your changes are kept on this device until then.' },
-  wrongAccount: { message: 'This library isn’t in the account you signed in with.' },
+  // Cloud drives (SYNC-DRIVES.md §7.4); `errorText` names the provider when it knows the backend kind.
+  reauth: { message: 'Sign in to your storage again to keep syncing. Your changes are kept on this device until then.', action: 'signIn' },
+  wrongAccount: { message: 'This library isn’t in the account you signed in with.', action: 'chooseAccount' },
 }
 
-/** §12.3: fixed wording and action per error code. */
-export function errorText(e: Pick<LibSyncError, 'code' | 'message' | 'detail'>): ErrorText {
-  const base = { ...FIXED[e.code] ?? FIXED.unknown }
+/** SYNC-DRIVES.md §7.4: the drive's name in the messages, and sign-in actions instead of storage keys. */
+function driveText(e: Pick<LibSyncError, 'code' | 'message' | 'detail'>, kind: OAuthKind, want?: string): Omit<ErrorText, 'actionLabel' | 'secondaryLabel'> | undefined {
+  const name = drive(kind).name
+  switch (e.code) {
+    case 'reauth':
+      return { message: `Sign in to ${name} again to keep syncing. Your changes are kept on this device until then.`, action: 'signIn' }
+    case 'wrongAccount':
+      // `want` comes from this library's config; the engine's own sentence is the fallback.
+      return { message: want ? wrongAccountText(kind, undefined, want) : (sentence(e as LibSyncError) ?? wrongAccountText(kind)), action: 'chooseAccount' }
+    case 'auth':
+      return { message: `${name} refused access to the OpenStand folder.`, action: 'signIn' }
+    case 'quota':
+      return { message: `Your ${name} storage is full.`, action: 'openProvider' }
+    case 'cors':
+      // Not an S3 bucket: there's no rule to paste. A browser block here is a network problem.
+      return { message: `Can’t reach ${name} from this browser right now.`, action: 'retry' }
+    case 'server':
+      return { message: `${name} had a problem answering. Sync will try again.`, action: 'retry' }
+    default:
+      return undefined
+  }
+}
+
+/**
+ * §12.3: fixed wording and action per error code. `kind` (the status's `backendKind`) switches to the cloud
+ * drive wording; `want` is the account the library is in (from the pairing payload), for `wrongAccount`.
+ */
+export function errorText(e: Pick<LibSyncError, 'code' | 'message' | 'detail'>, kind?: BackendKind, want?: string): ErrorText {
+  const base = { ...(isDrive(kind) ? driveText(e, kind, want) : undefined) ?? FIXED[e.code] ?? FIXED.unknown }
   if (e.code === 'localQuota') {
     const own = sentence(e as LibSyncError)
     const need = Number(e.detail)
@@ -168,18 +211,19 @@ export function errorText(e: Pick<LibSyncError, 'code' | 'message' | 'detail'>):
     const own = sentence(e as LibSyncError)
     if (own) base.message = own
   }
-  return { ...base, actionLabel: base.action && ACTION_LABEL[base.action], secondaryLabel: base.secondary && ACTION_LABEL[base.secondary] }
+  const label = (a?: ErrorAction) => (a === 'openProvider' && isDrive(kind) ? `Open ${drive(kind).name}` : a && ACTION_LABEL[a])
+  return { ...base, actionLabel: label(base.action), secondaryLabel: label(base.secondary) }
 }
 
 /**
  * Toast wording for a failed action: the §12.3 sentence for a `LibSyncFailure`, an engine sentence as is,
  * and never a bare identifier ("unknown", "libraryGone").
  */
-export function failureText(e: unknown, fallback = 'Something went wrong. Try again.'): string {
+export function failureText(e: unknown, fallback = 'Something went wrong. Try again.', kind?: BackendKind): string {
   if (e instanceof LibSyncFailure || (e as Error)?.name === 'LibSyncFailure') {
     const f = e as LibSyncFailure
     const own = sentence({ code: f.code, message: f.message, at: 0 })
-    return f.code === 'unknown' || f.code === 'corrupt' ? (own ?? FIXED.unknown.message) : errorText(f).message
+    return f.code === 'unknown' || f.code === 'corrupt' ? (own ?? FIXED.unknown.message) : errorText(f, kind).message
   }
   const m = (e as Error)?.message?.trim()
   return m && /\s/.test(m) ? m : fallback
@@ -232,7 +276,7 @@ export interface Controls {
   syncNowOff?: string
   /** "Add a device" (a pairing code for this library). */
   addDevice: boolean
-  /** "Update storage keys". */
+  /** "Update storage keys" (S3), or "Sign in again" (cloud drives). */
   storageKeys: boolean
   /** The "Pause sync" switch. */
   pause: boolean
@@ -255,16 +299,18 @@ export function controls(s: LibSyncStatus): Controls {
   const gone = code === 'libraryGone' || code === 'wrongSecret'
   // This device has to join (again) before anything else works.
   const broken = gone || code === 'rejoin' || code === 'corrupt'
+  // Cloud drives: nothing reaches the storage until this device signs in (again, or as the right account).
+  const signedOut = code === 'reauth' || code === 'wrongAccount'
   const syncNowOff =
     s.phase === 'paused' ? 'Sync is paused.' : s.phase === 'starting' ? 'Sync is starting.' : undefined
   return {
     // A newer OpenStand elsewhere: only reloading helps.
-    syncNow: !broken && code !== 'newerFormat',
+    syncNow: !broken && !signedOut && code !== 'newerFormat',
     syncNowOff,
     addDevice: !broken,
     storageKeys: !gone,
     pause: !broken,
-    recheck: !broken,
+    recheck: !broken && !signedOut,
     deleteRemote: code !== 'libraryGone',
     rename: !broken,
   }
@@ -306,4 +352,18 @@ export function pendingCaption(b: BlobState): string | undefined {
     default:
       return 'Downloading'
   }
+}
+
+/* ------------------------------------------------------------ Pairing */
+
+const S3_WARNING = 'Anyone with this code can read and change your library and use your storage keys.'
+
+/**
+ * What the code gives away, per backend. A drive code holds the library key and the account email, never
+ * sign-in tokens (SYNC-DRIVES.md §2): the other device still signs in itself.
+ */
+export function pairingWarning(kind?: BackendKind): string {
+  if (!isDrive(kind)) return S3_WARNING
+  const p = drive(kind)
+  return `Treat this code like a password: anyone with it can read and change your library. It names your ${p.name} account but holds no sign-in, so the other device still signs in to ${p.name} with the same account.`
 }

@@ -1,29 +1,34 @@
-/** "Set up sync" (§12.2): storage → S3 form → connection test → start → pairing code. */
-import { Check, CircleAlert, CircleDashed, Cloud, ExternalLink, Eye, EyeOff, Loader2 } from 'lucide-react'
-import { useEffect, useId, useReducer, useRef, useState, type ReactNode } from 'react'
-import { corsRule, useLibSync } from '../api'
+/**
+ * "Set up sync" (§12.2): storage → S3 form → connection test → start → pairing code. Cloud drives
+ * (SYNC-DRIVES.md §7.1): storage → sign in (redirect to the provider and back) → connection test → start → pairing code.
+ */
+import { Check, CircleAlert, CircleDashed, Cloud, ExternalLink, Eye, EyeOff, HardDrive, Loader2 } from 'lucide-react'
+import { useEffect, useId, useReducer, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
+import { corsRule, useLibSync, type OAuthKind } from '../api'
 import type { BackendCheck, S3Config } from '../backends/types'
 import { Button, Dialog, Input, Toggle, cx } from '../../ui/primitives'
-import { checkBackend, enableSync } from './client'
+import { checkBackend, describeBackend, discardSignIn, driveBackendConfig, enableSync, oauthProviders, startSignIn } from './client'
+import { DesktopAppNote, DriveAccountCard, DriveSignInPanel, SignInButton } from './DriveSignIn'
 import { failureText, initialLine } from './format'
 import { PairingQr } from './PairingQr'
 import { Bar, CopyBox, Note } from './parts'
+import { ackSignInReturn, drive, signInProblem, type SignInReturn } from './signin'
 import {
-  CHECK_LABEL,
   OPTIONAL_STEPS,
   PROVIDERS,
   checkFailureText,
+  checkLabel,
   initialWizard,
   needsCors,
   preset,
   toConfig,
   validateForm,
+  visibleSteps,
   wizardReducer,
   type FormErrors,
   type S3Form,
+  type StorageChoice,
 } from './wizard'
-
-const DOTS = ['storage', 'form', 'check', 'pair'] as const
 
 /* --------------------------------------------------------------- Pieces */
 
@@ -204,9 +209,9 @@ export function CorsHelp({ config }: { config: S3Config }) {
   )
 }
 
-/** The connection-test checklist. */
-export function CheckList({ check, checking }: { check?: BackendCheck; checking: boolean }) {
-  const steps = check?.steps ?? []
+/** The connection-test checklist (a drive hides the S3-only steps and names its own). */
+export function CheckList({ check, checking, storage = 's3' }: { check?: BackendCheck; checking: boolean; storage?: StorageChoice }) {
+  const steps = visibleSteps(check, storage)
   return (
     <ul className="grid gap-1.5" aria-live="polite" aria-busy={checking}>
       {steps.map((s) => (
@@ -218,7 +223,7 @@ export function CheckList({ check, checking }: { check?: BackendCheck; checking:
           ) : (
             <CircleAlert className="size-4 shrink-0 text-danger" aria-label="Failed" />
           )}
-          <span className={cx(!s.ok && !OPTIONAL_STEPS.includes(s.id) && 'font-medium')}>{CHECK_LABEL[s.id]}</span>
+          <span className={cx(!s.ok && !OPTIONAL_STEPS.includes(s.id) && 'font-medium')}>{checkLabel(s.id, storage)}</span>
           {s.detail && !s.ok && <span className="truncate text-xs text-muted">{s.detail}</span>}
         </li>
       ))}
@@ -231,47 +236,235 @@ export function CheckList({ check, checking }: { check?: BackendCheck; checking:
   )
 }
 
+/* ------------------------------------------------------------- Storage */
+
+/** One large radio card on the storage step. */
+function StorageCard({
+  value,
+  current,
+  onPick,
+  refFn,
+  onKeyDown,
+  icon,
+  title,
+  children,
+}: {
+  value: StorageChoice
+  current: StorageChoice
+  onPick: (v: StorageChoice) => void
+  refFn: (el: HTMLButtonElement | null) => void
+  onKeyDown: (e: KeyboardEvent) => void
+  icon: ReactNode
+  title: string
+  children: ReactNode
+}) {
+  const on = value === current
+  return (
+    <button
+      ref={refFn}
+      type="button"
+      role="radio"
+      aria-checked={on}
+      tabIndex={on ? 0 : -1}
+      onClick={() => onPick(value)}
+      onKeyDown={onKeyDown}
+      className={cx(
+        'flex min-h-14 w-full items-start gap-3 rounded-xl border-2 px-4 py-3 text-left transition',
+        on ? 'border-accent bg-accent-soft/40' : 'border-line bg-surface hover:bg-surface-2',
+      )}
+    >
+      <span className={cx('mt-0.5 shrink-0', on ? 'text-accent' : 'text-muted')}>{icon}</span>
+      <span className="min-w-0 flex-1 text-sm">
+        <span className="block font-medium">{title}</span>
+        <span className="block text-muted">{children}</span>
+      </span>
+      <span
+        aria-hidden
+        className={cx('mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full border-2', on ? 'border-accent bg-accent text-accent-fg' : 'border-line')}
+      >
+        {on && <Check className="size-3" strokeWidth={3} />}
+      </span>
+    </button>
+  )
+}
+
+/** §7.1 step 1: S3-compatible, then the drives `oauthProviders()` offers here (a radio group; arrow keys move). */
+function StorageCards({ value, drives, onChange }: { value: StorageChoice; drives: OAuthKind[]; onChange: (v: StorageChoice) => void }) {
+  const refs = useRef<(HTMLButtonElement | null)[]>([])
+  const options: StorageChoice[] = ['s3', ...drives]
+  const keys = (i: number) => (e: KeyboardEvent) => {
+    const d = e.key === 'ArrowRight' || e.key === 'ArrowDown' ? 1 : e.key === 'ArrowLeft' || e.key === 'ArrowUp' ? -1 : 0
+    if (!d) return
+    e.preventDefault()
+    const j = (i + d + options.length) % options.length
+    onChange(options[j])
+    refs.current[j]?.focus()
+  }
+  return (
+    <div role="radiogroup" aria-label="Where to keep your library" className="grid gap-2">
+      {options.map((o, i) => (
+        <StorageCard
+          key={o}
+          value={o}
+          current={value}
+          onPick={onChange}
+          refFn={(el) => {
+            refs.current[i] = el
+          }}
+          onKeyDown={keys(i)}
+          icon={o === 's3' ? <HardDrive className="size-5" /> : <Cloud className="size-5" />}
+          title={o === 's3' ? 'S3-compatible storage' : drive(o).name}
+        >
+          {o === 's3'
+            ? 'A bucket you own. OpenStand has no servers of its own, and your files are encrypted before they leave this device.'
+            : `Uses your ${drive(o).name} account. OpenStand gets its own folder and can’t see your other files.`}
+        </StorageCard>
+      ))}
+    </div>
+  )
+}
+
 /* ---------------------------------------------------------------- Wizard */
 
-const TITLES = { storage: 'Where to keep your library', form: 'Connect your bucket', check: 'Test the connection', start: 'Uploading your library', pair: 'Add your other devices' }
+const TITLES = {
+  storage: 'Where to keep your library',
+  form: 'Connect your bucket',
+  signin: 'Sign in',
+  check: 'Test the connection',
+  start: 'Uploading your library',
+  pair: 'Add your other devices',
+}
 
-export function SetupWizard({ open, onClose }: { open: boolean; onClose: () => void }) {
-  const [s, dispatch] = useReducer(wizardReducer, undefined, initialWizard)
+/**
+ * `resume`: a drive sign-in came back from the provider (§5.2); the wizard opens at the check step and
+ * completes it. `storage`: open at that drive's sign-in step (dev mocks).
+ */
+export function SetupWizard({ open, onClose, resume, storage }: { open: boolean; onClose: () => void; resume?: SignInReturn; storage?: OAuthKind }) {
+  const [s, dispatch] = useReducer(wizardReducer, undefined, () =>
+    resume ? wizardReducer(initialWizard(resume.kind), { type: 'resume', kind: resume.kind }) : initialWizard(storage),
+  )
+  const [drives, setDrives] = useState<OAuthKind[]>([])
   const initial = useLibSync((st) => st.initial)
   const heading = useRef<HTMLHeadingElement>(null)
+  const alive = useRef(true)
   const p = preset(s.form.provider)
   const errors = s.showErrors ? validateForm(s.form) : {}
-  const cfg = toConfig(s.form)
+  const kind = s.storage === 's3' ? undefined : s.storage
+  const cfg = kind ? s.driveConfig : toConfig(s.form)
+  const dots = s.storage === 's3' ? (['storage', 'form', 'check', 'pair'] as const) : (['storage', 'signin', 'check', 'pair'] as const)
+
+  useEffect(() => {
+    alive.current = true
+    return () => {
+      alive.current = false
+    }
+  }, [])
+
+  // The drives offered here (§6.4); S3 is always there, so the step works while this loads.
+  useEffect(() => {
+    let live = true
+    oauthProviders()
+      .then((d) => live && setDrives(d))
+      .catch(() => {})
+    return () => {
+      live = false
+    }
+  }, [])
 
   // Move focus to the new step's heading so keyboard and screen-reader users follow along.
   useEffect(() => {
     if (open) heading.current?.focus()
   }, [s.step, open])
 
+  /** Drives: the connection test with the config made after sign-in. */
+  const testDrive = async (k: OAuthKind, c = s.driveConfig) => {
+    if (!c) return
+    dispatch({ type: 'checkStart' })
+    try {
+      const check = await checkBackend(c)
+      if (alive.current) dispatch({ type: 'checkDone', check })
+    } catch (e) {
+      if (alive.current) dispatch({ type: 'checkFailed', message: failureText(e, 'The test couldn’t run.', k) })
+    }
+  }
+
+  // Back from the provider: complete the sign-in, make the drive's config, describe it, and test it.
+  useEffect(() => {
+    if (!resume) return
+    let live = true
+    const k = resume.kind
+    void (async () => {
+      const out = await resume.done
+      if (!live) return
+      ackSignInReturn(resume)
+      if (!out.ok) return dispatch({ type: 'signInFailed', problem: signInProblem(out.error, k) })
+      try {
+        const config = await driveBackendConfig(k)
+        if (!live) return
+        dispatch({ type: 'signedIn', account: out.result.account, config })
+        describeBackend(config)
+          .then((description) => live && dispatch({ type: 'described', description }))
+          .catch(() => {})
+        const check = await checkBackend(config)
+        if (live) dispatch({ type: 'checkDone', check })
+      } catch (e) {
+        if (!live) return
+        const f = e as { code?: string }
+        if (f?.code === 'reauth' || f?.code === 'wrongAccount') dispatch({ type: 'signInFailed', problem: signInProblem(e, k) })
+        else dispatch({ type: 'checkFailed', message: failureText(e, 'The test couldn’t run.', k) })
+      }
+    })()
+    return () => {
+      live = false
+    }
+  }, [resume])
+
   const test = async () => {
+    if (kind) return testDrive(kind)
     if (Object.keys(validateForm(s.form)).length) return dispatch({ type: 'next' })
     dispatch({ type: 'checkStart' })
     try {
-      dispatch({ type: 'checkDone', check: await checkBackend(cfg) })
+      dispatch({ type: 'checkDone', check: await checkBackend(toConfig(s.form)) })
     } catch (e) {
       dispatch({ type: 'checkFailed', message: (e as Error).message || 'The test couldn’t run.' })
     }
   }
 
+  /** Drives: leave for the provider (never returns when it works). */
+  const signIn = async (chooseAccount?: boolean) => {
+    if (!kind) return
+    dispatch({ type: 'signInStart' })
+    try {
+      await startSignIn(kind, { type: 'setup' }, chooseAccount ? { chooseAccount: true } : undefined)
+    } catch (e) {
+      if (alive.current) dispatch({ type: 'signInFailed', problem: signInProblem(e, kind) })
+    }
+  }
+
   const start = async () => {
+    if (!cfg) return
     dispatch({ type: 'startBegin' })
     try {
       // No relay given: the engine picks the same-site relay when there is one (§9).
       await enableSync({ backend: cfg })
       dispatch({ type: 'startDone' })
     } catch (e) {
-      dispatch({ type: 'startFailed', message: failureText(e, 'Sync couldn’t start.') })
+      dispatch({ type: 'startFailed', message: failureText(e, 'Sync couldn’t start.', kind) })
     }
   }
 
+  const close = () => {
+    ackSignInReturn(resume)
+    // Cancelled after signing in: forget the tokens (a no-op if the library already syncs through this drive).
+    if (kind && (s.account || resume) && s.step !== 'pair' && !s.starting) void discardSignIn(kind).catch(() => {})
+    onClose()
+  }
+
+  const needsSignIn = !!kind && s.check?.error?.code === 'reauth'
+
   const footer = (() => {
     const back = (
-      <Button variant="ghost" onClick={() => dispatch({ type: 'back' })} disabled={s.checking || s.starting}>
+      <Button variant="ghost" onClick={() => dispatch({ type: 'back' })} disabled={s.checking || s.starting || s.signingIn || s.resuming}>
         Back
       </Button>
     )
@@ -279,7 +472,7 @@ export function SetupWizard({ open, onClose }: { open: boolean; onClose: () => v
       case 'storage':
         return (
           <>
-            <Button variant="ghost" onClick={onClose}>
+            <Button variant="ghost" onClick={close}>
               Cancel
             </Button>
             <Button variant="primary" onClick={() => dispatch({ type: 'next' })}>
@@ -296,6 +489,13 @@ export function SetupWizard({ open, onClose }: { open: boolean; onClose: () => v
             </Button>
           </>
         )
+      case 'signin':
+        return (
+          <>
+            {back}
+            {kind && <SignInButton kind={kind} busy={s.signingIn} onClick={() => void signIn()} />}
+          </>
+        )
       case 'check':
         return (
           <>
@@ -304,8 +504,12 @@ export function SetupWizard({ open, onClose }: { open: boolean; onClose: () => v
               <Button variant="primary" onClick={start}>
                 Start syncing
               </Button>
+            ) : needsSignIn ? (
+              <Button variant="primary" onClick={() => void signIn()}>
+                Sign in again
+              </Button>
             ) : (
-              <Button variant="primary" onClick={test} disabled={s.checking}>
+              <Button variant="primary" onClick={test} disabled={s.checking || (!!kind && !s.driveConfig)}>
                 {s.checking && <Loader2 className="size-4 animate-spin" />}
                 Test again
               </Button>
@@ -315,7 +519,7 @@ export function SetupWizard({ open, onClose }: { open: boolean; onClose: () => v
       case 'start':
         return s.failure ? (
           <>
-            <Button variant="ghost" onClick={onClose}>
+            <Button variant="ghost" onClick={close}>
               Close
             </Button>
             <Button variant="primary" onClick={start}>
@@ -329,39 +533,44 @@ export function SetupWizard({ open, onClose }: { open: boolean; onClose: () => v
         )
       case 'pair':
         return (
-          <Button variant="primary" onClick={onClose}>
+          <Button variant="primary" onClick={close}>
             Done
           </Button>
         )
     }
   })()
 
+  const title = s.step === 'signin' && kind ? `Sign in to ${drive(kind).name}` : s.step === 'check' && kind ? `Connect ${drive(kind).name}` : TITLES[s.step]
+
   return (
-    <Dialog open={open} onClose={onClose} title="Set up library sync" footer={footer}>
+    <Dialog open={open} onClose={close} title="Set up library sync" footer={footer}>
       <div className="grid gap-5 px-5 py-4">
         <div className="flex items-center gap-2" aria-hidden>
-          {DOTS.map((st, i) => (
-            <span key={st} className={cx('h-1 flex-1 rounded-full', i <= DOTS.indexOf(s.step === 'start' ? 'pair' : s.step) ? 'bg-accent' : 'bg-surface-3')} />
+          {dots.map((st, i) => (
+            <span
+              key={st}
+              className={cx('h-1 flex-1 rounded-full', i <= (dots as readonly string[]).indexOf(s.step === 'start' ? 'pair' : s.step) ? 'bg-accent' : 'bg-surface-3')}
+            />
           ))}
         </div>
         <h3 ref={heading} tabIndex={-1} className="text-base font-semibold outline-none">
-          {TITLES[s.step]}
+          {title}
         </h3>
 
         {s.step === 'storage' && (
           <>
-            <div className="flex items-start gap-3 rounded-xl border-2 border-accent bg-accent-soft/40 px-4 py-3">
-              <Cloud className="mt-0.5 size-5 shrink-0 text-accent" />
-              <div className="text-sm">
-                <div className="font-medium">S3-compatible storage</div>
-                <p className="text-muted">A bucket you own. OpenStand has no servers of its own, and your files are encrypted before they leave this device.</p>
+            <StorageCards value={s.storage} drives={drives} onChange={(storage) => dispatch({ type: 'storage', storage })} />
+            {s.storage === 's3' ? (
+              <div className="grid gap-2">
+                <span className="text-xs font-medium uppercase tracking-wide text-muted">Provider</span>
+                <ProviderChips value={s.form.provider} onChange={(provider) => dispatch({ type: 'provider', provider })} />
+                <p className="text-sm text-muted">{p.name}</p>
               </div>
-            </div>
-            <div className="grid gap-2">
-              <span className="text-xs font-medium uppercase tracking-wide text-muted">Provider</span>
-              <ProviderChips value={s.form.provider} onChange={(provider) => dispatch({ type: 'provider', provider })} />
-              <p className="text-sm text-muted">{p.name}</p>
-            </div>
+            ) : (
+              <p className="text-sm text-muted">
+                OpenStand has no servers of its own: your library goes straight from this device to {drive(s.storage).name}, encrypted.
+              </p>
+            )}
           </>
         )}
 
@@ -382,16 +591,37 @@ export function SetupWizard({ open, onClose }: { open: boolean; onClose: () => v
           </>
         )}
 
-        {s.step === 'check' && (
+        {s.step === 'signin' && kind && (
+          <DriveSignInPanel kind={kind} problem={s.signInError} onChooseAccount={() => void signIn(true)} />
+        )}
+
+        {s.step === 'check' && kind && (
+          <>
+            <DriveAccountCard
+              kind={kind}
+              account={s.account}
+              description={s.description}
+              loading={s.resuming}
+              onChooseAccount={s.checking || s.resuming ? undefined : () => void signIn(true)}
+            />
+            {!s.resuming && <CheckList check={s.check} checking={s.checking} storage={kind} />}
+            {s.check?.ok && <Note tone="ok">Everything works. Your library will be encrypted on this device and uploaded to {drive(kind).name}.</Note>}
+            {s.check && !s.check.ok && <Note tone="danger">{checkFailureText(s.check, kind)}</Note>}
+            {s.failure && <Note tone="danger">{s.failure}</Note>}
+            {s.check?.ok && <DesktopAppNote kind={kind} />}
+          </>
+        )}
+
+        {s.step === 'check' && !kind && (
           <>
             <p className="text-sm text-muted">
-              {p.name} · {cfg.bucket}/{cfg.prefix}
+              {p.name} · {s.form.bucket.trim()}/{toConfig(s.form).prefix}
             </p>
             <CheckList check={s.check} checking={s.checking} />
             {s.check?.ok && <Note tone="ok">Everything works. Your library will be encrypted on this device and uploaded to this bucket.</Note>}
             {s.check && !s.check.ok && <Note tone="danger">{checkFailureText(s.check)}</Note>}
             {s.failure && <Note tone="danger">{s.failure}</Note>}
-            {needsCors(s.check) && <CorsHelp config={cfg} />}
+            {needsCors(s.check) && <CorsHelp config={toConfig(s.form)} />}
           </>
         )}
 
@@ -411,7 +641,10 @@ export function SetupWizard({ open, onClose }: { open: boolean; onClose: () => v
               Sync is on. {initial ? 'Your library is uploading in the background; you can keep using OpenStand.' : 'Your library is uploaded.'}
             </Note>
             {initial && <Bar value={initial.total > 1 ? initial.done / initial.total : undefined} label={initialLine(initial)} />}
-            <p className="text-sm text-muted">You can pair other devices now. They see your songs first, and files as they finish uploading.</p>
+            <p className="text-sm text-muted">
+              You can pair other devices now. They see your songs first, and files as they finish uploading.
+              {kind && ` Each one signs in to ${drive(kind).name} with the same account.`}
+            </p>
             <PairingQr />
           </>
         )}

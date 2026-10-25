@@ -4,17 +4,18 @@
  */
 import { Copy, Eye, EyeOff, Loader2, QrCode, ShieldAlert } from 'lucide-react'
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useLibSync } from '../api'
 import { Button, confirmDialog } from '../../ui/primitives'
 import { clearClipboardLater, copyText } from './clipboard'
 import { pairingCode } from './client'
-import { failureText } from './format'
+import { failureText, pairingWarning } from './format'
 import { drawQr } from './qr'
 
 const SHOW_MS = 2 * 60_000
-const WARNING = 'Anyone with this code can read and change your library and use your storage keys.'
 const CLEAR_MS = 60_000
 
 export function PairingQr() {
+  const WARNING = pairingWarning(useLibSync((st) => st.backendKind))
   const [code, setCode] = useState<string | null>(null)
   const [until, setUntil] = useState(0)
   const [now, setNow] = useState(() => Date.now())

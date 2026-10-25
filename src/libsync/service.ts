@@ -134,6 +134,8 @@ export async function restart(o: { afterStart?: (e: Engine) => Promise<void> } =
   if (gen !== generation) return
   if (!config) return publish(null, false)
   publish(null, true)
+  // Before the engine runs, the UI still needs the kind (drive wording, "Sign in again").
+  useLibSync.setState({ backendKind: config.backend.kind })
   // Another tab may already run the engine: ask it for its status rather than wait for its next change.
   channel?.postMessage({ db: d.name, cmd: 'status?' })
   const run = async () => {
@@ -150,7 +152,7 @@ export async function restart(o: { afterStart?: (e: Engine) => Promise<void> } =
       if (o.afterStart) void o.afterStart(e).catch((err) => console.warn('[libsync]', err))
     } catch (err) {
       const { toSyncError } = await engineModule()
-      useLibSync.setState({ phase: 'error', configured: true, error: toSyncError(err) })
+      useLibSync.setState({ phase: 'error', configured: true, backendKind: config.backend.kind, error: toSyncError(err) })
     }
   }
   const locks = typeof navigator !== 'undefined' ? navigator.locks : undefined
@@ -162,6 +164,15 @@ export async function restart(o: { afterStart?: (e: Engine) => Promise<void> } =
       void run()
     })
   })
+}
+
+/**
+ * This library's drive tokens changed (a new sign-in after `reauth`): restart the engine wherever it runs,
+ * here or in the tab holding the lock, so it starts over with the new tokens.
+ */
+export function restartEverywhere() {
+  void restart()
+  channel?.postMessage({ db: currentDb.name, cmd: 'restart' })
 }
 
 /** Relay checks in flight, per engine (one at a time; `online` may start another later). */
@@ -225,6 +236,8 @@ registerService(() => {
       if (m.status && !engine) useLibSync.setState(m.status, true)
       if (m.cmd === 'status?' && engine) publish(engine.status, true)
       if (m.cmd === 'syncNow' && engine) void engine.sync().catch(() => {})
+      // The lock holder restarts (even if its engine failed to start); other tabs have nothing to restart.
+      if (m.cmd === 'restart' && releaseLock) void restart()
       if (m.cmd === 'rename' && engine && typeof m.name === 'string') {
         useSettings.getState().setIn('sync', { deviceName: m.name })
         void engine.rename().catch(() => {})

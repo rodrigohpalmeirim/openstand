@@ -7,8 +7,9 @@ import { useEffect, useRef } from 'react'
 import { create } from 'zustand'
 import * as api from '../api'
 import type { BlobState } from '../api'
-import type { BackendConfig } from '../backends/types'
+import type { BackendConfig, OAuthKind } from '../backends/types'
 import type { JoinMode, PairingPayload } from '../model'
+import type { SignInIntent } from '../oauth/types'
 
 type Api = typeof api
 export type Actions = Pick<
@@ -26,6 +27,13 @@ export type Actions = Pick<
   | 'repair'
   | 'updateBackend'
   | 'renameDevice'
+  | 'oauthProviders'
+  | 'startSignIn'
+  | 'signInReturnPending'
+  | 'completeSignIn'
+  | 'driveBackendConfig'
+  | 'describeBackend'
+  | 'discardSignIn'
 >
 
 const over: Partial<Actions> = {}
@@ -43,11 +51,26 @@ export const previewJoin = (p: PairingPayload) => (over.previewJoin ?? api.previ
 export const joinSync = (p: PairingPayload, mode: JoinMode) => (over.joinSync ?? api.joinSync)(p, mode)
 export const syncNow = () => (over.syncNow ?? api.syncNow)()
 export const setPaused = (paused: boolean) => (over.setPaused ?? api.setPaused)(paused)
-export const leaveSync = () => (over.leaveSync ?? api.leaveSync)()
+export const leaveSync = (o?: { keepSignIn?: boolean }) => (over.leaveSync ?? api.leaveSync)(o)
 export const deleteRemoteData = () => (over.deleteRemoteData ?? api.deleteRemoteData)()
 export const repair = () => (over.repair ?? api.repair)()
 export const updateBackend = (cfg: BackendConfig) => (over.updateBackend ?? api.updateBackend)(cfg)
 export const renameDevice = (name: string) => (over.renameDevice ?? api.renameDevice)(name)
+export const oauthProviders = () => (over.oauthProviders ?? api.oauthProviders)()
+export const startSignIn = (kind: OAuthKind, intent: SignInIntent, o?: { chooseAccount?: boolean; loginHint?: string }) =>
+  (over.startSignIn ?? api.startSignIn)(kind, intent, o)
+export const signInReturnPending = () => (over.signInReturnPending ?? api.signInReturnPending)()
+export const completeSignIn = () => (over.completeSignIn ?? api.completeSignIn)()
+export const driveBackendConfig = (kind: OAuthKind) => (over.driveBackendConfig ?? api.driveBackendConfig)(kind)
+export const describeBackend = (cfg: BackendConfig) => (over.describeBackend ?? api.describeBackend)(cfg)
+export const discardSignIn = (kind: OAuthKind) => (over.discardSignIn ?? api.discardSignIn)(kind)
+
+/**
+ * Dev mocks only: a screen the `?libsyncMock=` phase opens in Settings → Library sync (the wizard at a
+ * drive's sign-in step, or the join flow with a code), so every step can be looked at without clicking.
+ */
+export type MockOpen = { kind: 'wizard'; storage?: OAuthKind } | { kind: 'join'; code: string }
+export const useMockOpen = create<{ open?: MockOpen }>(() => ({}))
 
 /** Dev mocks only: a fake blob state per id (undefined = ask the engine). */
 export const useMockBlobs = create<{ state?: (blobId: string) => BlobState | undefined }>(() => ({}))

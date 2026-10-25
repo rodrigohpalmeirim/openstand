@@ -1,12 +1,13 @@
 /** Library-sync status icon for the sidebar (§12.2). Hidden when sync isn't set up. */
-import { Cloud, CloudAlert, CloudDownload, CloudOff, CloudUpload, Loader2, RefreshCw, Settings, TriangleAlert } from 'lucide-react'
+import { Cloud, CloudAlert, CloudDownload, CloudOff, CloudUpload, Loader2, LogIn, RefreshCw, Settings, TriangleAlert } from 'lucide-react'
 import { useState } from 'react'
 import { useLibSync } from '../api'
-import { Button, Popover, cx } from '../../ui/primitives'
+import { Button, Popover, cx, toast } from '../../ui/primitives'
 import { syncNow } from './client'
 import { active, controls, downloadLine, fraction, indicatorState, initialLine, phaseLine, plural, syncProblem, uploadLine } from './format'
 import { openLibSyncSettings } from './nav'
 import { Bar } from './parts'
+import { isDrive, signInAgain, signInProblem } from './signin'
 
 const ICONS = { cloud: Cloud, upload: CloudUpload, download: CloudDownload, off: CloudOff, alert: CloudAlert, sync: Cloud }
 
@@ -32,6 +33,9 @@ export function SyncIndicator({ className }: { className?: string }) {
   const Icon = ICONS[st.icon]
   const { warning } = syncProblem(s)
   const c = controls(s)
+  // Cloud drives (§7.4): this device must sign in again, or as the account the library is in.
+  const code = s.phase === 'error' ? s.error?.code : undefined
+  const signIn = isDrive(s.backendKind) && (code === 'reauth' || code === 'wrongAccount') ? { kind: s.backendKind, choose: code === 'wrongAccount' } : undefined
 
   return (
     <>
@@ -85,6 +89,26 @@ export function SyncIndicator({ className }: { className?: string }) {
             </div>
           )}
           <div className="flex gap-2">
+            {signIn && (
+              <Button
+                size="sm"
+                variant="primary"
+                className="h-10 flex-1"
+                disabled={busy}
+                icon={busy ? <Loader2 className="size-4 animate-spin" /> : <LogIn className="size-4" />}
+                onClick={async () => {
+                  setBusy(true)
+                  try {
+                    await signInAgain(signIn.kind, signIn.choose)
+                  } catch (e) {
+                    toast(signInProblem(e, signIn.kind).message, 'error')
+                    setBusy(false)
+                  }
+                }}
+              >
+                {signIn.choose ? 'Sign in with another account' : 'Sign in again'}
+              </Button>
+            )}
             {c.syncNow && (
             <Button
               size="sm"
@@ -108,7 +132,7 @@ export function SyncIndicator({ className }: { className?: string }) {
             )}
             <Button
               size="sm"
-              variant={c.syncNow ? 'ghost' : 'primary'}
+              variant={c.syncNow || signIn ? 'ghost' : 'primary'}
               className="h-10 flex-1"
               icon={<Settings className="size-4" />}
               onClick={() => {

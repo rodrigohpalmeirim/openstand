@@ -37,6 +37,8 @@ import { blobKey } from './paths'
 
 export const SHA256 = /^[0-9a-f]{64}$/
 const WAIT_RETRY = 10 * 60_000
+/** Prefix of `TransferRow.error` for transfers that failed because the drive needs a new sign-in. */
+const REAUTH_MARK = 'reauth: '
 /** Header plus chunk 0's nonce: with content-derived nonces, a fingerprint of the version, size and chunk 0. */
 const FINGERPRINT = HEADER_BYTES + NONCE_BYTES
 const RESERVE = 200 * 1024 * 1024
@@ -133,6 +135,13 @@ export class BlobQueue {
     if (!this.running) {
       this.running = true
       await this.db.syncTransfers.where('state').equals('active').modify({ state: 'queued' })
+      // Transfers stopped by a lost drive sign-in go again once the engine restarts after signing in.
+      await this.db.syncTransfers
+        .where('state')
+        .equals('failed')
+        .modify((r) => {
+          if (r.error?.startsWith(REAUTH_MARK)) Object.assign(r, { state: 'queued', nextAt: 0 })
+        })
     }
     this.kick()
   }
@@ -279,7 +288,8 @@ export class BlobQueue {
       return
     }
     const attempts = r.attempts + 1
-    const fatal = e instanceof FormatError || (e instanceof BackendError && (e.code === 'forbidden' || e.code === 'auth'))
+    const reauth = e instanceof BackendError && e.code === 'reauth'
+    const fatal = reauth || e instanceof FormatError || (e instanceof BackendError && (e.code === 'forbidden' || e.code === 'auth'))
     const retryAfter = e instanceof BackendError && e.retryAfterMs ? e.retryAfterMs : 0
     const backoff = Math.max(retryAfter, Math.min(WAIT_RETRY, 2000 * 2 ** Math.min(attempts, 10)))
     await this.db.syncTransfers
@@ -287,7 +297,7 @@ export class BlobQueue {
         state: fatal ? 'failed' : 'queued',
         attempts,
         nextAt: this.d.now() + (fatal ? 60 * 60_000 : backoff),
-        error: String((e as Error)?.message ?? e),
+        error: (reauth ? REAUTH_MARK : '') + String((e as Error)?.message ?? e),
       })
       .catch(() => {})
     this.d.onError?.(e, r)

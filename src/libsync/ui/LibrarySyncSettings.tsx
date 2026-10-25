@@ -3,8 +3,10 @@ import {
   Cloud,
   CloudOff,
   ExternalLink,
+  FolderOpen,
   HardDrive,
   KeyRound,
+  LogIn,
   Laptop,
   Loader2,
   Lock,
@@ -19,24 +21,40 @@ import {
   WifiOff,
 } from 'lucide-react'
 import { useEffect, useId, useState, type ReactNode } from 'react'
-import { useLibSync, type LibSyncStatus } from '../api'
-import type { S3Config } from '../backends/types'
+import { useLibSync, type BackendDescription, type LibSyncStatus, type OAuthKind } from '../api'
+import type { BackendConfig, S3Config } from '../backends/types'
 import { useLibraries } from '../../library/browse/libraries'
 import { useNav } from '../../state/nav'
 import { useSettings } from '../../state/settings'
 import { defaultDeviceName } from '../../sync/deviceName'
 import { Button, Dialog, Field, IconButton, Input, confirmDialog, cx, toast } from '../../ui/primitives'
-import { checkBackend, currentPayload, deleteRemoteData, enableSync, leaveSync, renameDevice, repair, setPaused, syncNow, updateBackend } from './client'
-import { active, controls, downloadLine, errorText, failureText, fraction, initialLine, phaseLine, plural, relayNote, syncProblem, timeAgo, uploadLine, type ErrorAction } from './format'
+import {
+  checkBackend,
+  currentPayload,
+  deleteRemoteData,
+  describeBackend,
+  enableSync,
+  leaveSync,
+  oauthProviders,
+  renameDevice,
+  repair,
+  setPaused,
+  syncNow,
+  updateBackend,
+  useMockOpen,
+} from './client'
+import { DisconnectLinks, DriveLeaveNote, SignInProblemNote } from './DriveSignIn'
+import { active, controls, downloadLine, errorText, failureText, fmtBytes, fraction, initialLine, phaseLine, plural, relayNote, syncProblem, timeAgo, uploadLine, type ErrorAction } from './format'
 import { JoinFlow } from './JoinFlow'
 import { PairingQr } from './PairingQr'
 import { Bar, Block, Note, SwitchRow } from './parts'
 import { CheckList, CorsHelp, S3Fields, SetupWizard } from './SetupWizard'
+import { DRIVE_HOME, accountOf, ackSignInReturn, drive, isDrive, signInAgain, signInProblem, takeSignInReturn, type SignInProblem, type SignInReturn } from './signin'
 import { checkFailureText, formFromConfig, needsCors, preset, toConfig, validateForm, type S3Form } from './wizard'
 
 type Modal =
-  | { kind: 'wizard' }
-  | { kind: 'join'; rejoin?: boolean; reason?: 'libraryGone' }
+  | { kind: 'wizard'; resume?: SignInReturn; storage?: OAuthKind }
+  | { kind: 'join'; rejoin?: boolean; reason?: 'libraryGone'; resume?: SignInReturn; code?: string }
   | { kind: 'rename' }
   | { kind: 'pair' }
   | { kind: 'keys' }
@@ -46,21 +64,44 @@ type Modal =
 
 const fail = (e: unknown) => toast(failureText(e), 'error')
 
+interface StorageConfig {
+  /** The S3 config, when the library syncs through S3. */
+  config: S3Config | null
+  /** The shared backend config, any kind (cloud drives: the account hints). */
+  backend: BackendConfig | null
+  relay?: string | null
+  loading: boolean
+}
+
 /** The shared storage config (from the pairing payload), loaded when `want` turns true. */
-function useStorageConfig(want: boolean): { config: S3Config | null; relay?: string | null; loading: boolean } {
-  const [st, setSt] = useState<{ config: S3Config | null; relay?: string | null; loading: boolean }>({ config: null, loading: false })
+function useStorageConfig(want: boolean): StorageConfig {
+  const [st, setSt] = useState<StorageConfig>({ config: null, backend: null, loading: false })
   useEffect(() => {
     if (!want) return
     let live = true
     void Promise.resolve()
       .then(() => live && setSt((x) => ({ ...x, loading: true })))
       .then(() => currentPayload())
-      .then((p) => live && setSt({ config: p?.b.kind === 's3' ? p.b : null, relay: p?.r, loading: false }))
+      .then((p) => live && setSt({ config: p?.b.kind === 's3' ? p.b : null, backend: p?.b ?? null, relay: p?.r, loading: false }))
     return () => {
       live = false
     }
   }, [want])
   return st
+}
+
+/**
+ * The screen to open when Settings mounts: a drive sign-in that came back from the provider (§5.2) reopens
+ * the wizard or the join flow where it left; otherwise a dev mock may ask for one.
+ */
+function initialModal(r: SignInReturn | null): Modal {
+  if (r?.intent.type === 'setup') return { kind: 'wizard', resume: r }
+  if (r?.intent.type === 'join') return { kind: 'join', resume: r, rejoin: r.ui.rejoin, reason: r.ui.reason }
+  if (r) return null
+  const mock = import.meta.env.DEV ? useMockOpen.getState().open : undefined
+  if (mock?.kind === 'wizard') return { kind: 'wizard', storage: mock.storage }
+  if (mock?.kind === 'join') return { kind: 'join', code: mock.code }
+  return null
 }
 
 /* ---------------------------------------------------------------- Off */
@@ -78,6 +119,17 @@ function Bullet({ icon, title, children }: { icon: ReactNode; title: string; chi
 }
 
 function OffView({ open }: { open: (m: Modal) => void }) {
+  const [drives, setDrives] = useState<OAuthKind[]>([])
+  useEffect(() => {
+    let live = true
+    oauthProviders()
+      .then((d) => live && setDrives(d))
+      .catch(() => {})
+    return () => {
+      live = false
+    }
+  }, [])
+  const names = drives.map((k) => drive(k).name)
   return (
     <div className="grid gap-5">
       <p className="text-sm text-muted">
@@ -88,7 +140,9 @@ function OffView({ open }: { open: (m: Modal) => void }) {
       </p>
       <ul className="grid gap-3">
         <Bullet icon={<HardDrive className="size-4" />} title="Your own storage">
-          A bucket you control at Cloudflare R2, Backblaze B2, Amazon S3 or MinIO. No accounts, no OpenStand servers.
+          {names.length
+            ? `Your ${names.length > 1 ? `${names.slice(0, -1).join(', ')} or ${names[names.length - 1]}` : names[0]}, or a bucket you control (R2, B2, S3, MinIO). No OpenStand accounts or servers.`
+            : 'A bucket you control at Cloudflare R2, Backblaze B2, Amazon S3 or MinIO. No accounts, no OpenStand servers.'}
         </Bullet>
         <Bullet icon={<Lock className="size-4" />} title="Encrypted on the device">
           Everything is encrypted before it leaves this device. The storage only ever sees scrambled data.
@@ -136,9 +190,9 @@ function WarningBanner({ s, onAction }: { s: LibSyncStatus; onAction: (a: ErrorA
   )
 }
 
-function ErrorBanner({ s, onAction, providerConsole }: { s: LibSyncStatus; onAction: (a: ErrorAction) => void; providerConsole?: string }) {
+function ErrorBanner({ s, onAction, providerConsole, want }: { s: LibSyncStatus; onAction: (a: ErrorAction) => void; providerConsole?: string; want?: string }) {
   if (s.phase !== 'error' || !s.error || s.error.code === 'network') return null
-  const t = errorText(s.error)
+  const t = errorText(s.error, s.backendKind, want)
   const action =
     t.action === 'openProvider' ? (
       providerConsole ? (
@@ -458,7 +512,8 @@ function DeleteDialog({ s, onClose }: { s: LibSyncStatus; onClose: () => void })
  */
 function ResetDialog({ s, onClose }: { s: LibSyncStatus; onClose: () => void }) {
   const name = useLibraryName()
-  const { config, relay, loading } = useStorageConfig(true)
+  const { config, backend: shared, relay, loading } = useStorageConfig(true)
+  const kind = shared && isDrive(shared.kind) ? shared.kind : undefined
   const [typed, setTyped] = useState('')
   const [rotate, setRotate] = useState(false)
   const [form, setForm] = useState<S3Form | null>(null)
@@ -475,12 +530,12 @@ function ResetDialog({ s, onClose }: { s: LibSyncStatus; onClose: () => void }) 
   const storage = p?.name ?? 'your storage provider'
 
   const run = async () => {
-    if (!okName || busy || !config) return
-    let backend: S3Config = config
-    if (rotate) {
+    if (!okName || busy || !shared) return
+    let backend: BackendConfig = shared
+    if (rotate && config) {
       if (!f || Object.keys(validateForm(f)).length) return setShowErrors(true)
       backend = toConfig(f)
-      if (backend.accessKeyId === config.accessKeyId) return setKeyError('That’s the access key in use now. Create a new key first, then enter it here.')
+      if (backend.kind === 's3' && backend.accessKeyId === config.accessKeyId) return setKeyError('That’s the access key in use now. Create a new key first, then enter it here.')
     }
     setKeyError(null)
     setCheck(undefined)
@@ -495,7 +550,7 @@ function ResetDialog({ s, onClose }: { s: LibSyncStatus; onClose: () => void }) 
       await deleteRemoteData()
       // No relay saved (the site's check failed at setup): look again rather than carry that forward.
       await enableSync({ backend, relay: relay ?? undefined })
-      if (rotate) setRotated(config.accessKeyId)
+      if (rotate && config) setRotated(config.accessKeyId)
       else {
         toast('Sync was reset. Pair your other devices again.', 'ok')
         onClose()
@@ -547,7 +602,7 @@ function ResetDialog({ s, onClose }: { s: LibSyncStatus; onClose: () => void }) 
           <Button variant="ghost" onClick={onClose} disabled={busy}>
             Cancel
           </Button>
-          <Button variant="danger" onClick={run} disabled={!okName || busy || !config}>
+          <Button variant="danger" onClick={run} disabled={!okName || busy || !shared}>
             {busy && <Loader2 className="size-4 animate-spin" />}
             {rotate ? 'Test keys and reset' : 'Reset sync'}
           </Button>
@@ -560,16 +615,29 @@ function ResetDialog({ s, onClose }: { s: LibSyncStatus; onClose: () => void }) 
           {s.backendLabel ?? 'your storage'} is deleted and “{name}” is uploaded again with the new key. Every other device stops syncing until you pair it again with the new code.
         </p>
         <p className="text-muted">After that, the lost device or old code can’t read or change anything you sync.</p>
-        <Note tone="warn">
-          <p className="font-medium">Reset doesn’t change your storage keys.</p>
-          <p className="mt-0.5 text-muted">A lost device or leaked code still has them, so it can delete or fill up your bucket until you revoke them at {storage}.</p>
-        </Note>
-        {config ? (
+        {kind ? (
+          <Note tone="warn">
+            <p className="font-medium">A lost device stays signed in to {drive(kind).name}.</p>
+            <p className="mt-0.5 text-muted">
+              It can’t read anything you sync after the reset, but it could still delete or fill up the OpenStand folder. To cut it off, remove OpenStand from your {drive(kind).signInWith}{' '}
+              account after the reset, then sign in again on each of your devices.
+            </p>
+            <div className="mt-1.5">
+              <DisconnectLinks kind={kind} />
+            </div>
+          </Note>
+        ) : (
+          <Note tone="warn">
+            <p className="font-medium">Reset doesn’t change your storage keys.</p>
+            <p className="mt-0.5 text-muted">A lost device or leaked code still has them, so it can delete or fill up your bucket until you revoke them at {storage}.</p>
+          </Note>
+        )}
+        {kind ? null : config ? (
           <SwitchRow label="Also switch to new storage keys" hint="Recommended when a device or code may be in someone else’s hands." checked={rotate} onChange={setRotate} disabled={busy} />
         ) : loading ? (
           <Loader2 className="mx-auto size-5 animate-spin text-muted" />
         ) : null}
-        {rotate && f && (
+        {rotate && f && !kind && (
           <div className="grid gap-3 rounded-xl border border-line p-3">
             <ol className="grid list-decimal gap-1 pl-5 text-muted">
               <li>Create a new access key at {storage}, limited to this bucket.</li>
@@ -594,11 +662,62 @@ function ResetDialog({ s, onClose }: { s: LibSyncStatus; onClose: () => void }) 
 
 export function LibrarySyncSettings() {
   const s = useLibSync()
-  const [modal, setModal] = useState<Modal>(null)
+  // Back from a drive sign-in (§5.2): taken once, before the first render, so the right screen opens at once.
+  const [ret] = useState(() => takeSignInReturn())
+  const [modal, setModal] = useState<Modal>(() => initialModal(ret))
   const [busy, setBusy] = useState<null | 'sync' | 'repair' | 'leave' | 'pause'>(null)
+  const [reauthing, setReauthing] = useState(ret?.intent.type === 'reauth')
+  const [signInIssue, setSignInIssue] = useState<{ kind: OAuthKind; problem: SignInProblem } | null>(null)
+  const [desc, setDesc] = useState<BackendDescription>()
+  const kind = isDrive(s.backendKind) ? s.backendKind : undefined
   const quota = s.error?.code === 'quota'
-  const { config } = useStorageConfig(quota)
+  const { config, backend } = useStorageConfig(quota || !!kind)
   const close = () => setModal(null)
+
+  // "Sign in again" came back: the engine restarts with the new tokens (WP-O); say so, or why it didn't work.
+  useEffect(() => {
+    if (ret?.intent.type !== 'reauth') return
+    let live = true
+    void ret.done.then(async (out) => {
+      if (!live) return
+      ackSignInReturn(ret)
+      setReauthing(false)
+      if (out.ok) {
+        setSignInIssue(null)
+        toast(`Signed in to ${drive(ret.kind).name} again`, 'ok')
+      } else {
+        const want = accountOf((await currentPayload())?.b)
+        if (live) setSignInIssue({ kind: ret.kind, problem: signInProblem(out.error, ret.kind, { want }) })
+      }
+    })
+    return () => {
+      live = false
+    }
+  }, [ret])
+
+  // Drives: where the folder is and free space (needs this device's sign-in; skipped while signed out).
+  const signedOut = s.error?.code === 'reauth'
+  useEffect(() => {
+    if (!backend || !isDrive(backend.kind) || signedOut) return
+    let live = true
+    describeBackend(backend)
+      .then((d) => live && setDesc(d))
+      .catch(() => {})
+    return () => {
+      live = false
+    }
+  }, [backend, signedOut])
+
+  /** Leave for the provider's sign-in (never returns when it works). */
+  const reSignIn = async (chooseAccount?: boolean) => {
+    const k = kind ?? signInIssue?.kind
+    if (!k) return
+    try {
+      await signInAgain(k, chooseAccount)
+    } catch (e) {
+      setSignInIssue({ kind: k, problem: signInProblem(e, k) })
+    }
+  }
 
   const run = (what: NonNullable<typeof busy>, fn: () => Promise<unknown>, done?: string) => async () => {
     setBusy(what)
@@ -624,6 +743,7 @@ export function LibrarySyncSettings() {
             </span>
           )}
           This device keeps its library as a normal local library. Your other devices keep syncing.
+          {kind && <DriveLeaveNote kind={kind} />}
         </>
       ),
       confirmLabel: 'Stop syncing',
@@ -654,12 +774,13 @@ export function LibrarySyncSettings() {
     else if (a === 'joinNew') void joinNew()
     else if (a === 'stopSyncing') void leave()
     else if (a === 'reload') location.reload()
+    else if (a === 'signIn' || a === 'chooseAccount') void reSignIn(a === 'chooseAccount')
   }
 
   const dialogs = (
     <>
-      {modal?.kind === 'wizard' && <SetupWizard open onClose={close} />}
-      {modal?.kind === 'join' && <JoinFlow open onClose={close} rejoin={modal.rejoin} reason={modal.reason} />}
+      {modal?.kind === 'wizard' && <SetupWizard open onClose={close} resume={modal.resume} storage={modal.storage} />}
+      {modal?.kind === 'join' && <JoinFlow open onClose={close} rejoin={modal.rejoin} reason={modal.reason} resume={modal.resume} code={modal.code} />}
       {modal?.kind === 'rename' && <RenameDialog current={s.devices.find((d) => d.self)?.name ?? defaultDeviceName()} onClose={close} />}
       {modal?.kind === 'keys' && <KeysDialog onClose={close} />}
       {modal?.kind === 'cors' && <CorsDialog onClose={close} />}
@@ -677,7 +798,11 @@ export function LibrarySyncSettings() {
           }
         >
           <div className="grid gap-4 px-5 py-4">
-            <p className="text-sm text-muted">The new device gets the whole library and the storage keys. It can be a phone, tablet or computer with OpenStand open in a browser.</p>
+            <p className="text-sm text-muted">
+              {kind
+                ? `The new device gets the whole library, and signs in to ${drive(kind).name} itself with the same account. It can be a phone, tablet or computer with OpenStand open in a browser.`
+                : 'The new device gets the whole library and the storage keys. It can be a phone, tablet or computer with OpenStand open in a browser.'}
+            </p>
             <PairingQr />
           </div>
         </Dialog>
@@ -687,10 +812,29 @@ export function LibrarySyncSettings() {
 
   // Dialogs stay at the same tree position whether sync is on or off, so the wizard and join flow
   // survive the switch to "on" that they cause.
+  const signInNotes = (
+    <>
+      {reauthing && ret && (
+        <Note>
+          <span className="flex items-center gap-2">
+            <Loader2 className="size-4 animate-spin" /> Finishing sign-in with {drive(ret.kind).signInWith}…
+          </span>
+        </Note>
+      )}
+      {signInIssue && (
+        <SignInProblemNote problem={signInIssue.problem} onRetry={() => void reSignIn()} onChooseAccount={() => void reSignIn(true)} />
+      )}
+    </>
+  )
+
   if (!s.configured)
     return (
       <>
-        <OffView open={setModal} />
+        {/* One element before the dialogs, as when sync is on: the wizard must not remount when sync starts. */}
+        <div>
+          {(reauthing || signInIssue) && <div className="mb-4 grid gap-3">{signInNotes}</div>}
+          <OffView open={setModal} />
+        </div>
         {dialogs}
       </>
     )
@@ -701,7 +845,15 @@ export function LibrarySyncSettings() {
     <>
       <div className="grid gap-8">
         <div className="grid gap-3">
-          <ErrorBanner s={s} onAction={onAction} providerConsole={config ? preset(config.provider).console : undefined} />
+          {signInNotes}
+          {!signInIssue && !reauthing && (
+            <ErrorBanner
+              s={s}
+              onAction={onAction}
+              providerConsole={kind ? (desc?.openUrl ?? DRIVE_HOME[kind]) : config ? preset(config.provider).console : undefined}
+              want={accountOf(backend)}
+            />
+          )}
           <WarningBanner s={s} onAction={onAction} />
           <StatusCard s={s} />
           {(c.syncNow || c.addDevice) && (
@@ -730,14 +882,41 @@ export function LibrarySyncSettings() {
         </Block>
 
         <Block title="Storage" icon={<HardDrive className="size-4" />}>
-          <div className="flex flex-wrap items-center gap-3 rounded-xl border border-line px-4 py-2.5">
-            <span className="min-w-0 flex-1 basis-48 break-words text-sm">{s.backendLabel ?? 'Your storage'}</span>
-            {c.storageKeys && (
-              <Button size="sm" variant="ghost" icon={<KeyRound className="size-4" />} onClick={() => setModal({ kind: 'keys' })}>
-                Update storage keys
-              </Button>
-            )}
-          </div>
+          {kind ? (
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-xl border border-line px-4 py-2.5">
+              <span className="min-w-0 flex-1 basis-48 text-sm">
+                <span className="block break-words font-medium">{s.backendLabel ?? drive(kind).name}</span>
+                <span className="block text-xs text-muted">
+                  {desc?.location ?? drive(kind).location}
+                  {desc?.freeBytes !== undefined ? ` · ${fmtBytes(desc.freeBytes)} free` : ''}
+                </span>
+              </span>
+              {desc?.openUrl && (
+                <a
+                  href={desc.openUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex h-8 items-center gap-1.5 rounded-lg px-3 text-sm font-medium hover:bg-surface-2"
+                >
+                  <FolderOpen className="size-4" /> Open folder
+                </a>
+              )}
+              {c.storageKeys && (
+                <Button size="sm" variant="ghost" icon={<LogIn className="size-4" />} onClick={() => void reSignIn()}>
+                  Sign in again
+                </Button>
+              )}
+            </div>
+          ) : (
+            <div className="flex flex-wrap items-center gap-3 rounded-xl border border-line px-4 py-2.5">
+              <span className="min-w-0 flex-1 basis-48 break-words text-sm">{s.backendLabel ?? 'Your storage'}</span>
+              {c.storageKeys && (
+                <Button size="sm" variant="ghost" icon={<KeyRound className="size-4" />} onClick={() => setModal({ kind: 'keys' })}>
+                  Update storage keys
+                </Button>
+              )}
+            </div>
+          )}
           {c.pause && (
             <SwitchRow
               label="Pause sync"

@@ -11,7 +11,7 @@ import { markRemote } from '../db/capture'
 import type { OpenStandDB } from '../db/db'
 import type { Song } from '../db/schema'
 import { createBackend } from './backends'
-import { BackendError, type BackendKind, type ObjectInfo, type StorageBackend, type UploadState } from './backends/types'
+import { BackendError, isOAuthKind, type BackendKind, type ObjectInfo, type StorageBackend, type UploadState } from './backends/types'
 import { listAll as listAllBounded } from './backends/util'
 import { BlobQueue, localBlob, LocalQuotaError, queueDownload, queueUpload, referencedBlobs, remoteBlobMatches, songPriority } from './blobs'
 import { applyOps, capture, claimedSize, isPlainOutbox, mergeApplied, newApplied, opsAhead, OutboxWriter, plainBatch, projectCtx, syncTxTables, type Applied, type Core } from './apply'
@@ -42,6 +42,7 @@ import { blobKey, blobsPrefix, deviceKey, devicesPrefix, headKey, headsPrefix, l
 import { NoticeChannel, type NoticeChannelOptions, type RelayState } from './relay'
 import { realTimers, type Timers } from './timers'
 import { getConfig, getState, putState, TABLE_OF } from './state'
+import { tokenSource } from './oauth/tokens'
 import { defaultDeviceName, thisDevice, uniqueDeviceName } from '../sync/deviceName'
 import type { LibSyncError, LibSyncErrorCode, LibSyncPhase, PullTrigger, SyncDiagnostics, TransferProgress } from './api'
 
@@ -102,6 +103,13 @@ const MESSAGES: Partial<Record<LibSyncErrorCode, string>> = {
   corrupt: 'This device needs to rejoin the synced library.',
   network: 'Offline. Changes will sync when you’re back online.',
   server: 'Your storage had a problem. Sync will retry.',
+  reauth: 'Sign in to your storage again to keep syncing. Your changes are kept on this device until then.',
+  wrongAccount: 'This library isn’t in the account you signed in with.',
+}
+
+/** A provider's rate limit (§8): not offline and not an error; sync backs off at least this long (ms). */
+export function rateLimitedFor(e: unknown): number | undefined {
+  return e instanceof BackendError && e.code === 'rateLimited' ? Math.max(0, e.retryAfterMs ?? 0) : undefined
 }
 
 /** Map any thrown value to a `LibSyncError` code + wording (§12.3). */
@@ -129,7 +137,8 @@ export function toSyncError(e: unknown, at = Date.now()): LibSyncError {
         cors: 'cors',
         quota: 'quota',
         network: 'network',
-        rateLimited: 'network',
+        // Shown as retrying, never as offline (SYNC-DRIVES.md §8); the engine backs off by `retryAfterMs`.
+        rateLimited: 'server',
         clock: 'clock',
         precondition: 'rejoin',
         server: 'server',
@@ -140,11 +149,13 @@ export function toSyncError(e: unknown, at = Date.now()): LibSyncError {
     )[e.code]
   } else if ((e as Error)?.name === 'QuotaExceededError') code = 'localQuota'
   if (!detail && e instanceof Error && !(e instanceof SyncError)) detail = e.message
+  if (e instanceof BackendError && e.code === 'rateLimited')
+    return { code, message: 'Your storage asked OpenStand to slow down. Sync will retry shortly.', detail, at }
   return { code, message: (e instanceof SyncError && e.message !== code ? e.message : MESSAGES[code]) ?? String((e as Error)?.message ?? e), detail, at }
 }
 
 /** Errors that stop sync until the user acts (no automatic retry loop). */
-const FATAL: LibSyncErrorCode[] = ['wrongSecret', 'libraryGone', 'newerFormat', 'corrupt', 'rejoin']
+const FATAL: LibSyncErrorCode[] = ['wrongSecret', 'libraryGone', 'newerFormat', 'corrupt', 'rejoin', 'reauth', 'wrongAccount']
 
 /** `listAll` gave up on a flooded or looping listing (`backends/util.ts`). */
 const LIST_OVERFLOW = ['TooManyKeys', 'ListLoop']
@@ -319,6 +330,8 @@ export class Engine {
   private started = false
   private stopped = false
   private failures = 0
+  /** A provider's rate limit: no request before this (wall ms). */
+  private retryAt = 0
   private captureTimer?: ReturnType<typeof setTimeout>
   private pullTimer?: ReturnType<typeof setTimeout>
   /** The pull started by `pullNow`, and a request that arrived while it ran (it may have listed too early). */
@@ -380,10 +393,12 @@ export class Engine {
       },
       onError: (e) => {
         const err = toSyncError(e, this.core.now())
+        this.core.log?.('transfer failed', e)
+        // Rate limited: the queue already waits `retryAfterMs` for that transfer; nothing to show.
+        if (rateLimitedFor(e) !== undefined) return
         if (err.code === 'network') this.setStatus({ phase: 'offline' })
         // A bad object (tampered blob, unknown container version) is that blob's problem, never fatal.
         else if (!(e instanceof FormatError) && err.code !== 'unknown' && err.code !== 'corrupt') this.setStatus({ phase: 'error', error: err })
-        this.core.log?.('transfer failed', e)
       },
       onProgress: () => this.scheduleStatus(),
       beforeUpload: () => this.ensureLibrary(LIBRARY_CHECK_UPLOADS),
@@ -400,7 +415,9 @@ export class Engine {
   static async fromConfig(db: OpenStandDB, config: SyncConfig, o: EngineOptions = {}): Promise<Engine> {
     const now = o.now ?? Date.now
     const keys = o.keys ?? (await deriveLibraryKeys(config.secret))
-    const backend = o.backend ?? createBackend(config.backend, { now })
+    // Drives get this device's tokens for this library (SYNC-DRIVES.md §5.4).
+    const kind = config.backend.kind
+    const backend = o.backend ?? createBackend(config.backend, { now, auth: isOAuthKind(kind) ? tokenSource(db, kind, { now }) : undefined })
     let engine: Engine | undefined
     const clock = createClock(config.deviceId, (await getState(db, 'clock')) ?? HLC_ZERO, now, {
       onAhead: (device, ms) => engine?.clockAhead(device, ms),
@@ -1321,6 +1338,7 @@ export class Engine {
         return a
       })
       this.failures = 0
+      this.retryAt = 0
       this.setStatus({ phase: 'idle', error: undefined })
       this.transfers.kick()
       await this.refreshStatus()
@@ -1330,14 +1348,20 @@ export class Engine {
       const err = toSyncError(e, this.core.now())
       if (this.status.diag.lastPull?.at !== started) done(false)
       this.failures++
-      this.setStatus(err.code === 'network' ? { phase: 'offline' } : { phase: 'error', error: err })
+      const wait = rateLimitedFor(e)
+      if (wait !== undefined) {
+        // Retrying, not offline and not an error: keep the phase "syncing" until the next attempt.
+        this.retryAt = Math.max(this.retryAt, this.core.now() + wait)
+        this.setStatus({ phase: 'syncing' })
+      } else this.setStatus(err.code === 'network' ? { phase: 'offline' } : { phase: 'error', error: err })
       throw e
     }
   }
 
-  /** Backoff after consecutive failures: 5 s, 10 s, 20 s … up to 5 min. */
+  /** Backoff after consecutive failures: 5 s, 10 s, 20 s … up to 5 min, and at least a rate limit's `retryAfterMs`. */
   get backoff() {
-    return this.failures ? Math.min(MAX_BACKOFF, 5000 * 2 ** (this.failures - 1)) : 0
+    const exp = this.failures ? Math.min(MAX_BACKOFF, 5000 * 2 ** (this.failures - 1)) : 0
+    return Math.max(exp, this.retryAt - this.core.now())
   }
 
   private fatal() {

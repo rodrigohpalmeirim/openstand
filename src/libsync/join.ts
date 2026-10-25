@@ -8,7 +8,7 @@ import type { OpenStandDB } from '../db/db'
 import type { KV, PageAnnotations, Setlist, Song, SongLayers } from '../db/schema'
 import { createBackend } from './backends'
 import { listAll } from './backends/util'
-import { BackendError, type BackendConfig, type StorageBackend } from './backends/types'
+import { BackendError, isOAuthKind, type BackendConfig, type StorageBackend } from './backends/types'
 import { claimedSize } from './apply'
 import { SHA256 } from './blobs'
 import { decodeBatch, decodeDevice, decodeMeta, encodeMeta, objectStream, readSnapshot } from './codec'
@@ -21,6 +21,8 @@ import { materialize, mergeDelta } from './merge'
 import type { DeviceRecord, JoinCheckpoint, JoinMode, PairingPayload, RecordDelta, SyncConfig } from './model'
 import { devicesPrefix, headsPrefix, latestHeads, libraryPrefix, logKey, logPrefix, metaKey, parseKey, snapPrefix } from './paths'
 import { allRecordKeys, clearSyncTables, deleteState, getConfig, getState, markDirty, putState, setCapture } from './state'
+import { PROVIDERS } from './oauth/config'
+import { forgetTokens, readTokens, tokenSource } from './oauth/tokens'
 
 export interface FlowOptions extends EngineOptions {
   /** Build the backend for a config (tests share one MemoryBackend). */
@@ -30,7 +32,11 @@ export interface FlowOptions extends EngineOptions {
   onProgress?: (step: string, done: number, total: number) => void
 }
 
-const backendFor = (cfg: BackendConfig, o: FlowOptions) => o.backend ?? o.makeBackend?.(cfg) ?? createBackend(cfg, { now: o.now })
+/** Drives sign in with this device's tokens for library `db` (SYNC-DRIVES.md §5.4); without `db` they throw `reauth`. */
+const backendFor = (cfg: BackendConfig, o: FlowOptions, db?: OpenStandDB) =>
+  o.backend ??
+  o.makeBackend?.(cfg) ??
+  createBackend(cfg, { now: o.now, auth: db && isOAuthKind(cfg.kind) ? tokenSource(db, cfg.kind, { now: o.now }) : undefined })
 
 const defaultDemoCheck = async (song: Song, db: OpenStandDB) => (await import('../library/browse/Welcome')).isUntouchedDemo(song, db)
 
@@ -115,12 +121,22 @@ export async function adoptSiteRelay(engine: Engine, base: string, available: ()
 // Join
 // ---------------------------------------------------------------------------------------------
 
-/** Derive keys from a pairing payload and prove them by decrypting `meta` (§10.3 step 1). */
-export async function openPairing(p: PairingPayload, o: FlowOptions = {}): Promise<{ keys: LibraryKeys; backend: StorageBackend; name: string }> {
+/**
+ * Derive keys from a pairing payload and prove them by decrypting `meta` (§10.3 step 1). `db`: the library
+ * whose drive tokens to use. On a drive, a missing `meta` (or Drive folder) most likely means another account
+ * (SYNC-DRIVES.md §7.3): `wrongAccount`, whose `detail` is the account the code was made for.
+ */
+export async function openPairing(p: PairingPayload, o: FlowOptions = {}, db?: OpenStandDB): Promise<{ keys: LibraryKeys; backend: StorageBackend; name: string }> {
   const keys = await deriveLibraryKeys(p.s)
-  const backend = backendFor(p.b, o)
-  const bytes = await backend.get(metaKey(keys.libraryId))
-  if (!bytes) throw new SyncError('libraryGone')
+  const backend = backendFor(p.b, o, db)
+  let bytes: Uint8Array | null
+  try {
+    bytes = await backend.get(metaKey(keys.libraryId))
+  } catch (e) {
+    if (isOAuthKind(p.b.kind) && e instanceof BackendError && e.code === 'notFound') throw await wrongAccount(p, db)
+    throw e
+  }
+  if (!bytes) throw isOAuthKind(p.b.kind) ? await wrongAccount(p, db) : new SyncError('libraryGone')
   try {
     const meta = await decodeMeta(keys, bytes)
     return { keys, backend, name: p.n || meta.name }
@@ -130,6 +146,17 @@ export async function openPairing(p: PairingPayload, o: FlowOptions = {}): Promi
       throw new SyncError('rejoin', 'That synced library was made by an older OpenStand. Reset sync on a device that has it, then pair again.')
     throw new SyncError('wrongSecret')
   }
+}
+
+async function wrongAccount(p: PairingPayload, db?: OpenStandDB): Promise<SyncError> {
+  const cfg = p.b as Extract<BackendConfig, { account?: string }>
+  const name = PROVIDERS[p.b.kind as keyof typeof PROVIDERS].name
+  const got = db && isOAuthKind(p.b.kind) ? (await readTokens(db, p.b.kind).catch(() => undefined))?.account : undefined
+  const want = cfg.account
+  const message =
+    `This library isn’t in the ${name} account you signed in with${got ? ` (${got})` : ''}.` +
+    `${want ? ` The code was made for ${want}.` : ''} Sign in with that account, or get a new code if the library was deleted.`
+  return new SyncError('wrongAccount', message, want)
 }
 
 /** Batches the join preview reads at most (beyond the snapshot); it's an estimate, not a sync. */
@@ -243,7 +270,7 @@ export interface JoinPreview {
 
 /** §10.3 step 2: what joining would bring, and the suggested mode. */
 export async function previewJoin(db: OpenStandDB, p: PairingPayload, o: FlowOptions = {}): Promise<JoinPreview> {
-  const { keys, backend } = await openPairing(p, o)
+  const { keys, backend } = await openPairing(p, o, db)
   const remote = await remoteLibrary(keys, backend, (o.now ?? Date.now)())
   const { songs } = await realLocalSongs(db, o)
   const plan = planJoin({ songs, setlists: await db.setlists.toArray() }, remote, await localHashOf(db))
@@ -264,7 +291,7 @@ export async function previewJoin(db: OpenStandDB, p: PairingPayload, o: FlowOpt
  */
 export async function join(db: OpenStandDB, p: PairingPayload, mode: Exclude<JoinMode, 'newLibrary'>, o: FlowOptions = {}): Promise<Engine> {
   if ((await getConfig(db)) && !(await getState(db, 'join'))) throw new SyncError('unknown', 'Library sync is already on for this library')
-  const { keys, backend, name } = await openPairing(p, o)
+  const { keys, backend, name } = await openPairing(p, o, db)
   const now = o.now ?? Date.now
   let config = await getConfig(db)
   if (!config) {
@@ -302,7 +329,7 @@ export async function resumeJoin(db: OpenStandDB, o: FlowOptions = {}): Promise<
   const config = await getConfig(db)
   let cp = await getState(db, 'join')
   if (!config || !cp) throw new SyncError('unknown', 'No join in progress')
-  const engine = await Engine.fromConfig(db, config, { ...o, backend: o.backend ?? backendFor(config.backend, o) })
+  const engine = await Engine.fromConfig(db, config, { ...o, backend: o.backend ?? backendFor(config.backend, o, db) })
   const step = async (phase: JoinCheckpoint['phase']) => {
     cp = { ...cp!, phase }
     await putState(db, 'join', cp)
@@ -403,8 +430,22 @@ async function joinMerge(db: OpenStandDB, stash: Record<string, unknown>, o: Flo
 const withTimeout = <T>(p: Promise<T>, ms: number) =>
   Promise.race([p, new Promise<undefined>((r) => setTimeout(() => r(undefined), ms))]).catch(() => undefined)
 
-/** §10.4 Stop syncing on this device. Library rows stay; the library becomes a normal local one. */
-export async function leave(db: OpenStandDB, engine?: Engine, o: FlowOptions = {}) {
+/**
+ * After "Stop syncing" or "Delete synced data": this device's drive sign-in for the library goes too, Dropbox's
+ * revoked first (SYNC-DRIVES.md §5.4). Best effort; the sync tables (and with them the tokens) are cleared next.
+ */
+async function forgetSignIn(db: OpenStandDB, o: FlowOptions & { keepSignIn?: boolean }) {
+  if (o.keepSignIn) return
+  const kinds = Object.keys((await getState(db, 'oauth').catch(() => undefined)) ?? {}).filter(isOAuthKind)
+  for (const kind of kinds) await withTimeout(forgetTokens(db, kind, { now: o.now }), 10_000)
+}
+
+/**
+ * §10.4 Stop syncing on this device. Library rows stay; the library becomes a normal local one. `keepSignIn`:
+ * keep this device's drive tokens (rejoining the same library right after), else they are deleted (and
+ * Dropbox's revoked).
+ */
+export async function leave(db: OpenStandDB, engine?: Engine, o: FlowOptions & { keepSignIn?: boolean } = {}) {
   const e = engine ?? (await getConfig(db).then((c) => (c ? Engine.fromConfig(db, c, o) : undefined)))
   if (e) {
     await withTimeout(e.sync(), 10_000)
@@ -419,7 +460,10 @@ export async function leave(db: OpenStandDB, engine?: Engine, o: FlowOptions = {
     }
   }
   setCapture(db, false)
+  const kept = o.keepSignIn ? await getState(db, 'oauth') : undefined
+  await forgetSignIn(db, o)
   await clearSyncTables(db)
+  if (kept) await putState(db, 'oauth', kept)
 }
 
 /** §10.5 Delete everything under `os1/<libraryId>/`. Then sync is off on this device too. */
@@ -433,6 +477,7 @@ export async function deleteRemote(db: OpenStandDB, engine?: Engine, o: FlowOpti
   await e.core.backend.delete(metaKey(e.core.keys.libraryId))
   for (const k of await e.listAll(prefix)) await e.core.backend.delete(k.key)
   setCapture(db, false)
+  await forgetSignIn(db, o)
   await clearSyncTables(db)
 }
 
