@@ -70,7 +70,8 @@ Or deploy from GitHub: either connect the repository in the Cloudflare dashboard
 Import a repository*; build command `npm run build`, deploy command `npx wrangler deploy`), or add
 `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` repository secrets: CI then deploys every push to `main`
 once the checks pass. Add a custom domain under the Worker's *Settings → Domains & Routes*. To keep other
-sites from using your relay, set `ALLOWED_ORIGINS` in `wrangler.jsonc`.
+sites from using your relay, set `ALLOWED_ORIGINS` in `wrangler.jsonc`. Recurring maintenance, such as
+renewing the OneDrive client secret, is in [docs/OPERATIONS.md](docs/OPERATIONS.md).
 
 ## Library sync
 
