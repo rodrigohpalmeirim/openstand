@@ -288,10 +288,14 @@ function StorageCard({
   )
 }
 
-/** Storage step: S3-compatible, then the drives `oauthProviders()` offers here (a radio group; arrow keys move). */
+/** The order storage choices are offered in; the first one available is preselected. */
+const STORAGE_ORDER: StorageChoice[] = ['gdrive', 'onedrive', 'dropbox', 's3']
+const storageOptions = (drives: OAuthKind[]) => STORAGE_ORDER.filter((o) => o === 's3' || drives.includes(o))
+
+/** Storage step: the drives `oauthProviders()` offers here, then S3-compatible (a radio group; arrow keys move). */
 function StorageCards({ value, drives, onChange }: { value: StorageChoice; drives: OAuthKind[]; onChange: (v: StorageChoice) => void }) {
   const refs = useRef<(HTMLButtonElement | null)[]>([])
-  const options: StorageChoice[] = ['s3', ...drives]
+  const options = storageOptions(drives)
   const keys = (i: number) => (e: KeyboardEvent) => {
     const d = e.key === 'ArrowRight' || e.key === 'ArrowDown' ? 1 : e.key === 'ArrowLeft' || e.key === 'ArrowUp' ? -1 : 0
     if (!d) return
@@ -360,11 +364,18 @@ export function SetupWizard({ open, onClose, resume, storage }: { open: boolean;
     }
   }, [])
 
-  // The drives offered here; S3 is always there, so the step works while this loads.
+  // The drives offered here; S3 is always there, so the step works while this loads. Once they're known,
+  // preselect the first choice (Google Drive when offered) unless the user already picked one.
+  // (Opened at a specific drive — a sign-in return or a dev mock — counts as already picked.)
+  const picked = useRef(!!resume || !!storage)
   useEffect(() => {
     let live = true
     oauthProviders()
-      .then((d) => live && setDrives(d))
+      .then((d) => {
+        if (!live) return
+        setDrives(d)
+        if (!picked.current) dispatch({ type: 'storage', storage: storageOptions(d)[0] })
+      })
       .catch(() => {})
     return () => {
       live = false
@@ -559,7 +570,14 @@ export function SetupWizard({ open, onClose, resume, storage }: { open: boolean;
 
         {s.step === 'storage' && (
           <>
-            <StorageCards value={s.storage} drives={drives} onChange={(storage) => dispatch({ type: 'storage', storage })} />
+            <StorageCards
+              value={s.storage}
+              drives={drives}
+              onChange={(storage) => {
+                picked.current = true
+                dispatch({ type: 'storage', storage })
+              }}
+            />
             {s.storage === 's3' ? (
               <div className="grid gap-2">
                 <span className="text-xs font-medium uppercase tracking-wide text-muted">Provider</span>
