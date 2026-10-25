@@ -8,6 +8,42 @@ export function zoneAt(x: number, y: number, w: number, h: number): TouchZone {
   return (row + col) as TouchZone
 }
 
+const GRID = [
+  ['tl', 'tc', 'tr'],
+  ['ml', 'mc', 'mr'],
+  ['bl', 'bc', 'br'],
+] as const satisfies readonly (readonly TouchZone[])[]
+
+export interface ZoneArea {
+  zone: TouchZone
+  action: ActionId
+  row: number
+  col: number
+  rows: number
+  cols: number
+}
+
+/**
+ * The zones as rectangles for drawing: runs along a row doing the same thing, then such runs stacked
+ * in the rows below (so the default columns stay columns).
+ */
+export function zoneAreas(zones: Record<TouchZone, ActionId>): ZoneArea[] {
+  const out: ZoneArea[] = []
+  GRID.forEach((cells, row) => {
+    for (let col = 0; col < 3; ) {
+      const zone = cells[col]
+      const action = zones[zone]
+      let cols = 1
+      while (col + cols < 3 && zones[cells[col + cols]] === action) cols++
+      const above = out.find((a) => a.row + a.rows === row && a.col === col && a.cols === cols && a.action === action)
+      if (above) above.rows++
+      else out.push({ zone, action, row, col, rows: 1, cols })
+      col += cols
+    }
+  })
+  return out
+}
+
 /** Normalise a KeyboardEvent to the identifier stored in bindings. */
 export function keyId(e: KeyboardEvent): string {
   const mods = (e.ctrlKey ? 'Ctrl+' : '') + (e.altKey ? 'Alt+' : '') + (e.metaKey ? 'Meta+' : '') + (e.shiftKey ? 'Shift+' : '')

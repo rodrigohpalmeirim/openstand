@@ -268,7 +268,7 @@ const display = (t: Terms): SectionDef => ({
       title: 'While performing',
       items: [
         toggleItem('display.showPageNumber', 'Page numbers', 'Shows “3 / 8” in a corner.'),
-        toggleItem('display.showSongTitle', `${t.Song} title`, 'Shows the title at the top when the toolbar is hidden.'),
+        toggleItem('display.showSongTitle', `${t.Song} title`, `Briefly shows the title at the top when a ${t.song} opens or the toolbar hides.`),
         toggleItem('display.showNextSongHint', `Next ${t.song} hint`, `On the last page, shows which ${t.song} comes next.`, 'next up setlist'),
         sliderItem('display.toolbarAutoHide', 'Hide toolbar after', { min: 0, max: 10, step: 1, format: sec }, undefined, 'auto-hide overlay'),
         toggleItem('display.hideCursor', 'Hide mouse cursor', 'Hides the pointer when the mouse is idle.', 'mouse'),
@@ -335,7 +335,6 @@ const turning = (t: Terms): SectionDef => ({
         toggleItem('pageTurn.continueToNextSong', `Continue to the next ${t.song}`, `Turning past the last page opens the next ${t.song} in the setlist or list.`, 'setlist'),
         toggleItem('pageTurn.backToPrevSong', `Go back to the previous ${t.song}`, `Turning back from the first page opens the end of the previous ${t.song}.`, 'setlist'),
         toggleItem('pageTurn.pedalStopsAtSongEnd', `Pedals stop at the end of a ${t.song}`, `A pedal won’t change ${t.songs} by accident; tap to move on.`, 'prevent pedal'),
-        toggleItem('pageTurn.showZonesHint', `Show tap zones when a ${t.song} opens`, 'Briefly outlines the zones as a reminder.', 'hint overlay'),
       ],
     },
   ],

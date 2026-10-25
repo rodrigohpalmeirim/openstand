@@ -62,6 +62,17 @@ describe('settings export/import', () => {
     // This device stays in its band's room; only shared preferences reset.
     expect(out.sync).toEqual({ ...D.sync, deviceName: 'Keys', room: 'gig', relayUrl: '/relay', role: 'leader', autoConnect: true })
     expect(out.onboarded).toBe(true)
+    expect(resetAllSettings({ ...mine, zonesHintSeen: true }).zonesHintSeen).toBe(true)
+  })
+
+  it('keeps the tap-zone hint state per device and drops the removed hint setting', () => {
+    const json = settingsToJSON({ ...DEFAULT_SETTINGS, zonesHintSeen: true })
+    expect(JSON.parse(json).settings.zonesHintSeen).toBeUndefined()
+    const old = JSON.stringify({ app: 'openstand', kind: 'settings', version: 2, settings: { zonesHintSeen: true, pageTurn: { showZonesHint: false, debounceMs: 300 } } })
+    const out = settingsFromJSON(old, DEFAULT_SETTINGS)
+    expect(out.zonesHintSeen).toBe(false)
+    expect(out.pageTurn.debounceMs).toBe(300)
+    expect('showZonesHint' in out.pageTurn).toBe(false)
   })
 
   it('accepts a bare settings object', () => {

@@ -7,6 +7,7 @@ import { DEFAULT_SETTINGS, mergeSettings, migrateSettings, SETTINGS_VERSION, typ
 const DEVICE_ONLY = [
   'recentSearches',
   'onboarded',
+  'zonesHintSeen',
   'sync.deviceName',
   'sync.role',
   'sync.relayUrl',
@@ -41,7 +42,7 @@ export function settingsToJSON(s: Settings): string {
  * "Reset all settings": defaults everywhere (bindings included), but things the user made rather than
  * chose are kept (annotation favourites and recent colours, import patterns), and so is everything
  * device-only: this device's sync name, room and connection (resetting them would silently move it out
- * of its band's room), its MIDI ports, and the onboarding / recent-search state.
+ * of its band's room), its MIDI ports, and the onboarding / tap-zone hint / recent-search state.
  */
 export function resetAllSettings(s: Settings): Settings {
   const D = DEFAULT_SETTINGS

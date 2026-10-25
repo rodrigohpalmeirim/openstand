@@ -1,69 +1,100 @@
-import { CornerUpLeft } from 'lucide-react'
-import { useEffect, useState } from 'react'
-import { useSettings, type TouchZone } from '../state/settings'
+import { ChevronLeft, ChevronRight, CornerUpLeft, Menu as MenuIcon } from 'lucide-react'
+import { useCallback, useEffect, useState } from 'react'
+import { settings, useSettings } from '../state/settings'
 import { useViewer } from '../state/viewer'
 import { useMetronome } from '../tools/metronome/engine'
 import { ACTIONS, onAction, runAction, type ActionId } from './actions'
+import { zoneAreas } from './input'
 import { firstPageOf, type Stop } from './layout'
 
-const COLS = [
-  ['tl', 'ml', 'bl'],
-  ['tc', 'mc', 'bc'],
-  ['tr', 'mr', 'br'],
-] as const satisfies readonly (readonly TouchZone[])[]
+const FADE_MS = 500
+
+/** 'on' for `ms` once `start` is true, then 'fading' for FADE_MS, then 'off'. `dismiss` starts the fade early. */
+function useBriefly(start: boolean, ms: number) {
+  const [phase, setPhase] = useState<'on' | 'fading' | 'off'>('on')
+  useEffect(() => {
+    if (!start || phase !== 'on') return
+    const t = window.setTimeout(() => setPhase('fading'), ms)
+    return () => clearTimeout(t)
+  }, [start, phase, ms])
+  useEffect(() => {
+    if (phase !== 'fading') return
+    const t = window.setTimeout(() => setPhase('off'), FADE_MS)
+    return () => clearTimeout(t)
+  }, [phase])
+  const dismiss = useCallback(() => setPhase((p) => (p === 'on' ? 'fading' : p)), [])
+  return [phase, dismiss] as const
+}
+
+function ZoneIcon({ a }: { a: ActionId }) {
+  if (a === 'nextPage' || a === 'nextHalfPage') return <ChevronRight className="size-4 shrink-0" />
+  if (a === 'prevPage' || a === 'prevHalfPage') return <ChevronLeft className="size-4 shrink-0" />
+  if (a === 'toggleToolbar') return <MenuIcon className="size-4 shrink-0" />
+  return null
+}
 
 /**
- * Outlines the tap zones for a moment when a song opens (touch screens only, where zones are the main
- * way to turn pages). A column doing one thing everywhere is drawn as one zone. Never takes input.
+ * Outlines the tap zones and what they do the first time a song is opened on this device (touch screens
+ * only, where zones are the main way to turn pages), once its pages are there, until the first tap or for
+ * a few seconds. Never takes input.
  */
-export function ZonesHint({ songId }: { songId: string }) {
-  const enabled = useSettings((st) => st.s.pageTurn.showZonesHint)
+export function ZonesHint({ ready }: { ready: boolean }) {
   const zones = useSettings((st) => st.s.pageTurn.zones)
   const annotating = useViewer((v) => v.annotating)
-  const [seen, setSeen] = useState<{ songId: string; phase: 'fading' | 'off' } | null>(null)
-  const eligible = enabled && !!window.matchMedia?.('(any-pointer: coarse)').matches && Object.values(zones).some((a) => a !== 'none')
+  // Read once: marking it seen below must not hide the hint that is showing.
+  const [due] = useState(() => !settings().zonesHintSeen)
+  const active = due && ready && !!window.matchMedia?.('(any-pointer: coarse)').matches && Object.values(zones).some((a) => a !== 'none')
+  const [phase, dismiss] = useBriefly(active, 4000)
   useEffect(() => {
-    if (!eligible) return
-    const fade = window.setTimeout(() => setSeen({ songId, phase: 'fading' }), 1500)
-    const off = window.setTimeout(() => setSeen({ songId, phase: 'off' }), 2100)
+    if (!active) return
+    useSettings.getState().set({ zonesHintSeen: true })
+    window.addEventListener('pointerdown', dismiss, true)
+    window.addEventListener('keydown', dismiss, true)
     return () => {
-      clearTimeout(fade)
-      clearTimeout(off)
+      window.removeEventListener('pointerdown', dismiss, true)
+      window.removeEventListener('keydown', dismiss, true)
     }
-  }, [songId, eligible])
-  const phase = seen?.songId === songId ? seen.phase : 'on'
-  if (!eligible || phase === 'off' || annotating) return null
-  const label = (a: ActionId) => (a === 'none' ? '' : ACTIONS[a].label)
+  }, [active, dismiss])
+  if (!active || phase === 'off' || annotating) return null
   return (
     <div
       aria-hidden
-      className="pointer-events-none absolute inset-0 z-[12] grid grid-cols-3 grid-rows-3 transition-opacity duration-500"
+      className="pointer-events-none absolute inset-0 z-[12] grid grid-cols-3 grid-rows-3 bg-black/30 transition-opacity duration-500 animate-fade-in"
       style={{ opacity: phase === 'on' ? 1 : 0 }}
     >
-      {COLS.flatMap((col, c) => {
-        const merged = col.every((z) => zones[z] === zones[col[0]])
-        return (merged ? [col[0]] : col).map((z, r) => (
-          <div
-            key={z}
-            className="flex items-center justify-center border border-dashed border-white/35 bg-black/15 p-2"
-            style={{ gridColumn: c + 1, gridRow: merged ? '1 / span 3' : r + 1 }}
-          >
-            {label(zones[z]) && <span className="rounded-full bg-black/65 px-3 py-1 text-center text-xs font-medium text-white/90">{label(zones[z])}</span>}
-          </div>
-        ))
-      })}
+      {zoneAreas(zones).map((z) => (
+        <div
+          key={z.zone}
+          className="flex items-center justify-center border border-dashed border-white/60 p-3"
+          style={{ gridRow: `${z.row + 1} / span ${z.rows}`, gridColumn: `${z.col + 1} / span ${z.cols}` }}
+        >
+          {z.action !== 'none' && (
+            <span className="flex max-w-full items-center gap-1.5 rounded-full bg-black/75 px-3.5 py-1.5 text-center text-sm font-medium text-white shadow-lg">
+              <ZoneIcon a={z.action} />
+              {ACTIONS[z.action].label}
+            </span>
+          )}
+        </div>
+      ))}
     </div>
   )
 }
 
-/** The song title, small at the top, while the toolbar (which shows it) is hidden. */
+/**
+ * The song title, small at the top, for a moment after the toolbar (which shows it) hides. Keyed by
+ * song, so it shows again when the next song opens.
+ */
 export function SongTitleBadge({ title }: { title: string }) {
   const show = useSettings((st) => st.s.display.showSongTitle)
   // The metronome's beat dots sit in the same spot.
   const metronome = useMetronome((m) => m.running && m.visual)
-  if (!show || metronome || !title) return null
+  const [phase] = useBriefly(true, 2500)
+  if (!show || metronome || !title || phase === 'off') return null
   return (
-    <div className="pointer-events-none absolute left-1/2 top-[max(0.375rem,env(safe-area-inset-top))] z-10 max-w-[min(60vw,28rem)] -translate-x-1/2 truncate rounded-full bg-black/40 px-2.5 py-0.5 text-xs font-medium text-white/75 backdrop-blur">
+    <div
+      className="pointer-events-none absolute left-1/2 top-[max(0.375rem,env(safe-area-inset-top))] z-10 max-w-[min(60vw,28rem)] -translate-x-1/2 truncate rounded-full bg-black/40 px-2.5 py-0.5 text-xs font-medium text-white/75 backdrop-blur transition-opacity duration-500 animate-fade-in"
+      style={{ opacity: phase === 'on' ? 1 : 0 }}
+    >
       {title}
     </div>
   )

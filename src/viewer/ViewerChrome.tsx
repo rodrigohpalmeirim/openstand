@@ -156,8 +156,8 @@ export function ViewerChrome(props: Props) {
           {pageLabel}
         </div>
       )}
-      {!showChrome && <SongTitleBadge title={song.title} />}
-      <ZonesHint songId={song.id} />
+      {!showChrome && <SongTitleBadge key={song.id} title={song.title} />}
+      <ZonesHint ready={pages.length > 0} />
       <LinkBackChip stops={stops} paged={paged} />
       {!showChrome && s.display.showNextSongHint && atLastStop && nextSong && (
         <div className="pointer-events-none absolute bottom-2 left-1/2 z-10 -translate-x-1/2 rounded-full bg-black/55 px-3 py-1 text-xs text-white/85 backdrop-blur">

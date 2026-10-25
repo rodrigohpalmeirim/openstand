@@ -143,8 +143,6 @@ export interface Settings {
     /** Turn back past page one goes to previous song's last page. */
     backToPrevSong: boolean
     keys: KeyBinding[]
-    /** Show the zone overlay briefly when opening a song */
-    showZonesHint: boolean
   }
 
   text: TextStyle
@@ -257,6 +255,8 @@ export interface Settings {
   recentSearches: string[]
   /** Onboarding has been shown */
   onboarded: boolean
+  /** The tap zones have been outlined once, on the first song opened on this device */
+  zonesHintSeen: boolean
 
   /** Song editor preferences. */
   editor: {
@@ -366,7 +366,6 @@ export const DEFAULT_SETTINGS: Settings = {
       { key: 'Backspace', action: 'goBack' },
       { key: 'Escape', action: 'closeSong' },
     ],
-    showZonesHint: true,
   },
 
   text: DEFAULT_TEXT_STYLE,
@@ -432,6 +431,7 @@ export const DEFAULT_SETTINGS: Settings = {
 
   recentSearches: [],
   onboarded: false,
+  zonesHintSeen: false,
 
   editor: { hiddenFields: ['sortTitle', 'songNumber', 'custom2'], capitalizeWords: true, cropApplyTo: 'page', aggressiveCrop: false },
   importPrefs: { filePattern: '', folderPattern: '', folderFromEnd: true, skipDuplicates: true, conflict: 'create', autoCrop: false },
@@ -473,10 +473,13 @@ function sanitize(s: Settings): Settings {
     return true
   })
   const fg = s.faceGestures
+  // Removed settings: deepMerge keeps keys the defaults don't have, so drop them here.
+  const kept: typeof pt & { showZonesHint?: unknown } = { ...pt }
+  delete kept.showZonesHint
   return {
     ...s,
     pageTurn: {
-      ...pt,
+      ...kept,
       zones,
       keys,
       swipeLeft: fixAction(pt.swipeLeft),

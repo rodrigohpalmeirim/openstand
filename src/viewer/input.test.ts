@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { useSettings, type KeyBinding } from '../state/settings'
+import { DEFAULT_SETTINGS, useSettings, type KeyBinding, type TouchZone } from '../state/settings'
 import type { ActionId } from './actions'
-import { isTyping, keyBindingHandlers, keyId } from './input'
+import { isTyping, keyBindingHandlers, keyId, zoneAreas } from './input'
 
 const key = (type: 'keydown' | 'keyup', code: string, opts: KeyboardEventInit = {}) => new KeyboardEvent(type, { code, key: code, ...opts })
 
@@ -80,5 +80,35 @@ describe('isTyping', () => {
     slider.focus()
     expect(isTyping(slider)).toBe(true)
     slider.remove()
+  })
+})
+
+const zoneGrid = (rows: ActionId[][]) =>
+  Object.fromEntries((['tl', 'tc', 'tr', 'ml', 'mc', 'mr', 'bl', 'bc', 'br'] as TouchZone[]).map((z, i) => [z, rows.flat()[i]])) as Record<TouchZone, ActionId>
+
+describe('zoneAreas', () => {
+  it('draws the default zones as three columns', () => {
+    expect(zoneAreas(DEFAULT_SETTINGS.pageTurn.zones).map(({ action, col, rows, cols }) => [action, col, rows, cols])).toEqual([
+      ['prevPage', 0, 3, 1],
+      ['toggleToolbar', 1, 3, 1],
+      ['nextPage', 2, 3, 1],
+    ])
+  })
+
+  it('merges rows and leftover rectangles', () => {
+    const areas = zoneAreas(
+      zoneGrid([
+        ['prevPage', 'prevPage', 'prevPage'],
+        ['prevPage', 'toggleToolbar', 'nextPage'],
+        ['nextPage', 'nextPage', 'nextPage'],
+      ]),
+    )
+    expect(areas.map(({ zone, rows, cols }) => [zone, rows, cols])).toEqual([
+      ['tl', 1, 3],
+      ['ml', 1, 1],
+      ['mc', 1, 1],
+      ['mr', 1, 1],
+      ['bl', 1, 3],
+    ])
   })
 })
