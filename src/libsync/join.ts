@@ -1,5 +1,5 @@
 /**
- * Library-sync flows (docs/SYNC.md §10.3–§10.5, §3.2): enable (first device), join (here / merge; the
+ * Library-sync flows: enable (first device), join (here / merge; the
  * new-library variant is a `here` join into a freshly created library, done by the facade), leave, delete
  * remote data, and the join preview. Every join step is idempotent and checkpointed in `syncState.join`,
  * so an interrupted join resumes (`resumeJoin`).
@@ -32,7 +32,7 @@ export interface FlowOptions extends EngineOptions {
   onProgress?: (step: string, done: number, total: number) => void
 }
 
-/** Drives sign in with this device's tokens for library `db` (SYNC-DRIVES.md §5.4); without `db` they throw `reauth`. */
+/** Drives sign in with this device's tokens for library `db`; without `db` they throw `reauth`. */
 const backendFor = (cfg: BackendConfig, o: FlowOptions, db?: OpenStandDB) =>
   o.backend ??
   o.makeBackend?.(cfg) ??
@@ -45,7 +45,7 @@ const defaultDemoCheck = async (song: Song, db: OpenStandDB) => (await import('.
 // ---------------------------------------------------------------------------------------------
 
 /**
- * §10.3 Enable: create the synced library from this one. Returns the engine; its first `sync()` publishes
+ * Enable: create the synced library from this one. Returns the engine; its first `sync()` publishes
  * everything (the dirty marks and upload transfers persist, so an interrupted initial upload resumes).
  */
 export async function enable(
@@ -122,9 +122,9 @@ export async function adoptSiteRelay(engine: Engine, base: string, available: ()
 // ---------------------------------------------------------------------------------------------
 
 /**
- * Derive keys from a pairing payload and prove them by decrypting `meta` (§10.3 step 1). `db`: the library
- * whose drive tokens to use. On a drive, a missing `meta` (or Drive folder) most likely means another account
- * (SYNC-DRIVES.md §7.3): `wrongAccount`, whose `detail` is the account the code was made for.
+ * Derive keys from a pairing payload and prove them by decrypting `meta`. `db`: the library
+ * whose drive tokens to use. On a drive, a missing `meta` (or Drive folder) most likely means another account:
+ * `wrongAccount`, whose `detail` is the account the code was made for.
  */
 export async function openPairing(p: PairingPayload, o: FlowOptions = {}, db?: OpenStandDB): Promise<{ keys: LibraryKeys; backend: StorageBackend; name: string }> {
   const keys = await deriveLibraryKeys(p.s)
@@ -268,7 +268,7 @@ export interface JoinPreview {
   suggested: 'here' | 'newLibrary'
 }
 
-/** §10.3 step 2: what joining would bring, and the suggested mode. */
+/** What joining would bring, and the suggested mode. */
 export async function previewJoin(db: OpenStandDB, p: PairingPayload, o: FlowOptions = {}): Promise<JoinPreview> {
   const { keys, backend } = await openPairing(p, o, db)
   const remote = await remoteLibrary(keys, backend, (o.now ?? Date.now)())
@@ -286,7 +286,7 @@ export async function previewJoin(db: OpenStandDB, p: PairingPayload, o: FlowOpt
 }
 
 /**
- * §10.3 Join into `db` (mode `here` or `merge`; for `newLibrary` the facade creates and switches to a new
+ * Join into `db` (mode `here` or `merge`; for `newLibrary` the facade creates and switches to a new
  * library and joins it `here`). Resolves when the bootstrap is done; downloads continue in the engine.
  */
 export async function join(db: OpenStandDB, p: PairingPayload, mode: Exclude<JoinMode, 'newLibrary'>, o: FlowOptions = {}): Promise<Engine> {
@@ -381,7 +381,7 @@ function unionKv(key: string, local: unknown, remote: unknown): unknown {
   }
 }
 
-/** §10.3 step 8: combine matched local songs into their remote twins. A normal, captured write. */
+/** Combine matched local songs into their remote twins. A normal, captured write. */
 async function joinMerge(db: OpenStandDB, stash: Record<string, unknown>, o: FlowOptions) {
   const shadowed = new Set((await db.syncShadow.toCollection().primaryKeys()) as string[])
   const songs = await db.songs.toArray()
@@ -432,7 +432,7 @@ const withTimeout = <T>(p: Promise<T>, ms: number) =>
 
 /**
  * After "Stop syncing" or "Delete synced data": this device's drive sign-in for the library goes too, Dropbox's
- * revoked first (SYNC-DRIVES.md §5.4). Best effort; the sync tables (and with them the tokens) are cleared next.
+ * revoked first. Best effort; the sync tables (and with them the tokens) are cleared next.
  */
 async function forgetSignIn(db: OpenStandDB, o: FlowOptions & { keepSignIn?: boolean }) {
   if (o.keepSignIn) return
@@ -441,7 +441,7 @@ async function forgetSignIn(db: OpenStandDB, o: FlowOptions & { keepSignIn?: boo
 }
 
 /**
- * §10.4 Stop syncing on this device. Library rows stay; the library becomes a normal local one. `keepSignIn`:
+ * Stop syncing on this device. Library rows stay; the library becomes a normal local one. `keepSignIn`:
  * keep this device's drive tokens (rejoining the same library right after), else they are deleted (and
  * Dropbox's revoked).
  */
@@ -452,7 +452,7 @@ export async function leave(db: OpenStandDB, engine?: Engine, o: FlowOptions & {
     e.stop()
     try {
       // Heads, logs and snapshots stay: devices that join later still need this stream until a snapshot
-      // covers it, and the retired-device pruning (§3.2) removes them then. A deleted or reset library gets
+      // covers it, and the retired-device pruning removes them then. A deleted or reset library gets
       // no record: nothing would ever remove it.
       if (await e.core.backend.head(metaKey(e.core.keys.libraryId))) await e.putDevice({ retired: true })
     } catch (err) {
@@ -466,7 +466,7 @@ export async function leave(db: OpenStandDB, engine?: Engine, o: FlowOptions & {
   if (kept) await putState(db, 'oauth', kept)
 }
 
-/** §10.5 Delete everything under `os1/<libraryId>/`. Then sync is off on this device too. */
+/** Delete everything under `os1/<libraryId>/`. Then sync is off on this device too. */
 export async function deleteRemote(db: OpenStandDB, engine?: Engine, o: FlowOptions = {}) {
   const config = await getConfig(db)
   if (!config) return

@@ -16,7 +16,7 @@ const hooks: EngineHooks = {
   },
 }
 
-describe('annotation store with sync (§8.5)', () => {
+describe('annotation store with sync', () => {
   it('never erases strokes that arrive from another device, also through undo', async () => {
     const w = world()
     const A = openLibrary(`ann-sync-${Date.now()}`) // the store works on the global db

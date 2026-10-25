@@ -3,7 +3,7 @@
  * OpenStand sync relay — a tiny, dependency-free WebSocket broadcast server.
  *
  * Devices connect to ws://HOST:PORT/?room=NAME and every text message is forwarded to the other
- * clients in the same room. Library sync (docs/SYNC.md §9) uses ws://HOST:PORT/lib/<roomId> (or
+ * clients in the same room. Library sync uses ws://HOST:PORT/lib/<roomId> (or
  * /relay/lib/<roomId>): room `lib:<roomId>` with tighter limits (1 KiB messages, 5 msg/s, 32 clients);
  * perf rooms can't use the `lib:` prefix. `{"ping":1}` is answered with `{"pong":1}` and not forwarded. The relay doesn't parse or store messages (the app protocol lives in
  * src/sync/protocol.ts), so it is safe to run anywhere: a laptop on the gig's Wi-Fi, a Raspberry Pi,

@@ -1,4 +1,4 @@
-/** `createBackend(config, ctx)` (docs/SYNC.md §7, docs/SYNC-DRIVES.md). */
+/** `createBackend(config, ctx)`. */
 import { DropboxBackend } from './dropbox'
 import { GDriveBackend } from './gdrive'
 import { MemoryBackend } from './memory'

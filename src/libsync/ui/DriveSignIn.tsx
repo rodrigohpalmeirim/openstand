@@ -1,5 +1,5 @@
 /**
- * Cloud-drive pieces shared by the setup wizard, the join flow and Settings (docs/SYNC-DRIVES.md §7): what
+ * Cloud-drive pieces shared by the setup wizard, the join flow and Settings: what
  * signing in gives OpenStand access to (Google's required in-app disclosure, used for every provider), the
  * signed-in account card, sign-in problems and the provider's disconnect pages.
  */
@@ -73,7 +73,7 @@ export function AccessDisclosure({ kind }: { kind: OAuthKind }) {
   )
 }
 
-/** §7.1 "Sign in" step body: where the data lives, encryption and the disclosure (the button is in the footer). */
+/** The "Sign in" step body: where the data lives, encryption and the disclosure (the button is in the footer). */
 export function DriveSignInPanel({ kind, problem, onChooseAccount }: { kind: OAuthKind; problem?: SignInProblem; onChooseAccount: () => void }) {
   const p = drive(kind)
   const local = import.meta.env.DEV && !/[?&]libsyncMock=/.test(location.search) ? localhostHint() : undefined
@@ -110,7 +110,7 @@ export function DriveSignInPanel({ kind, problem, onChooseAccount }: { kind: OAu
   )
 }
 
-/** "Sign in with Dropbox / Google / Microsoft": 44 px, no brand logos (§7.1). */
+/** "Sign in with Dropbox / Google / Microsoft": 44 px, no brand logos. */
 export function SignInButton({ kind, busy, onClick, className }: { kind: OAuthKind; busy?: boolean; onClick: () => void; className?: string }) {
   return (
     <Button variant="primary" className={cx('h-11', className)} onClick={onClick} disabled={busy}>
@@ -137,7 +137,7 @@ export function DesktopAppNote({ kind }: { kind: OAuthKind }) {
   return null
 }
 
-/** A sign-in that didn't work, with the action §5.5 gives it. */
+/** A sign-in that didn't work, with the action for it. */
 export function SignInProblemNote({
   problem,
   onRetry,
@@ -172,7 +172,7 @@ export function SignInProblemNote({
   )
 }
 
-/** §7.1 check step: "Signed in as …", where the library will live, the folder link and free space. */
+/** The check step: "Signed in as …", where the library will live, the folder link and free space. */
 export function DriveAccountCard({
   kind,
   account,
@@ -228,7 +228,7 @@ export function DriveAccountCard({
   )
 }
 
-/** The provider's pages for removing OpenStand from the account (every device), §5.4. */
+/** The provider's pages for removing OpenStand from the account (every device). */
 export function DisconnectLinks({ kind }: { kind: OAuthKind }) {
   return (
     <span className="flex flex-wrap gap-x-4 gap-y-1">

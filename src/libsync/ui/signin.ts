@@ -1,5 +1,5 @@
 /**
- * Cloud-drive sign-in for the UI (docs/SYNC-DRIVES.md §5.5, §7): provider wording, sign-in error messages,
+ * Cloud-drive sign-in for the UI: provider wording, sign-in error messages,
  * and resuming after the full-page redirect. Pure apart from `takeSignInReturn`, which reads the pending
  * slot and calls `completeSignIn` once.
  */
@@ -30,7 +30,7 @@ export const accountOf = (b?: { kind: string } | null) => (b && isDrive(b.kind) 
 export const accountIdOf = (b?: { kind: string } | null) => (b && isDrive(b.kind) ? (b as { accountId?: string }).accountId : undefined)
 
 /**
- * Sign in to the library's drive again (§7.4; Settings and the indicator): as the same account, or picking
+ * Sign in to the library's drive again (Settings and the indicator): as the same account, or picking
  * one with `chooseAccount`. Leaves the page when it works.
  */
 export async function signInAgain(kind: OAuthKind, chooseAccount?: boolean): Promise<void> {
@@ -63,7 +63,7 @@ export function wrongAccountText(kind: OAuthKind, got?: string, want?: string): 
   return `This library isn’t in the ${name} account you signed in with.`
 }
 
-/** §7.3 layer 2: the code's library isn't in the signed-in account (join preview). */
+/** The code's library isn't in the signed-in account (join preview). */
 export function joinWrongAccountText(kind: OAuthKind, got?: string, want?: string): string {
   const name = drive(kind).name
   return (
@@ -74,8 +74,8 @@ export function joinWrongAccountText(kind: OAuthKind, got?: string, want?: strin
 }
 
 /**
- * §5.5: the message and action for a failed sign-in. `completeSignIn` and `startSignIn` reject with a
- * `LibSyncFailure` carrying the §5.5 sentence (provider name filled in): `unknown` with `detail`
+ * The message and action for a failed sign-in. `completeSignIn` and `startSignIn` reject with a
+ * `LibSyncFailure` carrying the sentence (provider name filled in): `unknown` with `detail`
  * `denied`/`expired`/`exchange`/`notConfigured`; `reauth` with `detail` `scope`; `wrongAccount` with `detail`
  * = the account the library is in; `network`. The facade's sentence wins; ours is the fallback.
  */
@@ -120,7 +120,7 @@ export function signInProblem(e: unknown, kind: OAuthKind, ctx: { got?: string; 
 
 export type SignInOutcome = { ok: true; result: SignInResult } | { ok: false; error: unknown }
 
-/** A sign-in that came back from the provider (§5.2), being completed. */
+/** A sign-in that came back from the provider, being completed. */
 export interface SignInReturn {
   kind: OAuthKind
   intent: SignInIntent
@@ -195,7 +195,7 @@ export function codeIn(text: string): string {
   return /OSJ\d+\.[A-Za-z0-9_-]+/.exec(text)?.[0] ?? text.trim()
 }
 
-/** Dev on 127.0.0.1: the providers only accept the registered http://localhost:5317 (§5.2). */
+/** Dev on 127.0.0.1: the providers only accept the registered http://localhost:5317. */
 export function localhostHint(loc: { hostname: string; port: string; protocol: string } | undefined = typeof location === 'undefined' ? undefined : location): string | undefined {
   if (!loc || loc.hostname !== '127.0.0.1') return undefined
   return `${loc.protocol}//localhost${loc.port ? `:${loc.port}` : ''}`

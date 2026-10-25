@@ -1,5 +1,5 @@
 /**
- * Per-collection field tables (docs/SYNC.md §5), the kv allow-list `syncedKv`, and op validation (§5.5).
+ * Per-collection field tables, the kv allow-list `syncedKv`, and op validation.
  *
  * Register naming in a `RecordDelta`:
  * - `lww`   → `f[field]`
@@ -16,14 +16,14 @@ import type { Collection, Json } from './model'
 
 export type FieldKind = 'lww' | 'flat' | 'list' | 'map' | 'set' | 'max' | 'min' | 'pn' | 'const' | 'local'
 
-/** Value validators (§5.5). `json` accepts anything; `arr`/`obj` are refinements of it. */
+/** Value validators. `json` accepts anything; `arr`/`obj` are refinements of it. */
 export type ValidatorName = 'str' | 'num' | 'bool' | 'json' | 'arr' | 'obj'
 
 export interface FieldSpec {
   kind: FieldKind
   /** `list`: the element property holding its key (stripped from the element value on the wire). */
   key?: string
-  /** `list` element wire transform: blob ids travel as content hashes (§4). */
+  /** `list` element wire transform: blob ids travel as content hashes. */
   wire?: 'file' | 'audio'
   /** Validator of the `lww` value, or of each `list` / `map` element value. */
   v?: ValidatorName
@@ -52,7 +52,7 @@ const list = (key: string, o: Partial<FieldSpec> = {}): FieldSpec => ({ kind: 'l
 const SET: FieldSpec = { kind: 'set', dflt: () => [] }
 const FLAT: FieldSpec = { kind: 'flat' }
 
-/** §5.1 */
+/** Songs. */
 export const SONG_FIELDS: FieldTable = {
   title: lww('str', () => ''),
   sortTitle: LWW_STR,
@@ -86,7 +86,7 @@ export const SONG_FIELDS: FieldTable = {
   playCount: { kind: 'pn', dflt: () => 0 },
 }
 
-/** §5.2 */
+/** Setlists. */
 export const SETLIST_FIELDS: FieldTable = {
   name: lww('str', () => ''),
   notes: lww('str', () => ''),
@@ -98,7 +98,7 @@ export const SETLIST_FIELDS: FieldTable = {
   lastPlayedAt: { kind: 'max' },
 }
 
-/** §5.3. The record is never tombstoned; the row goes away when no item is alive. */
+/** Annotation pages. The record is never tombstoned; the row goes away when no item is alive. */
 export const ANN_FIELDS: FieldTable = {
   songId: { kind: 'const' },
   fileId: { kind: 'const' },
@@ -106,7 +106,7 @@ export const ANN_FIELDS: FieldTable = {
   items: list('id', { dflt: () => [] }),
 }
 
-/** §5.4 `layers:<songId>`: fields of the `SongLayers` value. `current` stays per device. */
+/** Kv `layers:<songId>`: fields of the `SongLayers` value. `current` stays per device. */
 export const LAYERS_FIELDS: FieldTable = {
   layers: list('id', { dflt: () => [] }),
   current: { kind: 'local' },
@@ -129,7 +129,7 @@ const KV_RULES: KvRule[] = [
 
 const kvRule = (key: string) => KV_RULES.find((r) => r.match(key))
 
-/** The kv allow-list (§5.4). Anything not listed (e.g. `backup.*`) never syncs. */
+/** The kv allow-list. Anything not listed (e.g. `backup.*`) never syncs. */
 export function syncedKv(key: string): boolean {
   return typeof key === 'string' && !!kvRule(key)
 }
@@ -198,7 +198,7 @@ const isJson = (v: unknown, depth = 0): v is Json => {
 const nonNeg = (x: unknown) => typeof x === 'number' && Number.isFinite(x) && x >= 0
 
 /**
- * Validate one incoming op (§5.5). Returns `null` when it may be merged, else the reason; the engine
+ * Validate one incoming op. Returns `null` when it may be merged, else the reason; the engine
  * skips and logs failing ops and never writes them. Unknown collections are checked structurally only
  * (the engine keeps them opaquely in `syncShadow.x`).
  */

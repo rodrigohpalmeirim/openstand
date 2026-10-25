@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { decodePixels, fitWithin, nativeDetector, qrBitmap, qrPixels, scanFrames } from './qr'
 
-// A realistic S3 pairing code is about 300 characters (§11).
+// A realistic S3 pairing code is about 300 characters.
 const CODE = `OSJ1.${'q1Zy0rM0NDDQMzI0MzQzNjE2MbE0NDY0MzExMjEwMzI0MDAzM_-'.repeat(6)}`
 
 describe('qr generation', () => {

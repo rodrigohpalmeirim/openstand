@@ -2,11 +2,11 @@
 import { CHUNK, PART } from '../model'
 import { BackendError, type ObjectInfo, type StorageBackend, type UploadState } from './types'
 
-/** Encrypted container header and per-chunk overhead (crypto.ts §4.2); duplicated to keep backends crypto-free. */
+/** Encrypted container header and per-chunk overhead (as in crypto.ts); duplicated to keep backends crypto-free. */
 const HEADER = 16
 const OVERHEAD = 28
 
-/** §7.1: a part is 8 encrypted chunks (8 MiB + 224 B); part 1 also carries the 16-byte container header. */
+/** A part is 8 encrypted chunks (8 MiB + 224 B); part 1 also carries the 16-byte container header. */
 export const DEFAULT_PART_SIZE = PART * (CHUNK + OVERHEAD)
 export const DEFAULT_PART_HEAD = HEADER
 

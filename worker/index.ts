@@ -3,11 +3,11 @@
  *
  * Static assets (the PWA in dist/) are served by the asset store; the Worker only runs for /relay and
  * /api/* (see run_worker_first in wrangler.jsonc). /api/oauth/* is the stateless OAuth token route for
- * Google Drive and OneDrive (worker/oauth.ts, docs/SYNC-DRIVES.md §6). Two kinds of relay room, both one
+ * Google Drive and OneDrive (worker/oauth.ts). Two kinds of relay room, both one
  * Durable Object each:
  *
  * - perf: /relay?room=NAME (performance sync, src/sync/), up to 64 clients, 256 KiB messages.
- * - lib:  /relay/lib/<roomId> (library sync notices, docs/SYNC.md §9), up to 32 clients, 1 KiB, 5 msg/s.
+ * - lib:  /relay/lib/<roomId> (library sync notices), up to 32 clients, 1 KiB, 5 msg/s.
  *   The DO is named `lib:<roomId>`; perf rooms may not use that prefix, so the two never meet.
  *
  * Each room rebroadcasts every text message to its other clients: the same contract as

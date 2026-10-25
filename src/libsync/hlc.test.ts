@@ -60,7 +60,7 @@ describe('clock', () => {
     const c = createClock(A, undefined, () => T)
     expect(parseHlc(c.now())).toEqual({ wall: T, counter: 0, device: A })
     expect(parseHlc(c.now())).toEqual({ wall: T, counter: 1, device: A })
-    // An older dirty-mark time (§8.2 step 3) can't move the clock back.
+    // An older dirty-mark time can't move the clock back.
     expect(parseHlc(c.now(T - 60_000))).toEqual({ wall: T, counter: 2, device: A })
     expect(parseHlc(c.now(T + 5))).toEqual({ wall: T + 5, counter: 0, device: A })
   })

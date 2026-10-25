@@ -1,6 +1,6 @@
 // @vitest-environment node
 /**
- * Two devices syncing through a real S3 (MinIO), end to end through the engine (docs/SYNC.md §13).
+ * Two devices syncing through a real S3 (MinIO), end to end through the engine.
  * Skipped unless LIBSYNC_S3_ENDPOINT is set (same env vars as minio.e2e.test.ts). Creates the bucket
  * `openstand-e2e-eng-<rand>` and deletes it afterwards.
  */

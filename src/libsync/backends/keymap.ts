@@ -1,5 +1,5 @@
 /**
- * Key ↔ drive path mapping shared by the cloud-drive backends (docs/SYNC-DRIVES.md §2.5, §4.2, §4.3).
+ * Key ↔ drive path mapping shared by the cloud-drive backends.
  *
  * Keys are lowercase ASCII `[a-z0-9./-]` segments joined by `/` (Dropbox and OneDrive paths are
  * case-insensitive). Anything else throws `BackendError('unknown', …, {providerCode: 'BadKey'})`, so a
@@ -35,7 +35,7 @@ export function segments(key: string): string[] {
 }
 
 /**
- * OneDrive (§4.2): the first `min(n−1, 3)` segments are real folders, the rest is the file name with
+ * OneDrive: the first `min(n−1, 3)` segments are real folders, the rest is the file name with
  * `/` replaced by `~`. `os1/<lib>/heads/<dev>/<seq>` → folder `[os1, <lib>, heads]`, leaf `<dev>~<seq>`.
  */
 export function deep3(key: string): { folder: string[]; leaf: string } {
@@ -56,7 +56,7 @@ export function fromDeep3(folder: string[], leaf: string): string {
 }
 
 /**
- * Drive (§4.3): `d1..d3` = the key's first 1, 2 and 3 segments, set only when they are proper folder
+ * Drive: `d1..d3` = the key's first 1, 2 and 3 segments, set only when they are proper folder
  * prefixes. `os1/<lib>/heads/<dev>/<seq>` → `{d1: 'os1', d2: 'os1/<lib>', d3: 'os1/<lib>/heads'}`;
  * `os1/<lib>/meta` → `{d1, d2}`.
  */

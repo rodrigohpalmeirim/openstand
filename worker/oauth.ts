@@ -1,11 +1,11 @@
 /**
- * Stateless OAuth token route for Google Drive and OneDrive (docs/SYNC-DRIVES.md §6). The Worker holds the
+ * Stateless OAuth token route for Google Drive and OneDrive. The Worker holds the
  * client secrets and stores nothing.
  *
  *   GET  /api/oauth/providers                     → { v: 1, providers: { gdrive?: {clientId}, onedrive?: {clientId} } }
  *   POST /api/oauth/{gdrive|onedrive}/token       → code exchange or refresh, proxied to the provider
  *
- * Checks run in the §6.2 order: method → provider → configured → Origin → rate limit → content type → size →
+ * Checks run in this order: method → provider → configured → Origin → rate limit → content type → size →
  * JSON → fields → redirect URI → upstream. Never log bodies, tokens, codes or query strings: at most the
  * provider, the grant, the upstream status and the OAuth error code.
  */
@@ -18,20 +18,20 @@ export type OAuthWorkerKind = 'gdrive' | 'onedrive'
  * not in wrangler.jsonc). `Env` is assignable to it.
  */
 export interface OAuthEnv {
-  /** Comma-separated extra origins; empty = the Worker's own origin only (§6.2 rule 2). */
+  /** Comma-separated extra origins; empty = the Worker's own origin only. */
   ALLOWED_ORIGINS?: string
   GDRIVE_CLIENT_ID?: string
   ONEDRIVE_CLIENT_ID?: string
   GDRIVE_CLIENT_SECRET?: string
   ONEDRIVE_CLIENT_SECRET?: string
-  /** 30 requests / 60 s per `${cf-connecting-ip}:${provider}` (§6.2 rule 6). */
+  /** 30 requests / 60 s per `${cf-connecting-ip}:${provider}`. */
   OAUTH_LIMITER?: RateLimit
 }
 
 export const OAUTH_PREFIX = '/api/oauth/'
 const KINDS: readonly OAuthWorkerKind[] = ['gdrive', 'onedrive']
 
-/** Upstream token endpoints (§6.2 rule 5). */
+/** Upstream token endpoints. */
 export const TOKEN_ENDPOINTS: Record<OAuthWorkerKind, string> = {
   gdrive: 'https://oauth2.googleapis.com/token',
   onedrive: 'https://login.microsoftonline.com/common/oauth2/v2.0/token',
@@ -43,7 +43,7 @@ export const MAX_BODY = 16 * 1024
 export const UPSTREAM_TIMEOUT = 10_000
 const MAX_UPSTREAM_ANSWER = 64 * 1024
 const CALLBACK_PATH = '/oauth/callback'
-/** Fields passed back from a successful upstream answer; nothing else is (§6.1). */
+/** Fields passed back from a successful upstream answer; nothing else is. */
 const TOKEN_FIELDS = ['access_token', 'token_type', 'expires_in', 'refresh_token', 'scope', 'id_token'] as const
 
 function clientOf(env: OAuthEnv, kind: OAuthWorkerKind): { id: string; secret: string } | null {
@@ -52,7 +52,7 @@ function clientOf(env: OAuthEnv, kind: OAuthWorkerKind): { id: string; secret: s
   return id && secret ? { id, secret } : null
 }
 
-/** §6.2 rule 4, plus `extra` (CORS for allowed cross-origin callers, `Allow`, `Retry-After`). */
+/** Response headers, plus `extra` (CORS for allowed cross-origin callers, `Allow`, `Retry-After`). */
 export function oauthJson(body: unknown, status = 200, extra?: Record<string, string>): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -88,7 +88,7 @@ type Fields = { grant: 'code'; code: string; code_verifier: string; redirect_uri
 const VERIFIER = /^[A-Za-z0-9._~-]{43,128}$/
 const str = (v: unknown, min: number, max: number): v is string => typeof v === 'string' && v.length >= min && v.length <= max
 
-/** §6.1 field rules: exact key sets, lengths, and the verifier alphabet. */
+/** Field rules: exact key sets, lengths, and the verifier alphabet. */
 function parseFields(body: unknown): Fields | null {
   if (!body || typeof body !== 'object' || Array.isArray(body)) return null
   const b = body as Record<string, unknown>
@@ -130,7 +130,7 @@ async function readCapped(stream: ReadableStream<Uint8Array> | null, max: number
   return out
 }
 
-/** The form body for the provider (§6.2 rule 5 table). */
+/** The form body for the provider. */
 function upstreamForm(kind: OAuthWorkerKind, f: Fields, client: { id: string; secret: string }): URLSearchParams {
   const form = new URLSearchParams()
   if (f.grant === 'code') {
@@ -218,7 +218,7 @@ export async function handleOAuth(request: Request, env: OAuthEnv, upstream: typ
   if (fields.grant === 'code' && fields.redirect_uri !== origin + CALLBACK_PATH) return fail(400, 'invalid_redirect_uri')
 
   // A fresh request: only these two headers. Never Origin, cookies or anything else from the client —
-  // Microsoft refuses Web-platform codes redeemed with an Origin header (§6.2 rule 5).
+  // Microsoft refuses Web-platform codes redeemed with an Origin header.
   let res: Response
   const ac = new AbortController()
   const timer = setTimeout(() => ac.abort(new Error('upstream timeout')), UPSTREAM_TIMEOUT)
@@ -270,7 +270,7 @@ export async function handleOAuth(request: Request, env: OAuthEnv, upstream: typ
   return oauthJson(out, 200, cors)
 }
 
-/** §6.2 rule 7: provider, grant, upstream status and error code. Never more. */
+/** What gets logged: provider, grant, upstream status and error code. Never more. */
 function log(kind: OAuthWorkerKind, grant: string, status: number, error?: string) {
   console.log('oauth', kind, grant, status, error ?? '')
 }

@@ -1,6 +1,6 @@
 /**
- * "Set up sync" (§12.2): storage → S3 form → connection test → start → pairing code. Cloud drives
- * (SYNC-DRIVES.md §7.1): storage → sign in (redirect to the provider and back) → connection test → start → pairing code.
+ * "Set up sync": storage → S3 form → connection test → start → pairing code. Cloud drives:
+ * storage → sign in (redirect to the provider and back) → connection test → start → pairing code.
  */
 import { Check, CircleAlert, CircleDashed, Cloud, ExternalLink, Eye, EyeOff, HardDrive, Loader2 } from 'lucide-react'
 import { useEffect, useId, useReducer, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
@@ -193,7 +193,7 @@ export function S3Fields({
   )
 }
 
-/** The CORS rule to paste and where it goes (§7.1). */
+/** The CORS rule to paste and where it goes. */
 export function CorsHelp({ config }: { config: S3Config }) {
   const p = preset(config.provider)
   return (
@@ -288,7 +288,7 @@ function StorageCard({
   )
 }
 
-/** §7.1 step 1: S3-compatible, then the drives `oauthProviders()` offers here (a radio group; arrow keys move). */
+/** Storage step: S3-compatible, then the drives `oauthProviders()` offers here (a radio group; arrow keys move). */
 function StorageCards({ value, drives, onChange }: { value: StorageChoice; drives: OAuthKind[]; onChange: (v: StorageChoice) => void }) {
   const refs = useRef<(HTMLButtonElement | null)[]>([])
   const options: StorageChoice[] = ['s3', ...drives]
@@ -336,7 +336,7 @@ const TITLES = {
 }
 
 /**
- * `resume`: a drive sign-in came back from the provider (§5.2); the wizard opens at the check step and
+ * `resume`: a drive sign-in came back from the provider; the wizard opens at the check step and
  * completes it. `storage`: open at that drive's sign-in step (dev mocks).
  */
 export function SetupWizard({ open, onClose, resume, storage }: { open: boolean; onClose: () => void; resume?: SignInReturn; storage?: OAuthKind }) {
@@ -360,7 +360,7 @@ export function SetupWizard({ open, onClose, resume, storage }: { open: boolean;
     }
   }, [])
 
-  // The drives offered here (§6.4); S3 is always there, so the step works while this loads.
+  // The drives offered here; S3 is always there, so the step works while this loads.
   useEffect(() => {
     let live = true
     oauthProviders()
@@ -445,7 +445,7 @@ export function SetupWizard({ open, onClose, resume, storage }: { open: boolean;
     if (!cfg) return
     dispatch({ type: 'startBegin' })
     try {
-      // No relay given: the engine picks the same-site relay when there is one (§9).
+      // No relay given: the engine picks the same-site relay when there is one.
       await enableSync({ backend: cfg })
       dispatch({ type: 'startDone' })
     } catch (e) {

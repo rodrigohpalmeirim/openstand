@@ -31,7 +31,7 @@ workspace). This table tracks where OpenStand stands. ✅ = implemented, ◐ = p
 | Camera scanning: multi-page, corner adjustment, perspective correction, colour / grey / clean B&W | ✅ | Existing photos work too |
 | Combine a song's files into one PDF | ✅ | Keeps crop, rotation and annotations |
 | Convert PDF to images | — | Not needed: PDFs render directly |
-| Cloud providers (Dropbox, Drive, OneDrive, Nextcloud) | — | Use the OS file picker / File System Access instead |
+| Cloud providers (Dropbox, Drive, OneDrive, Nextcloud) | ◐ | Dropbox, Google Drive and OneDrive for library sync; importing from them uses the OS file picker / File System Access |
 
 ## Performance view
 
@@ -87,7 +87,7 @@ workspace). This table tracks where OpenStand stands. ✅ = implemented, ◐ = p
 | --- | --- | --- |
 | Song MIDI commands on load (PC, bank/patch select, CC, notes, SysEx, song select, clock, pauses, batches) | ✅ | Web MIDI (not on iOS Safari) |
 | MIDI learn, MIDI → actions, song recall from MIDI | ✅ | |
-| Library sync between devices | ✅ | Whole library (songs, files, annotations, layers, setlists, play history) through your own S3-compatible storage (R2, B2, S3, MinIO), end-to-end encrypted, full offline copy on every device, merges offline edits per field. Pair by QR or text code; instant updates through the relay, else polling. Dropbox / Google Drive / OneDrive planned |
+| Library sync between devices | ✅ | Whole library (songs, files, annotations, layers, setlists, play history) through your own Dropbox, Google Drive or OneDrive app folder or S3-compatible storage (R2, B2, S3, MinIO), end-to-end encrypted, full offline copy on every device, merges offline edits per field. Pair by QR or text code; instant updates through the relay, else polling. |
 | Leader/follower page sync between devices | ✅ | BroadcastChannel, or a WebSocket relay (`server/relay.mjs`, or built into the Cloudflare deployment) |
 | Full library export / import (backup and restore; replace or merge) | ✅ | `.osbackup`, Settings → Export & import |
 | Share songs/setlists as packages | ✅ | `.ospkg` |

@@ -44,7 +44,7 @@ describe('JoinFlow', () => {
     expect(api.previewJoin).not.toHaveBeenCalled()
   })
 
-  it('shows the §12.3 wording when the code does not match the storage', async () => {
+  it('shows the fixed wording when the code does not match the storage', async () => {
     vi.mocked(api.parsePairingCode).mockResolvedValue(payload)
     vi.mocked(api.previewJoin).mockRejectedValue(new api.LibSyncFailure('wrongSecret'))
     render(<JoinFlow open onClose={() => {}} />)

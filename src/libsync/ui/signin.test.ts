@@ -10,7 +10,7 @@ const { LibSyncFailure } = api
 const { PENDING_KEY } = await import('../oauth/callback')
 const { ackSignInReturn, codeIn, signInProblem, takeJoinUi, saveJoinUi, takeSignInReturn, wrongAccountText, joinWrongAccountText } = await import('./signin')
 
-describe('sign-in problems (§5.5) from the facade’s failures', () => {
+describe('sign-in problems from the facade’s failures', () => {
   const f = (code: ConstructorParameters<typeof LibSyncFailure>[0], detail?: string, message?: string) => new LibSyncFailure(code, message ?? code, detail)
 
   it('uses our wording when the facade gives only a code', () => {
@@ -52,7 +52,7 @@ describe('sign-in problems (§5.5) from the facade’s failures', () => {
   })
 })
 
-describe('resuming after the redirect (§5.2)', () => {
+describe('resuming after the redirect', () => {
   afterEach(() => {
     localStorage.clear()
     ackSignInReturn()

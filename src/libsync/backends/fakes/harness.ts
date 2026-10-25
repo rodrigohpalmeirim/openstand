@@ -1,5 +1,5 @@
 /**
- * Base for the in-process provider fakes (docs/SYNC-DRIVES.md §9.1): a `fetch`-compatible router passed
+ * Base for the in-process provider fakes: a `fetch`-compatible router passed
  * through `BackendContext.fetch`, a call log, per-route fault injection and a token simulator. No sockets,
  * deterministic. Test-only: nothing in the app imports it.
  *

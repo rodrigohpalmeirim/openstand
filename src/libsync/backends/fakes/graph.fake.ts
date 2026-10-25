@@ -1,5 +1,5 @@
 /**
- * In-process fake of the Microsoft Graph subset the OneDrive backend uses (docs/SYNC-DRIVES.md §9.1):
+ * In-process fake of the Microsoft Graph subset the OneDrive backend uses:
  * the app folder (`/me/drive/special/approot`) addressed by path, `children` paging with
  * `@odata.nextLink`, simple uploads with `@microsoft.graph.conflictBehavior`, folder creation, upload
  * sessions, `@microsoft.graph.downloadUrl` with Range, `permanentDelete`, DELETE and `/me`.

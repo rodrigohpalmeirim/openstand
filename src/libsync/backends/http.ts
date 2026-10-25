@@ -1,5 +1,5 @@
 /**
- * Authorised HTTP for the cloud-drive backends (docs/SYNC-DRIVES.md §2.5).
+ * Authorised HTTP for the cloud-drive backends.
  *
  * `send` adds `Authorization: Bearer <token>` from `ctx.auth`; on a 401 it refreshes once
  * (`auth.refreshAfter401`) and retries, and a second 401 is `reauth`. A fetch that throws becomes `network`
@@ -31,7 +31,7 @@ export type SendInit = RequestInit & {
   expect?: number[]
   /**
    * Body cap for `json()` (default `JSON_MAX`); `send` doesn't read the body, so it ignores it.
-   * (Spec ambiguity: §2.5 lists it on `send`'s init; it only matters where a body is read.)
+   * (It only matters where a body is read.)
    */
   maxBody?: number
 }

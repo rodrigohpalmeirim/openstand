@@ -134,7 +134,7 @@ async function notices(keys: Awaited<ReturnType<typeof deriveLibraryKeys>>, fram
   return out
 }
 
-describe('relay notices (§4.3, §9)', () => {
+describe('relay notices', () => {
   it('delivers sealed notices to the other devices of the room only', async () => {
     const hub = new Hub()
     const keys = await deriveLibraryKeys(newSecret())
@@ -458,7 +458,7 @@ describe('engine scheduling with the relay', () => {
   })
 })
 
-describe('a library set up without a relay (§9)', () => {
+describe('a library set up without a relay', () => {
   it('adopts the site relay once it answers: saved, connected, and carried by new pairing codes', async () => {
     const w = world()
     const hub = new Hub()

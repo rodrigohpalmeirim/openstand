@@ -1,5 +1,5 @@
 /**
- * Library sync: public facade for the UI (docs/SYNC.md §12.1).
+ * Library sync: public facade for the UI.
  *
  * CONTRACT: signatures change additively only. `useLibSync` is fed by the service (service.ts); actions
  * reject with `LibSyncFailure` (or `PairingError` from `parsePairingCode`). The hooks and fire-and-forget
@@ -19,7 +19,7 @@ export { signInReturnPending } from './oauth/callback'
 
 export type LibSyncPhase = 'off' | 'starting' | 'idle' | 'syncing' | 'offline' | 'paused' | 'error'
 
-/** UI wording and actions per code are fixed in §12.3. `network` is shown as phase `offline`, not an error. */
+/** UI wording and actions per code are fixed in `ui/format.ts`. `network` is shown as phase `offline`, not an error. */
 export type LibSyncErrorCode =
   | 'auth'
   | 'cors'
@@ -35,9 +35,9 @@ export type LibSyncErrorCode =
   | 'rejoin'
   | 'server'
   | 'unknown'
-  /** Cloud drives (SYNC-DRIVES.md §7.4, §8): this device must sign in to its drive again. */
+  /** Cloud drives: this device must sign in to its drive again. */
   | 'reauth'
-  /** Cloud drives (§7.3): the signed-in account doesn't hold this library. */
+  /** Cloud drives: the signed-in account doesn't hold this library. */
   | 'wrongAccount'
 
 export interface LibSyncError {
@@ -143,7 +143,7 @@ export const useLibSync: UseBoundStore<StoreApi<LibSyncStatus>> = create<LibSync
 
 /**
  * What the facade's actions reject with (other than `PairingError` from `parsePairingCode`), so the UI can
- * pick the §12.3 wording by `code`. The spec doesn't name this; added in step 0.
+ * pick the wording by `code`.
  */
 export class LibSyncFailure extends Error {
   readonly code: LibSyncErrorCode
@@ -167,12 +167,12 @@ const tokens = () => import('./oauth/tokens')
 const oauthFlow = () => import('./oauth/flow')
 const isDrive = (k: string): k is OAuthKind => k === 'dropbox' || k === 'gdrive' || k === 'onedrive'
 
-/** `BackendContext` for `cfg` in library `d`: drives get this device's tokens (SYNC-DRIVES.md §5.4). */
+/** `BackendContext` for `cfg` in library `d`: drives get this device's tokens. */
 async function contextFor(cfg: BackendConfig, d: OpenStandDB = db) {
   return isDrive(cfg.kind) ? { auth: (await tokens()).tokenSource(d, cfg.kind) } : {}
 }
 
-/** Rejections carry a `LibSyncFailure` code (§12.3 wording) unless they're already one / a PairingError. */
+/** Rejections carry a `LibSyncFailure` code unless they're already one / a PairingError. */
 async function failure(e: unknown): Promise<never> {
   if (e instanceof LibSyncFailure || e instanceof PairingError) throw e
   const { toSyncError } = await import('./engine')
@@ -185,13 +185,13 @@ const guarded =
   (...a: A): Promise<R> =>
     fn(...a).catch(failure)
 
-/** Runs the backend's connection test (§7.1). */
+/** Runs the backend's connection test. */
 export const checkBackend = guarded(async (cfg: BackendConfig): Promise<BackendCheck> => {
   const { createBackend } = await import('./backends')
   return createBackend(cfg, await contextFor(cfg)).check()
 })
 
-/** First device: create the synced library from the current one (§10.3 "Enable"). */
+/** First device: create the synced library from the current one ("Enable"). */
 export const enableSync = guarded(async (o: { backend: BackendConfig; relay?: string | null }): Promise<void> => {
   const svc = await service()
   const { enable, initialUpload } = await flows()
@@ -240,12 +240,12 @@ export async function parsePairingCode(text: string): Promise<PairingPayload> {
  */
 export const previewJoin = guarded(async (p: PairingPayload): Promise<JoinPreview> => (await flows()).previewJoin(db, p))
 
-/** §10.3 "Join". Resolves when the bootstrap is done; downloads continue in the background. */
+/** "Join". Resolves when the bootstrap is done; downloads continue in the background. */
 export const joinSync = guarded(async (p: PairingPayload, mode: JoinMode): Promise<void> => {
   const svc = await service()
   const { join } = await flows()
   if (mode === 'newLibrary') {
-    // This device signed in to the drive for the library it joins from; the new library gets a copy (§5.4).
+    // This device signed in to the drive for the library it joins from; the new library gets a copy.
     const kind = p.b.kind
     const signIn = isDrive(kind) ? await (await tokens()).readTokens(db, kind) : undefined
     const { createLibrary, switchLibrary, useLibraries } = await libraries()
@@ -290,8 +290,8 @@ export const setPaused = guarded(async (paused: boolean): Promise<void> => {
 })
 
 /**
- * §10.4 "Stop syncing on this device". Library rows stay. This device's drive sign-in for the library is
- * deleted too (Dropbox's token revoked, SYNC-DRIVES.md §5.4) unless `keepSignIn` (leaving only to rejoin the
+ * "Stop syncing on this device". Library rows stay. This device's drive sign-in for the library is
+ * deleted too (Dropbox's token revoked) unless `keepSignIn` (leaving only to rejoin the
  * same library right away).
  */
 export const leaveSync = guarded(async (o: { keepSignIn?: boolean } = {}): Promise<void> => {
@@ -300,16 +300,16 @@ export const leaveSync = guarded(async (o: { keepSignIn?: boolean } = {}): Promi
   await svc.withEngineStopped(async () => (await flows()).leave(db, e ?? undefined, { keepSignIn: o.keepSignIn }))
 })
 
-/** §10.5 "Delete synced data from storage…" (the UI confirms by typing the library name first). */
+/** "Delete synced data from storage…" (the UI confirms by typing the library name first). */
 export const deleteRemoteData = guarded(async (): Promise<void> => {
   const svc = await service()
   await svc.withEngineStopped(async () => (await flows()).deleteRemote(db))
 })
 
-/** Rename this device ('' = back to its default name). The device record is overwritten at once (§2). */
+/** Rename this device ('' = back to its default name). The device record is overwritten at once. */
 export const renameDevice = guarded(async (name: string): Promise<void> => (await service()).renameDevice(name))
 
-/** §3.2 repair pass ("Re-check files"). */
+/** Blob repair pass ("Re-check files"). */
 export const repair = guarded(async (): Promise<void> => {
   const e = (await service()).currentEngine()
   if (!e) throw new LibSyncFailure('unknown', 'Library sync is not running')
@@ -328,11 +328,11 @@ export const updateBackend = guarded(async (cfg: BackendConfig): Promise<void> =
 })
 
 // ---------------------------------------------------------------------------------------------
-// Cloud-drive sign-in (docs/SYNC-DRIVES.md §2.2, §5). `signInReturnPending` is re-exported from
+// Cloud-drive sign-in. `signInReturnPending` is re-exported from
 // oauth/callback.ts above (sync, in the startup bundle); the rest loads lazily.
 // ---------------------------------------------------------------------------------------------
 
-/** Sign-in failures reach the UI as `LibSyncFailure` (§2.3 mapping, §5.5 wording). */
+/** Sign-in failures reach the UI as `LibSyncFailure`. */
 async function signInGuard<T>(fn: () => Promise<T>): Promise<T> {
   try {
     return await fn()
@@ -345,7 +345,7 @@ async function signInGuard<T>(fn: () => Promise<T>): Promise<T> {
 }
 
 /**
- * OAuth providers usable here (§6.4): Dropbox when its client id is configured; Google Drive and OneDrive
+ * OAuth providers usable here: Dropbox when its client id is configured; Google Drive and OneDrive
  * when theirs is and the Worker's `/api/oauth/providers` lists them with the same id. Never rejects.
  */
 export async function oauthProviders(): Promise<OAuthKind[]> {
@@ -357,7 +357,7 @@ export async function oauthProviders(): Promise<OAuthKind[]> {
 }
 
 /**
- * Saves the pending sign-in (§5.2) for the current library and navigates to the provider. Never resolves
+ * Saves the pending sign-in for the current library and navigates to the provider. Never resolves
  * when it works. Rejects with `LibSyncFailure('unknown', …, 'notConfigured')` where the provider isn't set up.
  */
 export const startSignIn = guarded(
@@ -382,7 +382,7 @@ export const completeSignIn = guarded(async (): Promise<SignInResult> => {
 
 /**
  * After sign-in: the BackendConfig for setup, with the account hints from the sign-in. gdrive finds or
- * creates the OpenStand folder (§4.3). Rejects with `LibSyncFailure('reauth')` when this library has no
+ * creates the OpenStand folder. Rejects with `LibSyncFailure('reauth')` when this library has no
  * sign-in for `kind`.
  */
 export const driveBackendConfig = guarded(async (kind: OAuthKind): Promise<BackendConfig> => {
@@ -538,12 +538,12 @@ export function prioritizeSongs(ids: string[]): void {
 }
 
 /**
- * The bucket CORS rule to paste (§7.1), filled with `location.origin`. Pure, so implemented already:
+ * The bucket CORS rule to paste, filled with `location.origin`. Pure, so implemented already:
  * B2 gets its own rule format (`b2 bucket update --cors-rules`), every other provider the S3 JSON.
  */
 export function corsRule(provider: BackendConfig & { kind: 's3' }): string {
   const origin = typeof location === 'undefined' ? 'https://openstand.rodlabs.dev' : location.origin
-  // `Date` lets the S3 backend correct clock skew (§7.1).
+  // `Date` lets the S3 backend correct clock skew.
   const expose = ['ETag', 'Content-Length', 'Content-Range', 'Date']
   const rule =
     provider.provider === 'b2'
@@ -569,12 +569,12 @@ export function corsRule(provider: BackendConfig & { kind: 's3' }): string {
   return JSON.stringify(rule, null, 2)
 }
 
-// Dev-only hook for WP4 (§14): `?libsyncMock=<phase>` drives `useLibSync` through the UI states.
-// WP4 creates `./ui/mock.ts` exporting `applyLibSyncMock(phase: string): void` (typically calling
-// `useLibSync.setState`). The glob is empty until that file exists, and the whole block is dropped from
-// production builds. WP3: keep this block when replacing the stubs.
+// Dev-only hook: `?libsyncMock=<phase>` drives `useLibSync` through the UI states.
+// `./ui/mock.ts` exports `applyLibSyncMock(phase: string): void` (typically calling
+// `useLibSync.setState`). The glob is empty if that file is missing, and the whole block is dropped from
+// production builds.
 if (import.meta.env.DEV && typeof location !== 'undefined') {
-  // For the opt-in real-account tests (SYNC-DRIVES.md §9.3): `await openstandDev.exportOAuthTokens()` prints
+  // For the opt-in real-account tests: `await openstandDev.exportOAuthTokens()` prints
   // {kind, clientId, refreshToken} for the active library. Dev builds only.
   const g = globalThis as { openstandDev?: Record<string, unknown> }
   g.openstandDev = {

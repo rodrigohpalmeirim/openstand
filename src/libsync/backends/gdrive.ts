@@ -1,5 +1,5 @@
 /**
- * Google Drive v3, flat layout in the visible OpenStand folder (docs/SYNC-DRIVES.md §4.3).
+ * Google Drive v3, flat layout in the visible OpenStand folder.
  *
  * Every key is one file directly in `config.folder`, named with the full key, with private `appProperties`
  * `os: '1'` and `d1..d3` (the key's first 1–3 folder segments, `keymap.dirProps`), so listing a prefix is
@@ -7,7 +7,7 @@
  * `createdTime`, ties going to the lowest id. Reads use only it; every create is followed by a dedupe that
  * deletes our own copy if it lost (and throws `precondition` for `ifNoneMatch`); overwrites update the
  * canonical file in place; `delete` removes every copy. Conditional creates are therefore emulated, not
- * atomic (§4.3 "Duplicates").
+ * atomic.
  *
  * A key → file cache (filled by our own writes and by `list`) lets our own reads skip the name query, so
  * they never wait for Drive's search index. A cached id that 404s is dropped and resolved again.
@@ -77,7 +77,7 @@ interface DriveSession {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Errors (§4.3 table)
+// Errors
 // ---------------------------------------------------------------------------------------------
 
 const REAUTH = new Set(['insufficientPermissions', 'insufficientScopes', 'ACCESS_TOKEN_SCOPE_INSUFFICIENT', 'authError'])
@@ -263,7 +263,7 @@ export class GDriveBackend implements StorageBackend {
   }
 
   async list(prefix: string, o: { startAfter?: string; cursor?: string; limit?: number; signal?: AbortSignal } = {}): Promise<ListPage> {
-    // `limit` is a hint and `cursor` never issued: the whole listing is one page (§3 "Listing").
+    // `limit` is a hint and `cursor` never issued: the whole listing is one page.
     const { folder, depth } = prefixScope(prefix)
     const scope = depth >= 1 ? `appProperties has { key='d${depth}' and value=${qstr(folder.join('/'))} }` : `appProperties has { key='os' and value='1' }`
     const files = await queryAll(this.http, `${qstr(this.folder)} in parents and ${scope} and trashed = false`, FIELDS, { signal: o.signal })
@@ -507,7 +507,7 @@ export class GDriveBackend implements StorageBackend {
     try {
       res = await this.http.send(uri, { method: 'PUT', headers: { 'content-range': `bytes */${size}` }, body: asBody(new Uint8Array(0)), signal, expect: [308, 404, 410] })
     } catch (e) {
-      // Any other 4xx means the session is unusable: start again (§4.3).
+      // Any other 4xx means the session is unusable: start again.
       if (e instanceof BackendError && e.status !== undefined && e.status >= 400 && e.status < 500 && !['reauth', 'rateLimited', 'quota'].includes(e.code)) return null
       throw e
     }
@@ -595,7 +595,7 @@ export class GDriveBackend implements StorageBackend {
         session = await this.startSession(key, size, signal)
         next = 0
         state = { v: 1, backend: this.id, key, size, createdAt: this.now(), done: 0, session: { ...session } }
-        // Persist the live session before the first read (§3 "Uploads").
+        // Persist the live session before the first read.
         await o.onState?.(structuredClone(state))
       }
       if (next) o.onProgress?.(next)
@@ -757,8 +757,8 @@ export class GDriveBackend implements StorageBackend {
 }
 
 /**
- * Finds the OpenStand root folder by its `appProperties` marker, or creates it in My Drive (§4.3 "Root
- * folder"); returns its file id for `BackendConfig.folder`. Used only by `driveBackendConfig` at setup.
+ * Finds the OpenStand root folder by its `appProperties` marker, or creates it in My Drive;
+ * returns its file id for `BackendConfig.folder`. Used only by `driveBackendConfig` at setup.
  * Several marked folders (two first-time setups at once) → the earliest. A folder the user made by hand
  * is invisible to `drive.file`, so only our own can match.
  */

@@ -1,6 +1,6 @@
 /**
  * Test kit for the merge tests: a seeded PRNG and a simulated device that drives `project` / `diff` /
- * `mergeDelta` / `materialize` / `toShadow` / `fromShadow` the way the engine does (§8.2, §8.3), with
+ * `mergeDelta` / `materialize` / `toShadow` / `fromShadow` the way the engine does, with
  * captures running immediately after every local write.
  */
 import { emptySong, type PageAnnotations, type Setlist, type Song } from '../db/schema'
@@ -96,7 +96,7 @@ export class SimDevice {
     return r.delta
   }
 
-  /** Apply a remote op (§8.3). */
+  /** Apply a remote op. */
   receive(op: RecordDelta) {
     const k = rowKey(op.c, op.id)
     const r = applyRecord(op.c, (this.rows.get(k) ?? null) as never, this.shadows.get(k), op)

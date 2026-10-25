@@ -1,5 +1,5 @@
 /**
- * Reusable `StorageBackend` contract suite (docs/SYNC.md §7, §13). Every backend must pass it unchanged:
+ * Reusable `StorageBackend` contract suite. Every backend must pass it unchanged:
  * `memory.test.ts` runs it in the normal test run, `e2e/minio.e2e.test.ts` against S3 (MinIO).
  *
  *   backendContract('memory', () => new MemoryBackend(...))

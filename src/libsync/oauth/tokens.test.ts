@@ -22,7 +22,7 @@ function setup(kind: OAuthKind, routes: Record<string, Route>, over: Partial<Tok
 
 const dropboxRefresh = (token = 'a2', extra: Record<string, unknown> = {}): Route => () => json({ access_token: token, token_type: 'bearer', expires_in: 14400, ...extra })
 
-describe('token source (SYNC-DRIVES.md §5.4)', () => {
+describe('token source', () => {
   it('returns the stored token while it has more than 5 minutes left, without a request', async () => {
     const s = setup('dropbox', { [DROPBOX_TOKEN]: dropboxRefresh() })
     await s.ready
@@ -133,7 +133,7 @@ describe('token source (SYNC-DRIVES.md §5.4)', () => {
     await expect(tokenSource(s.db, 'gdrive', s.deps).refreshAfter401('a1')).rejects.toMatchObject({ code: 'reauth', providerCode: 'scope' })
   })
 
-  it('a misconfigured Worker → unknown/OAuthConfig with the §5.4 wording; 502 → network; 429 → rateLimited', async () => {
+  it('a misconfigured Worker → unknown/OAuthConfig with the misconfiguration wording; 502 → network; 429 → rateLimited', async () => {
     let answer = json({ error: 'not_configured' }, 503)
     const s = setup('onedrive', { [ONEDRIVE_TOKEN]: () => answer })
     await s.ready

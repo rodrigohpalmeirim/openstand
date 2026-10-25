@@ -1,4 +1,4 @@
-/** Settings → Library sync (§12.2): off (set up / join), on (status, devices, storage, danger zone). */
+/** Settings → Library sync: off (set up / join), on (status, devices, storage, danger zone). */
 import {
   Cloud,
   CloudOff,
@@ -91,7 +91,7 @@ function useStorageConfig(want: boolean): StorageConfig {
 }
 
 /**
- * The screen to open when Settings mounts: a drive sign-in that came back from the provider (§5.2) reopens
+ * The screen to open when Settings mounts: a drive sign-in that came back from the provider reopens
  * the wizard or the join flow where it left; otherwise a dev mock may ask for one.
  */
 function initialModal(r: SignInReturn | null): Modal {
@@ -458,7 +458,7 @@ function TypeName({ name, value, onChange, onEnter, autoFocus }: { name: string;
   )
 }
 
-/** Delete synced data: confirmed by typing the library name (§10.5). */
+/** Delete synced data: confirmed by typing the library name. */
 function DeleteDialog({ s, onClose }: { s: LibSyncStatus; onClose: () => void }) {
   const name = useLibraryName()
   const [typed, setTyped] = useState('')
@@ -506,7 +506,7 @@ function DeleteDialog({ s, onClose }: { s: LibSyncStatus; onClose: () => void })
 }
 
 /**
- * Reset sync (§10.5): a new library secret (so a lost device or leaked code can't read or change anything
+ * Reset sync: a new library secret (so a lost device or leaked code can't read or change anything
  * synced afterwards) and, optionally, new storage keys. The bucket keys are the user's to rotate at the
  * provider; we only offer to switch to new ones in the same step.
  */
@@ -662,7 +662,7 @@ function ResetDialog({ s, onClose }: { s: LibSyncStatus; onClose: () => void }) 
 
 export function LibrarySyncSettings() {
   const s = useLibSync()
-  // Back from a drive sign-in (§5.2): taken once, before the first render, so the right screen opens at once.
+  // Back from a drive sign-in: taken once, before the first render, so the right screen opens at once.
   const [ret] = useState(() => takeSignInReturn())
   const [modal, setModal] = useState<Modal>(() => initialModal(ret))
   const [busy, setBusy] = useState<null | 'sync' | 'repair' | 'leave' | 'pause'>(null)
@@ -674,7 +674,7 @@ export function LibrarySyncSettings() {
   const { config, backend } = useStorageConfig(quota || !!kind)
   const close = () => setModal(null)
 
-  // "Sign in again" came back: the engine restarts with the new tokens (WP-O); say so, or why it didn't work.
+  // "Sign in again" came back: the engine restarts with the new tokens; say so, or why it didn't work.
   useEffect(() => {
     if (ret?.intent.type !== 'reauth') return
     let live = true

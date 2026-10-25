@@ -1,4 +1,4 @@
-/** The cloud-drive screens (SYNC-DRIVES.md §7) with the facade mocked: wizard, join flow, Settings. */
+/** The cloud-drive screens with the facade mocked: wizard, join flow, Settings. */
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { BackendCheck, BackendConfig } from '../backends/types'
@@ -163,10 +163,10 @@ describe('joining with a drive code', () => {
     await screen.findByText(/Signed in to Dropbox as/)
   })
 
-  it('the library isn’t in the signed-in account (§7.3): says so, offers another account or code', async () => {
+  it('the library isn’t in the signed-in account: says so, offers another account or code', async () => {
     const msg = 'This library isn’t in the Dropbox account you signed in with (sam@example.org). The code was made for rod@example.com. Sign in with that account, or get a new code if the library was deleted.'
     vi.mocked(api.previewJoin).mockRejectedValue(new api.LibSyncFailure('wrongAccount', msg, 'rod@example.com'))
-    // An older code without the account id: only the storage check can tell (§7.3 layer 2).
+    // An older code without the account id: only the storage check can tell.
     vi.mocked(api.parsePairingCode).mockResolvedValue({ ...PAYLOAD, b: { kind: 'dropbox', root: '', account: ROD.email } })
     render(<JoinFlow open onClose={() => {}} resume={ret({ type: 'join', pairing: CODE }, { ok: true, result: { kind: 'dropbox', intent: { type: 'join', pairing: CODE }, account: { id: 'x', email: 'sam@example.org' } } })} />)
     expect(await screen.findByText(msg)).toBeTruthy()

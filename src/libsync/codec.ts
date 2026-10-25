@@ -1,5 +1,5 @@
 /**
- * Batch, meta, device and snapshot encoding (docs/SYNC.md §3, §3.1, §4.1, §4.2).
+ * Batch, meta, device and snapshot encoding.
  *
  * - Envelopes (`meta`, `devices/<d>`, `log/<d>/<seq>`): `seal(gzip(JSON))`.
  * - Snapshots: gzip NDJSON (header line, then one `RecordDelta` per line) inside a chunked container with
@@ -196,7 +196,7 @@ export async function encodeMeta(keys: LibraryKeys, meta: MetaRecord): Promise<U
   return seal(keys, { kind: 'meta' }, await gzip(utf8(JSON.stringify(meta))))
 }
 
-/** Decrypting `meta` proves the secret on join: a `corrupt` here means `wrongSecret` (§10.3). */
+/** Decrypting `meta` proves the secret on join: a `corrupt` here means `wrongSecret`. */
 export async function decodeMeta(keys: LibraryKeys, bytes: Uint8Array): Promise<MetaRecord> {
   const m = parseJson(await gunzip(await open(keys, { kind: 'meta' }, bytes)))
   checkV(m, 'meta')
@@ -217,7 +217,7 @@ export async function decodeDevice(keys: LibraryKeys, bytes: Uint8Array, deviceI
 }
 
 // ---------------------------------------------------------------------------------------------
-// Snapshots (§3.1)
+// Snapshots
 // ---------------------------------------------------------------------------------------------
 
 export type SnapshotInfo = Omit<SnapshotHeader, 'v' | 'kind'>
@@ -319,7 +319,7 @@ export interface SnapshotReadOptions {
 }
 
 /**
- * Strict header check (§3.1). Returns a fresh object holding only the known fields: `d` a deviceId, `n` ≥ 1,
+ * Strict header check. Returns a fresh object holding only the known fields: `d` a deviceId, `n` ≥ 1,
  * `t` a time not in the future (see `SnapshotReadOptions.now`), `records` a bounded safe integer, `hlcMax`
  * an HLC, `vector` deviceId → non-negative safe integer, `horizon` times not after `t`.
  */
@@ -450,7 +450,7 @@ export async function readSnapshot(
 /**
  * Reads just the header line from the start of a snapshot container (`bytes` = at least the header and
  * chunk 0: fetch it with `backend.get(key, { range: FIRST_CHUNK_RANGE })`). Used to pick the best
- * snapshot without downloading it (§3.1).
+ * snapshot without downloading it.
  */
 export async function readSnapshotHeader(
   keys: LibraryKeys,

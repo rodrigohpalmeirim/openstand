@@ -1,7 +1,7 @@
 /**
- * Library sync: storage backend contract (docs/SYNC.md §7).
+ * Library sync: storage backend contract.
  *
- * CONTRACT. Frozen after step 0: change only by agreement, and only additively.
+ * CONTRACT: change only additively.
  * Every backend must pass `backendContract` (contract.test-helper.ts) unchanged.
  */
 import type { Json } from '../model'
@@ -12,7 +12,7 @@ export type BackendConfig =
   | {
       kind: 's3'
       provider: S3Provider
-      /** e.g. `https://<accountId>.r2.cloudflarestorage.com` (presets in §7.1). */
+      /** e.g. `https://<accountId>.r2.cloudflarestorage.com` (presets in `ui/wizard.ts`). */
       endpoint: string
       /** `auto` for R2. */
       region: string
@@ -25,10 +25,10 @@ export type BackendConfig =
       pathStyle: boolean
     }
   /**
-   * OAuth backends (docs/SYNC-DRIVES.md). Tokens are per device in `syncState.oauth`, never here.
+   * OAuth backends. Tokens are per device in `syncState.oauth`, never here.
    * `account` = display hint, usually the email (≤ 320 chars). `accountId` = the provider's stable id:
    * Dropbox `account_id`, Google `about.user.permissionId`, OneDrive `approot.parentReference.driveId`
-   * (≤ 200 chars). Both are non-secret hints that let a joining device detect a wrong account (§7.3);
+   * (≤ 200 chars). Both are non-secret hints that let a joining device detect a wrong account;
    * neither is ever a credential.
    */
   /** `root`: sub-path inside the app folder; '' = the app folder itself (the UI always uses ''). */
@@ -43,7 +43,7 @@ export type BackendConfig =
 export type BackendKind = BackendConfig['kind']
 export type S3Config = Extract<BackendConfig, { kind: 's3' }>
 
-/** The cloud drives signed into with OAuth (docs/SYNC-DRIVES.md). */
+/** The cloud drives signed into with OAuth. */
 export type OAuthKind = 'dropbox' | 'gdrive' | 'onedrive'
 export type OAuthConfig = Extract<BackendConfig, { kind: OAuthKind }>
 export type DropboxConfig = Extract<BackendConfig, { kind: 'dropbox' }>
@@ -125,7 +125,7 @@ export interface StorageBackend {
   get(key: string, o?: { range?: [number, number]; signal?: AbortSignal; maxBytes?: number }): Promise<Uint8Array | null>
   /** `ifNoneMatch` sends `If-None-Match: *` (when `caps.conditionalPut`); a 412 throws `BackendError('precondition')`. */
   put(key: string, body: Uint8Array, o?: { ifNoneMatch?: boolean; signal?: AbortSignal }): Promise<void>
-  /** 404 counts as success. Callers delete their own keys only (§3.2). */
+  /** 404 counts as success. Callers delete their own keys only. */
   delete(key: string, o?: { signal?: AbortSignal }): Promise<void>
   /** Resumable upload of any size. Persists progress through `onState`; pass the last state back to resume. */
   upload(
@@ -141,23 +141,23 @@ export interface StorageBackend {
   /**
    * Cancels a resumable session (and frees its stored parts) so it won't be resumed. Best effort; a
    * missing session counts as success. The engine calls it for its own sessions older than
-   * MULTIPART_STALE (§7.1). Optional: backends without server-side sessions omit it. (Added by WP2.)
+   * MULTIPART_STALE. Optional: backends without server-side sessions omit it.
    */
   abortUpload?(state: UploadState, o?: { signal?: AbortSignal }): Promise<void>
-  /** Connection test (§7.1 for the S3 order). Never throws; failures are reported in the result. */
+  /** Connection test. Never throws; failures are reported in the result. */
   check(): Promise<BackendCheck>
   /** Who is signed in and where the data lives. OAuth backends implement it; S3/memory omit it. */
   describe?(o?: { signal?: AbortSignal }): Promise<BackendDescription>
 }
 
-/** Who a drive account is (SYNC-DRIVES.md §2.1). `id` has the meaning of `BackendConfig.accountId`. */
+/** Who a drive account is. `id` has the meaning of `BackendConfig.accountId`. */
 export interface AccountInfo {
   id: string
   email?: string
   name?: string
 }
 
-/** `StorageBackend.describe()` (SYNC-DRIVES.md §2.1). */
+/** `StorageBackend.describe()`. */
 export interface BackendDescription {
   account: AccountInfo
   /** For people: "Dropbox › Apps › OpenStand", "Google Drive › OpenStand", "OneDrive › Apps › OpenStand". */
@@ -208,11 +208,11 @@ export type BackendErrorCode =
   | 'unknown'
   /**
    * This device must sign in to its drive again: no tokens, refresh refused (`invalid_grant`), consent
-   * revoked, a required scope not granted, or a fresh token still gets 401 (SYNC-DRIVES.md §2.1).
+   * revoked, a required scope not granted, or a fresh token still gets 401.
    */
   | 'reauth'
 
-/** Every backend failure is normalised to this (error mapping for S3 in §7.1). */
+/** Every backend failure is normalised to this (the S3 mapping is in `s3.ts`). */
 export class BackendError extends Error {
   code: BackendErrorCode
   /** HTTP status, when there was a response. */
@@ -237,8 +237,8 @@ export class BackendError extends Error {
 }
 
 /**
- * Per-device services passed to `createBackend(config, ctx)` (backends/index.ts). The spec names the
- * parameter but not its shape; every member is optional so tests can omit it. Extend additively.
+ * Per-device services passed to `createBackend(config, ctx)` (backends/index.ts). Every member is
+ * optional so tests can omit it. Extend additively.
  */
 export interface BackendContext {
   /** Defaults to `globalThis.fetch`. */
@@ -252,7 +252,7 @@ export interface BackendContext {
 }
 
 // ---------------------------------------------------------------------------------------------
-// OAuth (docs/SYNC-DRIVES.md §2.1)
+// OAuth
 // ---------------------------------------------------------------------------------------------
 
 /** Per-device OAuth access for one backend (implemented in oauth/tokens.ts, faked in tests). */
@@ -278,7 +278,7 @@ export interface TokenSet {
   scope?: string
 }
 
-/** @deprecated SYNC.md §7.2 sketch, superseded by `oauth/config.ts` (`PROVIDERS`) and `oauth/providers.ts`. */
+/** @deprecated Early sketch, superseded by `oauth/config.ts` (`PROVIDERS`) and `oauth/providers.ts`. */
 export interface OAuthProvider {
   kind: OAuthKind
   authorizeUrl(p: { codeChallenge: string; state: string; redirectUri: string }): string

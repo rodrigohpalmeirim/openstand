@@ -1,6 +1,6 @@
 /**
- * Per-provider OAuth requests (docs/SYNC-DRIVES.md §5.3): the authorize URL, the token endpoint (Dropbox
- * directly with PKCE and no secret; Google and Microsoft through our Worker, §6), the granted-scope check,
+ * Per-provider OAuth requests: the authorize URL, the token endpoint (Dropbox
+ * directly with PKCE and no secret; Google and Microsoft through our Worker), the granted-scope check,
  * who signed in, and the Dropbox revoke. Never log or put in errors: codes, verifiers or tokens.
  */
 import type { AccountInfo, OAuthKind } from '../backends/types'
@@ -167,7 +167,7 @@ async function tokenRequest(kind: OAuthKind, grant: { code: string; verifier: st
   }
 }
 
-/** Code → tokens (§5.2). Throws `TokenEndpointError`. */
+/** Code → tokens. Throws `TokenEndpointError`. */
 export const exchangeCode = (kind: OAuthKind, p: { code: string; verifier: string; redirectUri: string }, d: OAuthDeps = {}) => tokenRequest(kind, p, d)
 
 /** Refresh token → new access token (and, for Microsoft, a new refresh token). Throws `TokenEndpointError`. */
@@ -212,7 +212,7 @@ export class IdentityError extends Error {
   }
 }
 
-/** Claims of a JWT, decoded but **not verified**: display only (§5.3; it came over TLS from our Worker). */
+/** Claims of a JWT, decoded but **not verified**: display only (it came over TLS from our Worker). */
 export function jwtClaims(jwt: string | undefined): Record<string, unknown> {
   try {
     const part = jwt?.split('.')[1]
@@ -241,7 +241,7 @@ async function identityCall(d: OAuthDeps, url: string, token: string, init: Requ
   throw new IdentityError('rejected', res.status)
 }
 
-/** Who signed in (§5.3 "identify"). `id` is the `accountId` of `BackendConfig`. Throws `IdentityError`. */
+/** Who signed in. `id` is the `accountId` of `BackendConfig`. Throws `IdentityError`. */
 export async function identify(kind: OAuthKind, t: TokenResponse, d: OAuthDeps = {}): Promise<AccountInfo> {
   if (kind === 'dropbox') {
     const j = await identityCall(d, 'https://api.dropboxapi.com/2/users/get_current_account', t.access_token, {
@@ -274,7 +274,7 @@ export async function identify(kind: OAuthKind, t: TokenResponse, d: OAuthDeps =
 // ---------------------------------------------------------------------------------------------
 
 /**
- * "Stop syncing" (§5.4): Dropbox revokes this device's token (and with it the refresh token), nothing else.
+ * "Stop syncing": Dropbox revokes this device's token (and with it the refresh token), nothing else.
  * Google's revoke would remove the app's grant on every device, and Microsoft has none for this flow: those
  * only delete locally. Returns whether a request was made and accepted. Never throws.
  */

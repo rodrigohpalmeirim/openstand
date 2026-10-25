@@ -2,7 +2,7 @@
  * Undo/redo for one annotation session. Each command records page snapshots before and after the
  * change; items are immutable, so snapshots share objects and cost one array per page. Commands are
  * applied as item diffs (`applyChanges`), never by restoring whole arrays, so items that arrived from
- * another device in between are kept (docs/SYNC.md §8.5).
+ * another device in between are kept.
  */
 import type { Annotation } from '../db/schema'
 

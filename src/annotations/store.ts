@@ -28,7 +28,7 @@ interface Entry {
   items: Annotation[]
   /**
    * The items last read from or written to IndexedDB: what `items` was derived from. Flushing writes only
-   * the base→items changes onto the stored row, so items another device added meanwhile survive (§8.5).
+   * the base→items changes onto the stored row, so items another device added meanwhile survive.
    */
   base: Annotation[]
   /** The last non-transient items (transient = a drag preview, `setItems(…, false)`). */
@@ -170,7 +170,7 @@ async function flushNow(): Promise<void> {
 
 /**
  * Library sync applied remote changes to these pages (keys = page ids): re-read the loaded ones. Pages
- * with unsaved local edits keep them on top of the new row (§8.5).
+ * with unsaved local edits keep them on top of the new row.
  */
 export async function remoteChanged(keys: Iterable<string>): Promise<void> {
   const loaded = [...keys].filter((k) => pages.get(k)?.loaded)

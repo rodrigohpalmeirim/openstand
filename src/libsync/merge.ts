@@ -1,5 +1,5 @@
 /**
- * Pure register merge for library sync (docs/SYNC.md §5, §8.2–§8.4).
+ * Pure register merge for library sync.
  *
  * Vocabulary:
  * - A **projection** is a row broken into registers, without hlcs (`project`).
@@ -65,7 +65,7 @@ export interface Projection {
 
 export interface ProjectCtx {
   /**
-   * Content SHA-256 hex of a local blob id, `''` if unknown (§8.2 step 2: an id that is already 64 hex
+   * Content SHA-256 hex of a local blob id, `''` if unknown (an id that is already 64 hex
    * chars is the hash; otherwise `blobs.get(id).hash`).
    */
   blobHash(blobId: string): string
@@ -79,7 +79,7 @@ export interface ProjectCtx {
 export interface MaterializeCtx {
   /** Lets a local `blobId` with a matching hash be kept (legacy uuid ids). */
   blobHash?(blobId: string): string
-  /** Local blob id for a wire hash (§8.3 step 3). Default: the hash itself (download pending). */
+  /** Local blob id for a wire hash. Default: the hash itself (download pending). */
   blobId?(hash: string): string
 }
 
@@ -127,7 +127,7 @@ function toWire(spec: FieldSpec, x: Row, ctx: ProjectCtx): Obj {
   return v
 }
 
-/** Break a row into registers (§8.2 step 2). Throws for a kv key that doesn't sync. */
+/** Break a row into registers. Throws for a kv key that doesn't sync. */
 export function project<C extends Collection>(c: C, row: CollectionRows[C], ctx: ProjectCtx = DEFAULT_CTX): Projection {
   const id = rowId(c, row)
   const { obj, table } = recordObject(c, id, row as unknown as Row)
@@ -207,7 +207,7 @@ export function project<C extends Collection>(c: C, row: CollectionRows[C], ctx:
 // Ordering
 // ---------------------------------------------------------------------------------------------
 
-/** §5.5: `o` filtered to alive keys, then the alive keys not in `o`, sorted by (born, key). */
+/** `o` filtered to alive keys, then the alive keys not in `o`, sorted by (born, key). */
 export function orderKeys(o: string[] | undefined, alive: Map<string, Hlc>): string[] {
   const out: string[] = []
   const seen = new Set<string>()
@@ -229,7 +229,7 @@ export function orderKeys(o: string[] | undefined, alive: Map<string, Hlc>): str
 const arrEq = (a: string[], b: string[]) => a.length === b.length && a.every((x, i) => x === b[i])
 
 // ---------------------------------------------------------------------------------------------
-// Diff (§8.2 step 3, §5.5)
+// Diff
 // ---------------------------------------------------------------------------------------------
 
 /**
@@ -437,7 +437,7 @@ const rowless = (s: RecordDelta) => s.c !== 'ann' && (!s.a || !s.a[1])
 
 /**
  * State -> shadow (values replaced by hashes). The whole state is also kept in `x` when there is no row
- * to hold the values: an unknown collection (§5.5), a record whose creation hasn't arrived yet (edits
+ * to hold the values: an unknown collection, a record whose creation hasn't arrived yet (edits
  * from another device's log can come first), and a deleted record (until `compact` drops its values).
  * `fromShadow` returns `x` as is.
  */
@@ -463,7 +463,7 @@ export function toShadow(state: RecordDelta): ShadowRecord {
 
 /**
  * Rebuild the state from a shadow and the row's projection (`null` = no row): shadow hlcs joined with
- * row values (as snapshots do, §6.2), or the kept `x` state. A register whose value the row lacks is
+ * row values (as snapshots do), or the kept `x` state. A register whose value the row lacks is
  * left out. Snapshot lines are `fromShadow(shadow, row ? project(c, row, ctx) : null)`.
  */
 export function fromShadow(shadow: ShadowRecord, proj: Projection | null): RecordDelta {
@@ -597,7 +597,7 @@ function materializeObject(table: FieldTable, state: RecordDelta, local: Row | u
 }
 
 /**
- * State -> row (§8.3 step 3). `null` means the row must not exist: a dead record, a record whose
+ * State -> row. `null` means the row must not exist: a dead record, a record whose
  * creation (`a` register) hasn't arrived yet, or an annotation page with no alive item. `local` is the
  * current row, if any: it supplies local-only fields (layers `current`), local blob ids, and the value
  * of any field the state has no register for. Without it, required fields get their defaults.
@@ -634,13 +634,13 @@ export function materialize<C extends Collection>(c: C, state: RecordDelta, loca
 }
 
 // ---------------------------------------------------------------------------------------------
-// Engine steps (§8.2, §8.3) as pure functions
+// Engine steps as pure functions
 // ---------------------------------------------------------------------------------------------
 
 export type SyncCtx = ProjectCtx & MaterializeCtx
 
 /**
- * One capture (§8.2 steps 2–4): diff the row (`null` = missing) against the shadow. Returns the op to
+ * One capture: diff the row (`null` = missing) against the shadow. Returns the op to
  * publish (if any) and the new shadow. `row` is set only when the local row must be rewritten: it holds
  * a max/min value that loses to the merged register (e.g. `modifiedAt` stamped by a clock that is
  * behind), which no op can publish; or it is an annotation page with no items left (`null`: delete
@@ -664,7 +664,7 @@ export function captureRecord<C extends Collection>(
   }
   if (!proj) return out
   if (c === 'ann') {
-    if (!proj.l.items?.keys.length) out.row = null // §5.3: no alive item, no row
+    if (!proj.l.items?.keys.length) out.row = null // no alive item, no row
   } else if (state?.m) {
     for (const [k, v] of Object.entries(proj.m)) {
       if (state.m[k] !== undefined && state.m[k] !== v) {
@@ -677,7 +677,7 @@ export function captureRecord<C extends Collection>(
 }
 
 /**
- * Apply one remote op (§8.3 steps 2–3) to a row that has no uncaptured changes (capture it first).
+ * Apply one remote op to a row that has no uncaptured changes (capture it first).
  * Returns the new row (`null` = delete it; also for a record whose creation hasn't arrived) and shadow.
  */
 export function applyRecord<C extends Collection>(
@@ -693,11 +693,11 @@ export function applyRecord<C extends Collection>(
 }
 
 // ---------------------------------------------------------------------------------------------
-// Horizons (§3.1, §3.2)
+// Horizons
 // ---------------------------------------------------------------------------------------------
 
 /**
- * What a snapshot drops (§3.1): `f` and `l` of dead records whose `a` hlc is older than
+ * What a snapshot drops: `f` and `l` of dead records whose `a` hlc is older than
  * `horizon.deadFields`, and element tombstones older than `horizon.elementTombs` (both wall ms).
  * `a`, `m` and `n` stay: counters must keep their per-device totals or an undelete would double them.
  */
@@ -724,7 +724,7 @@ export function compact(state: RecordDelta, horizon: { deadFields: number; eleme
 }
 
 /**
- * Stale-device catch-up (§3.2): after applying a snapshot newer than our `lastSync`, alive records and
+ * Stale-device catch-up: after applying a snapshot newer than our `lastSync`, alive records and
  * elements born at or before `lastSync` that the snapshot doesn't mention were deleted (and their
  * tombstones discarded) while we were away. Returns the local state without them, or `null` when the
  * whole record must be deleted locally. Nothing here is published.
@@ -752,7 +752,7 @@ export function dropStale(local: RecordDelta, snap: RecordDelta | undefined, las
 }
 
 // ---------------------------------------------------------------------------------------------
-// Rebase (§8.4)
+// Rebase
 // ---------------------------------------------------------------------------------------------
 
 const DEV0 = '0'.repeat(16)
@@ -762,7 +762,7 @@ const H_EDIT = formatHlc(2, 0, DEV0)
 const IDENTITY_CTX: ProjectCtx = { blobHash: (id) => id, blobMime: () => '' }
 
 /**
- * Apply the user's `base` → `edited` changes onto `latest` at §5 granularity (field, sub-field, element,
+ * Apply the user's `base` → `edited` changes onto `latest` at register granularity (field, sub-field, element,
  * order, counter delta), so fields and elements the user didn't touch keep `latest`'s values. Where both
  * changed the same register, `edited` wins. Local-only fields come from `edited`.
  */

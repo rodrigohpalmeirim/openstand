@@ -1,6 +1,6 @@
 /**
- * Join-flow state (§10.3, §12.2): scan or paste → preview → mode → progress. A cloud-drive code
- * (SYNC-DRIVES.md §7.2) adds a sign-in step after the scan: redirect to the provider, back to the sign-in
+ * Join-flow state: scan or paste → preview → mode → progress. A cloud-drive code
+ * adds a sign-in step after the scan: redirect to the provider, back to the sign-in
  * step's success state, then the preview. Pure.
  */
 import type { AccountInfo, JoinPreview } from '../api'
@@ -25,9 +25,9 @@ export interface JoinState {
   signingIn?: boolean
   /** Drives: why the sign-in (or the check right after it) didn't work. */
   signInError?: SignInProblem
-  /** Drives: the code names another account than the one signed in (§7.2 step 4; a hint, can be overridden). */
+  /** Drives: the code names another account than the one signed in (a hint, can be overridden). */
   mismatch?: boolean
-  /** Drives: the library isn't in the signed-in account (§7.3); offers "Scan another code". */
+  /** Drives: the library isn't in the signed-in account; offers "Scan another code". */
   wrongAccount?: boolean
 }
 
@@ -55,7 +55,7 @@ export type JoinAction =
 
 export const initialJoin = (): JoinState => ({ step: 'scan', mode: 'newLibrary' })
 
-/** §7.3 layer 1: both ids known and different. Emails change, so this is a hint, never a block. */
+/** Both ids known and different. Emails change, so this is a hint, never a block. */
 export const accountsDiffer = (p: PairingPayload, a?: AccountInfo) => {
   const want = isDrive(p.b.kind) ? (p.b as { accountId?: string }).accountId : undefined
   return !!(want && a?.id && want !== a.id)
@@ -70,7 +70,7 @@ export function joinReducer(s: JoinState, a: JoinAction): JoinState {
     case 'parsed':
       return { ...s, payload: a.payload }
     case 'previewed':
-      // §15.4: a non-empty library defaults to a separate new library; merge is an explicit choice.
+      // A non-empty library defaults to a separate new library; merge is an explicit choice.
       return { ...s, step: 'preview', preview: a.preview, mode: a.preview.suggested, signInError: undefined }
     case 'failed':
       // A failed join goes back to the preview so the user can retry; a bad code back to scanning; a
@@ -127,7 +127,7 @@ export function previewLine(p: JoinPreview, name?: string): { remote: string; lo
   }
 }
 
-/** §10.3: "N of your songs are already in the synced library and will be combined; M will be added." */
+/** "N of your songs are already in the synced library and will be combined; M will be added." */
 export function mergeLine(p: JoinPreview): string {
   const added = Math.max(0, p.localSongs - p.matches)
   if (!p.matches) return `${plural(added, 'song')} from this device will be added to the synced library.`

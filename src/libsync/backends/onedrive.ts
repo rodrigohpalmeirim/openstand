@@ -1,5 +1,5 @@
 /**
- * OneDrive through Microsoft Graph, in the app folder (`special/approot`, docs/SYNC-DRIVES.md §4.2).
+ * OneDrive through Microsoft Graph, in the app folder (`special/approot`).
  *
  * Keys map through `deep3`: the first `min(n−1, 3)` segments are real folders, deeper segments are joined
  * with `~` into the file name, so every hot prefix (`heads/`, `log/<dev>/`, `blobs/`) is one folder and a
@@ -73,7 +73,7 @@ interface DriveItem {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Error mapping (§4.2)
+// Error mapping
 // ---------------------------------------------------------------------------------------------
 
 /** `{error:{code, message}}`; the code only (messages may echo request details). */
@@ -98,7 +98,7 @@ export function graphError(status: number, body: string, headers?: Headers, o: {
   if (status === 401) return new BackendError(o.preauth ? 'unknown' : 'reauth', msg, opts)
   if (status === 507 || code === 'insufficientStorage' || code === 'quotaLimitReached') return new BackendError('quota', msg, opts)
   if (status === 429) return new BackendError('rateLimited', msg, opts)
-  // §3: a 503 with a retry hint is throttling; without one it is an outage.
+  // A 503 with a retry hint is throttling; without one it is an outage.
   if (status === 503) return new BackendError(retryAfterMs !== undefined ? 'rateLimited' : 'server', msg, opts)
   if (status === 409 || status === 412) return new BackendError('precondition', msg, opts)
   if (status === 403) return new BackendError('forbidden', msg, opts)

@@ -1,5 +1,5 @@
 /**
- * Typed access to the library-sync tables (docs/SYNC.md §6.2). Every function takes the database, so two
+ * Typed access to the library-sync tables. Every function takes the database, so two
  * devices can live in one process (tests) and the engine never depends on the global `db` binding.
  */
 import { setPruneFilter, type OpenStandDB, type PruneFilter } from '../db/db'
@@ -72,7 +72,7 @@ export async function clearSyncTables(db: OpenStandDB) {
 }
 
 /**
- * Prune guard (§8.6): with sync on, only pages that were never synced, or whose song is dead in the
+ * Prune guard: with sync on, only pages that were never synced, or whose song is dead in the
  * shadow, may be pruned. Synced orphan pages (annotations that arrived before their song, or pages of
  * files removed from a song) stay: deleting them would tombstone them on every device.
  */
@@ -95,7 +95,7 @@ export function registerDbHooks() {
 }
 
 /**
- * Song editor save (§8.4): `edited` (a draft opened as `base`) applied onto the song as stored now at
+ * Song editor save: `edited` (a draft opened as `base`) applied onto the song as stored now at
  * field, sub-field and element granularity, so edits synced meanwhile aren't reverted. `'deleted'` when the
  * song is gone (deleted elsewhere meanwhile).
  */

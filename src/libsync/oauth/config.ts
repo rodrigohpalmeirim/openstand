@@ -1,17 +1,17 @@
 /**
- * OAuth client ids and the provider table (docs/SYNC-DRIVES.md §2.4, §5.3). Committed: client ids are
+ * OAuth client ids and the provider table. Committed: client ids are
  * public. Secrets for Google and Microsoft live only in the Worker (`wrangler secret put`).
  */
 import type { OAuthKind } from '../backends/types'
 import type { ProviderSpec } from './types'
 
-/** Origins whose `/oauth/callback` is registered with the official apps (§10). */
+/** Origins whose `/oauth/callback` is registered with the official apps. */
 export const OFFICIAL_ORIGINS = ['https://openstand.rodlabs.dev', 'http://localhost:5317']
 
 const OFFICIAL: Record<OAuthKind, string> = {
-  dropbox: '', // App key from the Dropbox App Console (§10.1); public
-  gdrive: '', // "<n>-<x>.apps.googleusercontent.com" (§10.2); public
-  onedrive: '', // Application (client) ID GUID (§10.3); public
+  dropbox: 'ovxujea0y80o8ow', // App key from the Dropbox App Console; public
+  gdrive: '941966283964-49gajkits27cba91hghkdjl7ujgd2k92.apps.googleusercontent.com', // "<n>-<x>.apps.googleusercontent.com"; public
+  onedrive: '355fb297-730d-4c93-ac6c-35368413c885', // Application (client) ID GUID; public
 }
 
 type Env = Record<string, string | boolean | undefined>
@@ -40,13 +40,13 @@ export function oauthClientId(kind: OAuthKind, origin: string = globalThis.locat
 /** Display only: the Dropbox app folder name chosen in the App Console. */
 export const DROPBOX_APP_FOLDER: string = (import.meta.env.VITE_DROPBOX_APP_FOLDER as string | undefined) || 'OpenStand'
 
-/** The redirect URI on this origin (§5.2). Must be registered with every provider. */
+/** The redirect URI on this origin. Must be registered with every provider. */
 export const redirectUri = (origin: string = globalThis.location?.origin ?? '') => origin + '/oauth/callback'
 
-// worker/oauth.ts sends the same scope to Microsoft's token endpoint (§6.2 step 5); keep them in step.
+// worker/oauth.ts sends the same scope to Microsoft's token endpoint; keep them in step.
 const GRAPH_SCOPE = 'offline_access openid profile email Files.ReadWrite.AppFolder'
 
-/** The §5.3 table as data. */
+/** Per-provider sign-in settings. */
 export const PROVIDERS: Record<OAuthKind, ProviderSpec> = {
   dropbox: {
     kind: 'dropbox',

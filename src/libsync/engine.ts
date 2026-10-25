@@ -1,5 +1,5 @@
 /**
- * Library-sync engine (docs/SYNC.md §3, §10): one per library database, in one tab (the service holds a
+ * Library-sync engine: one per library database, in one tab (the service holds a
  * Web Lock). Capture → push, poll/notice → pull → apply, snapshots, pruning, blob GC and repair.
  *
  * Pull, apply and capture run under one async mutex; blob transfers run beside it (`BlobQueue`). Every
@@ -107,12 +107,12 @@ const MESSAGES: Partial<Record<LibSyncErrorCode, string>> = {
   wrongAccount: 'This library isn’t in the account you signed in with.',
 }
 
-/** A provider's rate limit (§8): not offline and not an error; sync backs off at least this long (ms). */
+/** A provider's rate limit: not offline and not an error; sync backs off at least this long (ms). */
 export function rateLimitedFor(e: unknown): number | undefined {
   return e instanceof BackendError && e.code === 'rateLimited' ? Math.max(0, e.retryAfterMs ?? 0) : undefined
 }
 
-/** Map any thrown value to a `LibSyncError` code + wording (§12.3). */
+/** Map any thrown value to a `LibSyncError` code + wording. */
 export function toSyncError(e: unknown, at = Date.now()): LibSyncError {
   let code: LibSyncErrorCode = 'unknown'
   let detail: string | undefined
@@ -137,7 +137,7 @@ export function toSyncError(e: unknown, at = Date.now()): LibSyncError {
         cors: 'cors',
         quota: 'quota',
         network: 'network',
-        // Shown as retrying, never as offline (SYNC-DRIVES.md §8); the engine backs off by `retryAfterMs`.
+        // Shown as retrying, never as offline; the engine backs off by `retryAfterMs`.
         rateLimited: 'server',
         clock: 'clock',
         precondition: 'rejoin',
@@ -173,7 +173,7 @@ function isGlobalError(e: unknown): boolean {
   return name === 'QuotaExceededError' || name === 'DatabaseClosedError' || name === 'MissingAPIError'
 }
 
-/** One device's stream can't go on at `seq` for now (§10.1 steps 3-4); the other streams carry on. */
+/** One device's stream can't go on at `seq` for now; the other streams carry on. */
 class StreamStall extends Error {
   readonly seq: number
   readonly cause: unknown
@@ -232,7 +232,7 @@ export interface EngineStatus {
   relayConfigured: boolean
   devices: (DeviceRecord & { self: boolean })[]
   error?: LibSyncError
-  /** Another device's clock is ahead (§6.1), or a device's changes can't be read for now; shown, not fatal. */
+  /** Another device's clock is ahead, or a device's changes can't be read for now; shown, not fatal. */
   warning?: LibSyncError
   /** Devices whose stream is held back (unreadable entry, clock far ahead, …), by device id. Not fatal. */
   streams?: Record<string, LibSyncError>
@@ -290,7 +290,7 @@ const coveredSum = (v: Record<string, number>, heads: Record<string, number>) =>
   Object.entries(v).reduce((a, [d, s]) => a + (Object.hasOwn(heads, d) ? Math.min(s, heads[d]) : 0), 0)
 
 /**
- * Snapshots fit to bootstrap or recover from, best first (§3.1 plus trust rules): consistent with the
+ * Snapshots fit to bootstrap or recover from, best first: consistent with the
  * observed heads (`snapshotProblem`) and written by a device with a valid record; live authors before
  * retired ones, then the largest Σvector (counting only entries storage vouches for), then the newest.
  */
@@ -415,7 +415,7 @@ export class Engine {
   static async fromConfig(db: OpenStandDB, config: SyncConfig, o: EngineOptions = {}): Promise<Engine> {
     const now = o.now ?? Date.now
     const keys = o.keys ?? (await deriveLibraryKeys(config.secret))
-    // Drives get this device's tokens for this library (SYNC-DRIVES.md §5.4).
+    // Drives get this device's tokens for this library.
     const kind = config.backend.kind
     const backend = o.backend ?? createBackend(config.backend, { now, auth: isOAuthKind(kind) ? tokenSource(db, kind, { now }) : undefined })
     let engine: Engine | undefined
@@ -452,7 +452,7 @@ export class Engine {
 
   /**
    * Writes go only into a library that still exists: another device may have reset or deleted it (meta goes
-   * first, §10.5), and a write into the old prefix would leave an orphan nothing cleans up. One HEAD on
+   * first), and a write into the old prefix would leave an orphan nothing cleans up. One HEAD on
    * `meta` per write cycle (`maxAge` lets blob uploads share a recent answer). When it's gone, sync stops
    * with `libraryGone` instead of writing.
    */
@@ -520,7 +520,7 @@ export class Engine {
   // Capture and push
   // -------------------------------------------------------------------------------------------
 
-  /** §8.2: dirty records → outbox. */
+  /** Capture: dirty records → outbox. */
   captureNow() {
     return this.locked(() => capture(this.core))
   }
@@ -605,7 +605,7 @@ export class Engine {
     return listAllBounded(this.core.backend, prefix)
   }
 
-  /** Each device's latest seq (one LIST, §3). Unverified: anyone with bucket access can write heads. */
+  /** Each device's latest seq (one LIST). Unverified: anyone with bucket access can write heads. */
   async heads(): Promise<Record<string, number>> {
     const lib = this.core.keys.libraryId
     return latestHeads(lib, (await this.listAll(headsPrefix(lib))).map((i) => i.key))
@@ -670,7 +670,7 @@ export class Engine {
   }
 
   /**
-   * §10.1 pull. Each device's stream is independent: anything wrong with one device's objects (unreadable,
+   * Pull. Each device's stream is independent: anything wrong with one device's objects (unreadable,
    * tampered, unappliable, a gap no snapshot covers, a clock far ahead) holds back that stream only. It is
    * reported in `status.streams`/`warning`, retried with backoff, and never stops the other streams, local
    * capture or pushing. Only storage-wide failures (network, auth, …) fail the pull.
@@ -809,7 +809,7 @@ export class Engine {
     this.scheduleStatus()
   }
 
-  /** §3.2 gap recovery: the log we need was pruned; merge the snapshot that covers it. */
+  /** Gap recovery: the log we need was pruned; merge the snapshot that covers it. */
   private async recoverGap(d: string, missing: number, head: number, heads: Record<string, number>): Promise<Applied> {
     const lib = this.core.keys.libraryId
     const seqs = (await this.listAll(logPrefix(lib, d))).map((o) => parseKey(o.key)).flatMap((p) => (p?.type === 'log' ? [p.seq] : []))
@@ -834,7 +834,7 @@ export class Engine {
   }
 
   // -------------------------------------------------------------------------------------------
-  // Snapshots (§3.1)
+  // Snapshots
   // -------------------------------------------------------------------------------------------
 
   /**
@@ -882,7 +882,7 @@ export class Engine {
   /**
    * Merge a whole snapshot (idempotent), then advance cursors to its vector, clamped to the observed heads
    * (entries for devices without a trusted head move nothing). A device that was away longer than the
-   * snapshot's tombstone horizon drops what the network deleted meanwhile (§3.2), but only when the
+   * snapshot's tombstone horizon drops what the network deleted meanwhile, but only when the
    * snapshot provably covers everything this device has merged (else absence proves nothing).
    */
   async applySnapshot(snap: SnapInfo, o: { onProgress?: (done: number, total: number) => void; heads?: Record<string, number> } = {}): Promise<Applied> {
@@ -985,7 +985,7 @@ export class Engine {
   }
 
   /**
-   * Upload this device's full merged state (§3.1). Only with nothing local pending: rows are joined with
+   * Upload this device's full merged state. Only with nothing local pending: rows are joined with
    * shadow hlcs, which is valid only while no record is dirty.
    */
   private async writeSnapshotInner(): Promise<SnapshotHeader | null> {
@@ -1056,7 +1056,7 @@ export class Engine {
     if (behind && this.started) this.runSoon(0, 'poll')
   }
 
-  /** §3.1 trigger: ≥ 500 uncovered log entries (or ≥ 8 MiB), at most daily; or no snapshot exists yet. */
+  /** Snapshot trigger: ≥ 500 uncovered log entries (or ≥ 8 MiB), at most daily; or no snapshot exists yet. */
   async snapshotDue(): Promise<boolean> {
     const m = await this.maintenanceState()
     const now = this.core.now()
@@ -1079,7 +1079,7 @@ export class Engine {
   }
 
   // -------------------------------------------------------------------------------------------
-  // Pruning (§3.2)
+  // Pruning
   // -------------------------------------------------------------------------------------------
 
   prune() {
@@ -1142,7 +1142,7 @@ export class Engine {
   }
 
   /**
-   * Write this device's record (§2: the owner overwrites it on a name change, at most daily, on retire). The
+   * Write this device's record (the owner overwrites it on a name change, at most daily, on retire). The
    * library must still exist (a fresh HEAD on `meta`): a device that hasn't noticed a reset would otherwise
    * leave an orphan record in the old prefix.
    */
@@ -1198,7 +1198,7 @@ export class Engine {
   }
 
   // -------------------------------------------------------------------------------------------
-  // Blobs: GC and repair (§3.2)
+  // Blobs: GC and repair
   // -------------------------------------------------------------------------------------------
 
   gcBlobs() {
@@ -1206,8 +1206,8 @@ export class Engine {
   }
 
   /**
-   * Delete remote blobs no alive song references whose objects are older than the grace window. The spec
-   * also keeps blobs of songs that died < 30 days ago; shadows only hold value hashes, so instead every
+   * Delete remote blobs no alive song references whose objects are older than the grace window. Ideally
+   * this would also keep blobs of songs that died < 30 days ago, but shadows only hold value hashes, so every
    * blob this device still holds locally (deleted songs' files stay until local GC) and every pending
    * transfer counts as referenced. The repair pass heals the rest.
    */
@@ -1270,7 +1270,7 @@ export class Engine {
     return { uploads, downloads }
   }
 
-  /** Daily self-heal (§8.1): mark everything dirty; the diff only emits real differences. */
+  /** Daily self-heal: mark everything dirty; the diff only emits real differences. */
   async reconcile() {
     const { db } = this.core
     const { syncedKv } = await import('./fields')
@@ -1466,7 +1466,7 @@ export class Engine {
   }
 
   /**
-   * Visibility changed: push at once when hidden, check the relay and pull at once when visible (§10.1). The
+   * Visibility changed: push at once when hidden, check the relay and pull at once when visible. The
    * relay stays connected while hidden: a covered, minimised or background window still gets notices and
    * pulls (mobile browsers may drop the socket; it's checked when the page comes back).
    */

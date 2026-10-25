@@ -72,7 +72,7 @@ beforeEach(() => {
   resetProviderCache()
 })
 
-describe('startSignIn (SYNC-DRIVES.md §5.2)', () => {
+describe('startSignIn', () => {
   it('saves the pending slot and goes to the authorize URL with PKCE S256 and state', async () => {
     const h = harness()
     const intent: SignInIntent = { type: 'join', pairing: 'OSJ1.abc' }
@@ -264,7 +264,7 @@ describe('completeSignIn', () => {
     expect(readPending()).toBeNull()
   })
 
-  it('maps sign-in errors to LibSyncFailure codes (§2.3)', () => {
+  it('maps sign-in errors to LibSyncFailure codes', () => {
     const f = (code: SignInError['code']) => signInFailure(new SignInError(code, 'gdrive', { want: 'w@x', got: 'g@x' }))
     expect(f('denied')).toEqual({ code: 'unknown', message: 'Sign-in was cancelled.', detail: 'denied' })
     expect(f('expired').code).toBe('unknown')
@@ -276,7 +276,7 @@ describe('completeSignIn', () => {
   })
 })
 
-describe('which providers to offer (§6.4)', () => {
+describe('which providers to offer', () => {
   it('Dropbox by its client id; Drive and OneDrive only when the Worker lists the same client id', async () => {
     const h = harness({ [PROVIDERS_ROUTE]: () => json({ v: 1, providers: { gdrive: { clientId: 'cid' }, onedrive: { clientId: 'another' } } }) })
     expect(await availableProviders(h.deps)).toEqual(['dropbox', 'gdrive'])

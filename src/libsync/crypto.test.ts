@@ -317,7 +317,7 @@ describe('notices', () => {
 describe('chunked container', () => {
   const SIZES = [0, 1, CHUNK - 1, CHUNK, CHUNK + 1, 3 * CHUNK + 5]
 
-  it('sizes and ranges follow §4.2', () => {
+  it('sizes and ranges follow the chunked container layout', () => {
     expect(ciphertextSize(0)).toBe(16 + 28)
     expect(ciphertextSize(CHUNK)).toBe(16 + 28 + CHUNK)
     expect(ciphertextSize(CHUNK + 1)).toBe(16 + 56 + CHUNK + 1)

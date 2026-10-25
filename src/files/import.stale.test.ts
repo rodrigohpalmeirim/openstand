@@ -1,4 +1,4 @@
-// Stale-writer fixes (docs/SYNC.md §8.4): the text editor and "add files" may hold a song copy that is
+// Stale-writer fixes: the text editor and "add files" may hold a song copy that is
 // minutes old; they must change only what they touch on the song as stored now.
 import { describe, expect, it } from 'vitest'
 import { db } from '../db/db'

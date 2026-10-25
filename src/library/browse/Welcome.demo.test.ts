@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { db } from '../../db/db'
 import { createDemoSongs, isUntouchedDemo } from './Welcome'
 
-describe('isUntouchedDemo (§5.5)', () => {
+describe('isUntouchedDemo', () => {
   it('recognises demo songs only while they are untouched', async () => {
     await db.songs.clear()
     await createDemoSongs()

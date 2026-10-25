@@ -133,7 +133,7 @@ describe('export', () => {
   })
 })
 
-describe('remote changes (library sync, §8.5)', () => {
+describe('remote changes (library sync)', () => {
   const ids = (k: string) => getItems(k).map((i) => i.id)
   const stored = async (k: string) => (await db.annotations.get(k))?.items.map((i) => i.id) ?? []
   const remotePut = (k: string, items: Annotation[]) => db.annotations.put({ id: k, ...parseKey(k), items })

@@ -2,7 +2,7 @@
 import { describe, expect, it } from 'vitest'
 import { OFFICIAL_ORIGINS, PROVIDERS, oauthClientId, redirectUri } from './config'
 
-describe('oauthClientId (SYNC-DRIVES.md §2.4)', () => {
+describe('oauthClientId', () => {
   it('an env override wins; "off" hides the provider', () => {
     expect(oauthClientId('dropbox', 'https://music.example.org', { VITE_DROPBOX_CLIENT_ID: 'my-app-key' })).toBe('my-app-key')
     expect(oauthClientId('gdrive', OFFICIAL_ORIGINS[0], { VITE_GDRIVE_CLIENT_ID: 'off' })).toBeNull()
@@ -13,7 +13,7 @@ describe('oauthClientId (SYNC-DRIVES.md §2.4)', () => {
     for (const k of ['dropbox', 'gdrive', 'onedrive'] as const) expect(oauthClientId(k, 'https://music.example.org', {})).toBeNull()
   })
 
-  it('the provider table matches §5.3', () => {
+  it('the provider table is complete', () => {
     expect(PROVIDERS.gdrive.chooseAccountParams.prompt).toBe('select_account consent')
     expect(PROVIDERS.dropbox.loginHintParam).toBeNull()
     expect(PROVIDERS.onedrive.authorizeUrl).toContain('/common/')

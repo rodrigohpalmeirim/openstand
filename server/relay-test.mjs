@@ -130,7 +130,7 @@ test('answers plain HTTP with a health summary', async () => {
   assert.equal(typeof body.clients, 'number')
 })
 
-// --- library-sync rooms (docs/SYNC.md §9) ------------------------------------------------------
+// --- library-sync rooms ------------------------------------------------------
 
 const LIB_ID = 'abcdefghijklmnopqrstuvwxyz'
 const openLib = (id = LIB_ID, prefix = '/lib/') => open(null, `${prefix}${id}`, { origin: APP })

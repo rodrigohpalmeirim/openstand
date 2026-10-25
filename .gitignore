@@ -10,3 +10,4 @@ playwright-report
 .wrangler
 .dev.vars*
 .e2e-tokens*.json
+.notes/

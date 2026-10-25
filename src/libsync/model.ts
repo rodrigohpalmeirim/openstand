@@ -1,25 +1,25 @@
 /**
- * Library sync: shared wire and state types (docs/SYNC.md §3, §4, §5, §6, §10.6, §11).
+ * Library sync: shared wire and state types.
  *
- * CONTRACT. Frozen after step 0: change only by agreement, and only additively.
- * Type-only apart from the §10.6 constants and `PairingError`; safe to import from anywhere.
+ * CONTRACT: change only additively.
+ * Type-only apart from the tuning constants and `PairingError`; safe to import from anywhere.
  */
 import type { BackendConfig, OAuthKind, TokenSet, UploadState } from './backends/types'
 import type { AudioTrack, KV, PageAnnotations, Setlist, Song, SongFile } from '../db/schema'
 
 // ---------------------------------------------------------------------------------------------
-// §4 Wire formats
+// Wire formats
 // ---------------------------------------------------------------------------------------------
 
 /**
- * Hybrid logical clock timestamp (§6.1): `${wall 12 hex}${counter 4 hex}${deviceId 16 hex}`, 32 chars.
+ * Hybrid logical clock timestamp: `${wall 12 hex}${counter 4 hex}${deviceId 16 hex}`, 32 chars.
  * Fixed width, so plain string comparison is the (causal-or-arbitrary) total order.
  */
 export type Hlc = string
 
 export type Json = null | boolean | number | string | Json[] | { [k: string]: Json }
 
-/** Synced record kinds. `ann` = one annotation page, `kv` = an allow-listed kv key (§5.4). */
+/** Synced record kinds. `ann` = one annotation page, `kv` = an allow-listed kv key. */
 export type Collection = 'song' | 'setlist' | 'ann' | 'kv'
 
 /** The local row type each collection is projected from / materialised into. */
@@ -38,13 +38,13 @@ export interface CollectionRows {
 export interface RecordDelta {
   c: Collection
   id: string
-  /** Alive register. A delete sets `[hlc, false]`; putting a row with a dead id is an undelete (§5.5). */
+  /** Alive register. A delete sets `[hlc, false]`; putting a row with a dead id is an undelete. */
   a?: [Hlc, boolean]
   /** LWW registers. `[hlc]` = unset/undefined. Flattened (`flat`) objects use dotted paths (`metronome.bpm`). */
   f?: Record<string, [Hlc] | [Hlc, Json]>
-  /** Max/min registers; the kind comes from the field table (§5). No hlc. */
+  /** Max/min registers; the kind comes from the field table. No hlc. */
   m?: Record<string, number>
-  /** Keyed lists, maps and sets (§5). */
+  /** Keyed lists, maps and sets. */
   l?: Record<string, ListDelta>
   /** PN-counters: field -> deviceId -> [inc, dec], full per-device totals. Total = max(0, Σinc − Σdec). */
   n?: Record<string, Record<string, [number, number]>>
@@ -53,14 +53,14 @@ export interface RecordDelta {
 export interface ListDelta {
   /**
    * Explicit order register (lists/sets only). Emitted only when materialising without it would give a
-   * different order, i.e. real reorders, never plain appends or edits (§5.5).
+   * different order, i.e. real reorders, never plain appends or edits.
    */
   o?: [Hlc, string[]]
   /** Element key -> [hlc, value | null (= tombstone), bornHlc]. */
   e?: Record<string, [Hlc, Json | null, Hlc]>
 }
 
-/** One sealed log entry `os1/<libraryId>/log/<d>/<seq10>` (§3, §4.1). */
+/** One sealed log entry `os1/<libraryId>/log/<d>/<seq10>`. */
 export interface Batch {
   v: 1
   /** deviceId (also bound by the envelope AAD). */
@@ -71,28 +71,28 @@ export interface Batch {
   t: number
   hlcMax: Hlc
   ops: RecordDelta[]
-  /** SHA-256 hex of blobs this device has finished uploading (wakes `waiting` downloads, §10.2). */
+  /** SHA-256 hex of blobs this device has finished uploading (wakes `waiting` downloads). */
   blobsReady?: string[]
 }
 
 /**
- * `files` list element value on the wire (§4). `SongFile.blobId` never travels; `blob` is the content
+ * `files` list element value on the wire. `SongFile.blobId` never travels; `blob` is the content
  * SHA-256 hex. `blob: ''` means the sending device itself lacked the file data. The element key is the
  * `SongFile.id`.
  */
 export type WireSongFile = Omit<SongFile, 'id' | 'blobId'> & { blob: string; mime: string }
 
-/** `audio` list element value on the wire (§4). URL-only tracks have no `blob`. Key = `AudioTrack.id`. */
+/** `audio` list element value on the wire. URL-only tracks have no `blob`. Key = `AudioTrack.id`. */
 export type WireAudioTrack = Omit<AudioTrack, 'id' | 'blobId'> & { blob?: string; mime?: string }
 
-/** Plaintext of `os1/<libraryId>/meta` (§3). Written once; decrypting it on join proves the key. */
+/** Plaintext of `os1/<libraryId>/meta`. Written once; decrypting it on join proves the key. */
 export interface MetaRecord {
   v: 1
   createdAt: number
   name: string
 }
 
-/** Plaintext of `os1/<libraryId>/devices/<dev>` (§3). */
+/** Plaintext of `os1/<libraryId>/devices/<dev>`. */
 export interface DeviceRecord {
   v: 1
   id: string
@@ -101,12 +101,12 @@ export interface DeviceRecord {
   appVersion: string
   createdAt: number
   lastSeenAt: number
-  /** Set on leave. A retired device never writes again, so others may prune its keys (§3.2). */
+  /** Set on leave. A retired device never writes again, so others may prune its keys. */
   retired?: boolean
 }
 
 /**
- * Snapshot line 1 (§3.1). Every following NDJSON line is a full `RecordDelta` (all registers,
+ * Snapshot line 1. Every following NDJSON line is a full `RecordDelta` (all registers,
  * tombstones included).
  */
 export interface SnapshotHeader {
@@ -124,7 +124,7 @@ export interface SnapshotHeader {
   records: number
   hlcMax: Hlc
   /**
-   * What this snapshot dropped (§3.1), as wall-clock ms cut-offs: dead records' field values with an `a`
+   * What this snapshot dropped, as wall-clock ms cut-offs: dead records' field values with an `a`
    * hlc older than `deadFields`, element tombstones older than `elementTombs`. Compare an `Hlc` against
    * these via its wall part (`parseHlc(h).wall`).
    */
@@ -132,7 +132,7 @@ export interface SnapshotHeader {
 }
 
 /**
- * Plaintext of a relay notice (§4.3): device `d` has written up to seq `s`. A plain notice has no `k`.
+ * Plaintext of a relay notice: device `d` has written up to seq `s`. A plain notice has no `k`.
  * `k: 'ping'` asks the room's other devices to answer with a `pong` addressed `to` the pinger, echoing the
  * nonce `p`. Older builds sent pings from a "Test instant sync" button; current ones only answer them. Both
  * still carry the sender's head in `s` (≥ 0), so devices that predate them read them as plain notices.
@@ -148,7 +148,7 @@ export interface NoticePayload {
 }
 
 /**
- * Relay text frame (§4.3). `n` = base64url(sealed(JSON NoticePayload)), aad `os1|notice|${roomId}`,
+ * Relay text frame. `n` = base64url(sealed(JSON NoticePayload)), aad `os1|notice|${roomId}`,
  * not gzipped. ≤ 1 KiB.
  */
 export interface NoticeFrame {
@@ -157,14 +157,14 @@ export interface NoticeFrame {
 }
 
 // ---------------------------------------------------------------------------------------------
-// §11 Pairing (the payload type lives here because api.ts exposes it before pairing.ts exists;
+// Pairing (the payload type lives here because api.ts exposes it before pairing.ts exists;
 // pairing.ts re-exports it and owns encode/decode)
 // ---------------------------------------------------------------------------------------------
 
 /**
  * What a QR / text pairing code carries. Text form: `"OSJ1." + base64url(deflateRaw(JSON))`.
  * OAuth backends carry `{kind, root | folder, account?, accountId?}` in `b`: the account fields are
- * non-secret hints for "sign in with the same account" (SYNC-DRIVES.md §7.2). Never OAuth tokens: each
+ * non-secret hints for "sign in with the same account". Never OAuth tokens: each
  * device signs in by itself.
  */
 export interface PairingPayload {
@@ -191,7 +191,7 @@ export class PairingError extends Error {
 }
 
 // ---------------------------------------------------------------------------------------------
-// §6.1 HLC (implementation in hlc.ts, which re-exports this interface)
+// HLC (implementation in hlc.ts, which re-exports this interface)
 // ---------------------------------------------------------------------------------------------
 
 export interface HlcClock {
@@ -207,7 +207,7 @@ export interface HlcClock {
 }
 
 // ---------------------------------------------------------------------------------------------
-// §6.2 Local state (Dexie version(2) tables)
+// Local state (Dexie version(2) tables)
 // ---------------------------------------------------------------------------------------------
 
 /**
@@ -224,24 +224,24 @@ export interface ShadowRecord {
   /** list field -> order register + element key -> [hlc, valueHash ('' = tombstone), bornHlc]. */
   l: Record<string, { o?: [Hlc, string[]]; e: Record<string, [Hlc, string, Hlc]> }>
   n: Record<string, Record<string, [number, number]>>
-  /** Opaque state of an unknown collection, kept and included in our snapshots (§5.5). */
+  /** Opaque state of an unknown collection, kept and included in our snapshots. */
   x?: unknown
 }
 
-/** Table `syncDirty`, indexes `id, deferredSince`. Written by the capture middleware (§8.1). */
+/** Table `syncDirty`, indexes `id, deferredSince`. Written by the capture middleware. */
 export interface DirtyRow {
   /** `${c}/${recordId}` */
   id: string
-  /** Wall ms of the last local write; used as the HLC wall when diffing (§8.2). */
+  /** Wall ms of the last local write; used as the HLC wall when diffing. */
   at: number
-  /** Set by the `ann` orphan guard (§8.2 step 5); dropped after DIRTY_DEFER_MAX. */
+  /** Set by the `ann` orphan guard; dropped after DIRTY_DEFER_MAX. */
   deferredSince?: number
 }
 
-/** Table `syncOutbox`, primary key `seq`. A sealed batch waiting to be pushed (§10.1). */
+/** Table `syncOutbox`, primary key `seq`. A sealed batch waiting to be pushed. */
 export interface OutboxRow {
   seq: number
-  /** Sealed envelope bytes (§4.1). */
+  /** Sealed envelope bytes. */
   bytes: Uint8Array
   /** Number of ops in the batch. */
   ops: number
@@ -251,10 +251,10 @@ export interface OutboxRow {
 
 export type TransferDir = 'up' | 'down'
 
-/** `waiting` = the remote blob 404'd; waiting for its uploader (§10.2). */
+/** `waiting` = the remote blob 404'd; waiting for its uploader. */
 export type TransferState = 'queued' | 'active' | 'waiting' | 'failed'
 
-/** Table `syncTransfers`, primary key `[dir+hash]`, indexes `state, priority` (§10.2). */
+/** Table `syncTransfers`, primary key `[dir+hash]`, indexes `state, priority`. */
 export interface TransferRow {
   dir: TransferDir
   /** Content SHA-256 hex. */
@@ -269,20 +269,20 @@ export interface TransferRow {
   /** Wall ms before which the row isn't retried. */
   nextAt: number
   error?: string
-  /** Backend resumable-upload state (§7). */
+  /** Backend resumable-upload state. */
   upload?: UploadState
   /** down: number of contiguous decrypted chunks already stored in `syncChunks`. */
   doneChunks?: number
 }
 
-/** Table `syncChunks`, primary key `[hash+index]`: decrypted download parts (§10.2). */
+/** Table `syncChunks`, primary key `[hash+index]`: decrypted download parts. */
 export interface ChunkRow {
   hash: string
   index: number
   data: Blob
 }
 
-/** `syncState.config` (§6.2). */
+/** `syncState.config`. */
 export interface SyncConfig {
   v: 1
   /** Raw library secret, base64url (pairing has to display it). */
@@ -291,7 +291,7 @@ export interface SyncConfig {
   roomId: string
   deviceId: string
   backend: BackendConfig
-  /** Relay base URL; `null` = polling only (§9). */
+  /** Relay base URL; `null` = polling only. */
   relay: string | null
   /** Library name (also in `meta` and the pairing payload). */
   name: string
@@ -302,7 +302,7 @@ export interface SyncConfig {
 export type JoinMode = 'here' | 'newLibrary' | 'merge'
 
 /**
- * Join progress checkpoint steps (§10.3, steps 4–9). Not named by the spec; WP3 may add phases.
+ * Join progress checkpoint steps.
  * - `bootstrap`: streaming the snapshot then the logs (capture flag off)
  * - `register`: capture flag on, new deviceId, `devices/<me>` written
  * - `merge`: join-merge transaction (merge mode only)
@@ -310,7 +310,7 @@ export type JoinMode = 'here' | 'newLibrary' | 'merge'
  */
 export type JoinPhase = 'bootstrap' | 'register' | 'merge' | 'publish'
 
-/** `syncState.join`: present only while a join is in progress. Every step is idempotent (§10.3). */
+/** `syncState.join`: present only while a join is in progress. Every step is idempotent. */
 export interface JoinCheckpoint {
   phase: JoinPhase
   mode: JoinMode
@@ -329,7 +329,7 @@ export interface MaintenanceState {
   repairAt: number
 }
 
-/** Typed `syncState` key -> value map (§6.2). */
+/** Typed `syncState` key -> value map. */
 export interface SyncStateValues {
   config: SyncConfig
   /** Last `Hlc` (clock.last). */
@@ -346,7 +346,7 @@ export interface SyncStateValues {
   devices: DeviceRecord[]
   maintenance: MaintenanceState
   join: JoinCheckpoint
-  /** OAuth tokens (SYNC-DRIVES.md §5.4). Per device and library, never shared, synced or backed up. */
+  /** OAuth tokens. Per device and library, never shared, synced or backed up. */
   oauth: Partial<Record<OAuthKind, TokenSet>>
 }
 
@@ -356,7 +356,7 @@ export type SyncStateKey = keyof SyncStateValues
 export type SyncStateRow = { [K in SyncStateKey]: { key: K; value: SyncStateValues[K] } }[SyncStateKey]
 
 // ---------------------------------------------------------------------------------------------
-// §4 size limits and §10.6 constants (shared by WP2 and WP3; not placed by the spec)
+// Size limits and tuning constants
 // ---------------------------------------------------------------------------------------------
 
 const KiB = 1024

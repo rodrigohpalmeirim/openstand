@@ -28,7 +28,7 @@ beforeEach(() => {
   useNav.getState().go({ name: 'library', section: 'songs' })
 })
 
-describe('OAuth callback (SYNC-DRIVES.md §5.2)', () => {
+describe('OAuth callback', () => {
   it('records the code, removes it from the URL and opens Settings › Library sync', () => {
     writePending(pending())
     expect(signInReturnPending()).toBe(false)

@@ -74,7 +74,7 @@ describe('pairing codes', () => {
   })
 })
 
-describe('pairing codes for cloud drives (SYNC-DRIVES.md §2.1, §11)', () => {
+describe('pairing codes for cloud drives', () => {
   const s = b64url(new Uint8Array(32).map((_, i) => i + 1))
   const drives: PairingPayload['b'][] = [
     { kind: 'dropbox', root: '', account: 'rod@example.com', accountId: 'dbid:AAH4f99T0taONIb-OurWxbNQ6ywGRopQngc' },

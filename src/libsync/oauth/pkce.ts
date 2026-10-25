@@ -1,5 +1,5 @@
 /**
- * PKCE (RFC 7636, S256) and the `state` parameter (docs/SYNC-DRIVES.md §5.2). Used for all three providers,
+ * PKCE (RFC 7636, S256) and the `state` parameter. Used for all three providers,
  * including the confidential Google and Microsoft clients (a stolen code is useless without the verifier).
  */
 

@@ -134,7 +134,7 @@ export function SongEditor({
       if (opts.asNew) Object.assign(s, { id: uid(), createdAt: now, playCount: 0, lastPlayedAt: undefined })
       else if (base && !isNew) {
         // The draft may be minutes old: apply only the user's changes to the song as stored now, so
-        // edits that arrived from another device meanwhile (sync) aren't reverted (docs/SYNC.md §8.4).
+        // edits that arrived from another device meanwhile (sync) aren't reverted.
         const latest = await rebaseOnLatest(db, base, s)
         if (latest === 'deleted') {
           const again = await confirmDialog({

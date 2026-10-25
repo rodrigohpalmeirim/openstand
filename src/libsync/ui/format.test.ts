@@ -6,7 +6,7 @@ const NOW = 1_800_000_000_000
 const on = (p: Partial<LibSyncStatus> = {}): LibSyncStatus => ({ ...offStatus(), configured: true, phase: 'idle', ...p })
 const tp = (files: number, doneFiles: number, bytes = 0, doneBytes = 0) => ({ files, doneFiles, bytes, doneBytes })
 
-describe('§12.3 wording', () => {
+describe('error wording', () => {
   it('status lines', () => {
     expect(phaseLine(on({ lastSyncAt: NOW - 2 * 60_000 }), NOW)).toBe('Up to date · 2 min ago')
     expect(phaseLine(on())).toBe('Up to date')
@@ -163,7 +163,7 @@ describe('instant updates: never a bare "off"', () => {
   })
 })
 
-describe('cloud drives (SYNC-DRIVES.md §7.4)', () => {
+describe('cloud drives', () => {
   const t = (code: LibSyncErrorCode, kind?: Parameters<typeof errorText>[1], want?: string, message: string = code) => errorText({ code, message }, kind, want)
   it('names the provider and offers to sign in again', () => {
     expect(t('reauth', 'gdrive')).toMatchObject({

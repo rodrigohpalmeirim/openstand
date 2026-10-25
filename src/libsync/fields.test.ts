@@ -7,7 +7,7 @@ import { formatHlc } from './hlc'
 const H = formatHlc(1_760_000_000_000, 0, 'aaaaaaaaaaaaaaaa')
 
 describe('field tables', () => {
-  it('cover §5.1 and §5.2', () => {
+  it('cover songs and setlists', () => {
     for (const g of GROUP_FIELDS) expect(SONG_FIELDS[g].kind).toBe('set')
     for (const k of ['title', 'sortTitle', 'rating', 'difficulty', 'duration', 'notes', 'keywords', 'sourcePage', 'songNumber', 'favorite', 'tempos', 'pageOrder', 'midiOnLoad', 'midiRecall'])
       expect(SONG_FIELDS[k].kind).toBe('lww')
@@ -23,7 +23,7 @@ describe('field tables', () => {
     expect(fieldSpec(SONG_FIELDS, 'someFutureField').kind).toBe('lww')
   })
 
-  it('kv allow-list (§5.4)', () => {
+  it('kv allow-list', () => {
     for (const k of ['layers:s1', 'textLayout:s1', 'library:emptyCollections', 'library:savedFilters', 'library:recentClearedAt']) expect(syncedKv(k)).toBe(true)
     for (const k of ['backup.lastAt', 'backup.dir', 'backup.remindedAt', 'backup.autoLastAt', 'layers:', 'textLayout:', 'library:other', 'openstand:hint:x', ''])
       expect(syncedKv(k)).toBe(false)

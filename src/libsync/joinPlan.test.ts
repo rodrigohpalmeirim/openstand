@@ -4,7 +4,7 @@ import type { Song, SongFile } from '../db/schema'
 import { joinFileMap, joinLayers, joinPages, joinSong, normTitle, planJoin, remapSetlist } from './joinPlan'
 import { hash, page, setlist, song, stroke, T0 } from './merge.test-helper'
 
-/** Local songs use legacy uuid blob ids; remote ones use the hash as the id (§8.7). */
+/** Local songs use legacy uuid blob ids; remote ones use the hash as the id. */
 const legacy = new Map<string, string>()
 const hashOf = (blobId: string) => legacy.get(blobId) ?? (/^[0-9a-f]{64}$/.test(blobId) ? blobId : '')
 const file = (id: string, content: string, local = false): SongFile => {
@@ -14,7 +14,7 @@ const file = (id: string, content: string, local = false): SongFile => {
   return { id, name: `${content}.pdf`, kind: 'pdf', blobId, pageCount: 2, size: 10 }
 }
 
-describe('planJoin match rules (§10.3)', () => {
+describe('planJoin match rules', () => {
   const remoteSongs = [
     song('R1', { title: 'Autumn Leaves', files: [file('rf1', 'leaves'), file('rf2', 'leaves-lyrics')] }),
     song('R2', { title: 'Blue Bossa', files: [file('rf3', 'bossa')] }),
@@ -78,7 +78,7 @@ describe('planJoin match rules (§10.3)', () => {
   })
 })
 
-describe('joinSong (§10.3 step 8)', () => {
+describe('joinSong', () => {
   const R = (): Song => song('R', {
     title: 'Autumn Leaves', notes: '', rating: 0, difficulty: 6, sortTitle: undefined,
     artists: ['Kosma'], tags: ['jazz'],

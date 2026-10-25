@@ -1,6 +1,6 @@
 /**
- * Cloud-drive sign-in (docs/SYNC-DRIVES.md §5.2): a full-page redirect with PKCE and `state`, resumed from
- * the pending slot in localStorage (`oauth/callback.ts`), and which providers to offer (§6.4).
+ * Cloud-drive sign-in: a full-page redirect with PKCE and `state`, resumed from
+ * the pending slot in localStorage (`oauth/callback.ts`), and which providers to offer.
  */
 import { db as currentDb, OpenStandDB } from '../../db/db'
 import type { AccountInfo, OAuthKind, TokenSet } from '../backends/types'
@@ -12,7 +12,7 @@ import { authorizeUrl, clientIdOf, DEFAULT_EXPIRES_IN, exchangeCode, hasRequired
 import { readTokens, storeTokens } from './tokens'
 import type { PendingSignIn, SignInErrorCode, SignInIntent, SignInResult } from './types'
 
-/** A sign-in failed (§5.5). `want`/`got`: the expected and the signed-in account (`wrongAccount`). */
+/** A sign-in failed. `want`/`got`: the expected and the signed-in account (`wrongAccount`). */
 export class SignInError extends Error {
   readonly code: SignInErrorCode
   readonly kind: OAuthKind
@@ -28,7 +28,7 @@ export class SignInError extends Error {
   }
 }
 
-/** The §5.5 wording. */
+/** The sign-in error wording. */
 export function signInMessage(code: SignInErrorCode, kind: OAuthKind, o: { want?: string; got?: string } = {}): string {
   const name = PROVIDERS[kind].name
   switch (code) {
@@ -52,7 +52,7 @@ export function signInMessage(code: SignInErrorCode, kind: OAuthKind, o: { want?
 }
 
 /**
- * How a sign-in error reaches the UI as a `LibSyncFailure` (§2.3): `denied`, `expired`, `exchange` and
+ * How a sign-in error reaches the UI as a `LibSyncFailure`: `denied`, `expired`, `exchange` and
  * `notConfigured` become `unknown`, `scope` becomes `reauth`; `wrongAccount` and `network` stay. `detail` is
  * the `SignInErrorCode`, except for `wrongAccount`, where it's the account the library is in (if known).
  */
@@ -119,7 +119,7 @@ function defaultOpenDb(name: string) {
 }
 
 /**
- * Completes the sign-in waiting in the pending slot (§5.2): deletes the slot first (single use), exchanges
+ * Completes the sign-in waiting in the pending slot: deletes the slot first (single use), exchanges
  * the code, checks the granted scope, identifies the account, enforces the same account for `reauth`
  * (keeping the old tokens otherwise), and stores the tokens in `syncState.oauth[kind]` of the pending DB.
  * Throws `SignInError`.
@@ -171,7 +171,7 @@ export async function completeSignIn(d: FlowDeps = {}): Promise<SignInResult & {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Which providers to offer (§6.4)
+// Which providers to offer
 // ---------------------------------------------------------------------------------------------
 
 interface WorkerProviders {

@@ -1,5 +1,5 @@
 /**
- * In-memory `StorageBackend` (docs/SYNC.md §7) for tests. Instances created with the same `name` share one
+ * In-memory `StorageBackend` for tests. Instances created with the same `name` share one
  * store, like devices sharing a bucket, while fault injection and the call log stay per instance.
  *
  * It mimics S3 where behaviour matters: strong read-after-write, keys listed in order, `If-None-Match`
@@ -82,7 +82,7 @@ export interface MemoryFault {
 
 export interface MemoryBackendOptions {
   caps?: Partial<BackendCaps>
-  /** Multipart layout (defaults to the S3 one, §7.1). Tests use small values. */
+  /** Multipart layout (defaults to the S3 one). Tests use small values. */
   partSize?: number
   partHead?: number
   /** Largest list page (default 1000, like S3). */

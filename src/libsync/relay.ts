@@ -1,5 +1,5 @@
 /**
- * Library-sync notice channel (docs/SYNC.md §4.3, §9): after every `heads/` write a device posts a sealed
+ * Library-sync notice channel: after every `heads/` write a device posts a sealed
  * `{d, s}` notice to its library's relay room, so the others pull at once instead of at the next poll.
  * Notices are hints only — relay traffic is untrusted and never fatal; polling remains the fallback.
  *

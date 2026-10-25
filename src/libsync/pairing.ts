@@ -1,5 +1,5 @@
 /**
- * Pairing codes (docs/SYNC.md §11): `"OSJ1." + base64url(deflateRaw(JSON(PairingPayload)))`. The same
+ * Pairing codes: `"OSJ1." + base64url(deflateRaw(JSON(PairingPayload)))`. The same
  * string goes in the QR code (byte mode, ECC M) and the "Copy code" text.
  */
 import type { BackendConfig } from './backends/types'
@@ -68,11 +68,11 @@ export async function decodePairing(text: string): Promise<PairingPayload> {
 const str = (v: unknown): v is string => typeof v === 'string'
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
 
-/** A Google Drive file id (SYNC-DRIVES.md §11). */
+/** A Google Drive file id. */
 const DRIVE_FOLDER_ID = /^[A-Za-z0-9_-]{10,200}$/
 
 /**
- * The optional, non-secret account hints of an OAuth backend (SYNC-DRIVES.md §2.1): `account` (display,
+ * The optional, non-secret account hints of an OAuth backend: `account` (display,
  * usually the email) ≤ 320 chars, `accountId` ≤ 200 chars. Kept only when present; a wrong type or length
  * is a malformed code.
  */

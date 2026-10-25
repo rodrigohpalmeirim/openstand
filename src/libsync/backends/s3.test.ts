@@ -95,7 +95,7 @@ describe('S3 XML', () => {
   })
 })
 
-describe('S3 error mapping (§7.1)', () => {
+describe('S3 error mapping', () => {
   const map = (status: number, body: string, headers?: Record<string, string>) => s3Error(status, body, new Headers(headers))
   it.each([
     [403, xmlErr('InvalidAccessKeyId', 'The Access Key Id you provided does not exist in our records.'), 'auth'],

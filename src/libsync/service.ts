@@ -1,5 +1,5 @@
 /**
- * Library-sync background service (docs/SYNC.md §10.1). One engine per library database, in one tab: the
+ * Library-sync background service. One engine per library database, in one tab: the
  * tab holding the Web Lock `openstand-libsync:<db>` runs it, the others only write (their dirty marks
  * reach the engine through Dexie's cross-tab change events) and mirror its status over a
  * BroadcastChannel. The engine restarts when the active library changes.

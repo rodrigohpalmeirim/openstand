@@ -1,5 +1,5 @@
 /**
- * QR codes for pairing (§11): drawing with lean-qr, and scanning with `BarcodeDetector` where it
+ * QR codes for pairing: drawing with lean-qr, and scanning with `BarcodeDetector` where it
  * supports QR, else jsQR (lazy-loaded, ~46 KB, only when scanning).
  */
 import { correction, generate, mode, type Bitmap2D } from 'lean-qr'
@@ -7,7 +7,7 @@ import { cameraApiAvailable, hasCamera } from '../../scan/camera'
 
 export { cameraApiAvailable, hasCamera }
 
-/** The code as a QR matrix: byte mode, error correction M (§11). */
+/** The code as a QR matrix: byte mode, error correction M. */
 export function qrBitmap(text: string): Bitmap2D {
   return generate(mode.bytes(new TextEncoder().encode(text)), { minCorrectionLevel: correction.M })
 }

@@ -5,7 +5,7 @@ import { jwt } from './oauth.test-helper'
 const base = { clientId: 'cid', redirectUri: 'http://localhost:5317/oauth/callback', codeChallenge: 'chal', state: 'st' }
 const params = (u: string) => Object.fromEntries(new URL(u).searchParams)
 
-describe('authorize URLs (SYNC-DRIVES.md §5.3)', () => {
+describe('authorize URLs', () => {
   it('Dropbox: offline access, PKCE S256, the four scopes; no login hint', () => {
     const u = authorizeUrl('dropbox', { ...base, loginHint: 'a@b.c' })
     expect(u.startsWith('https://www.dropbox.com/oauth2/authorize?')).toBe(true)

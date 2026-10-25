@@ -1,8 +1,8 @@
 /**
- * Joining a synced library from a device that already has songs, merge mode (docs/SYNC.md §10.3).
+ * Joining a synced library from a device that already has songs, merge mode.
  * Pure: `planJoin` decides which local songs and setlists are already in the synced library, and
  * `joinSong` / `joinLayers` / `joinPages` / `remapSetlist` combine a matched pair. The join
- * transaction (WP3) applies them.
+ * transaction in `join.ts` applies them.
  */
 import type { Annotation, AudioTrack, Layer, PageAnnotations, PageRef, Setlist, SetlistEntry, Song, SongLayers } from '../db/schema'
 import { GROUP_FIELDS } from '../db/schema'
@@ -34,7 +34,7 @@ const songKey = (s: Song, hashOf: (blobId: string) => string) => {
 }
 
 /**
- * §10.3 match rule. A local song L matches a remote song R when their ordered file hashes are identical
+ * Match rule. A local song L matches a remote song R when their ordered file hashes are identical
  * and non-empty and their normalised titles are equal. Matching is one-to-one, in list order: duplicates
  * within one side are not collapsed. A local setlist matches a remote one with the same normalised name
  * and the same entry `songId` sequence after mapping matched songs (breaks included); also one-to-one.
@@ -109,14 +109,14 @@ function unionBy<T>(r: T[] | undefined, l: T[] | undefined, key: (x: T) => strin
 }
 
 /**
- * Combine local song L into its matched remote song R (§10.3 step 8). The result keeps R's id and files.
+ * Combine local song L into its matched remote song R. The result keeps R's id and files.
  * - lww fields (title, notes, rating, tempos, pageOrder, MIDI, …): R wins; L fills values R left blank
  *   (`undefined`, `''`, `[]`, `{}`, and 0 for rating/difficulty/duration, which mean "unset").
  * - flat fields (display, text, metronome, autoScroll): R wins per sub-field; L fills the others.
  * - set fields: union, R's order first. `favorite`: OR. `createdAt`: min. `lastPlayedAt`/`modifiedAt`: max.
  *   `playCount`: sum.
  * - `bookmarks`, `links`, `smartButtons`: union, de-duplicated by (name, pageIndex), (from, to) and
- *   (label, pageIndex, x, y). `audio` (not named by the spec): union by (name, url).
+ *   (label, pageIndex, x, y). `audio`: union by (name, url).
  * - `pageSettings`: R wins per key, L fills keys R lacks (L's file ids remapped to R's).
  */
 export function joinSong(local: Song, remote: Song): Song {
@@ -185,7 +185,7 @@ export function joinSong(local: Song, remote: Song): Song {
 }
 
 /**
- * Merge L's layers into R's by layer name (§10.3). Returns the merged layers (R's `current` kept) and
+ * Merge L's layers into R's by layer name. Returns the merged layers (R's `current` kept) and
  * L layer id -> merged layer id, for remapping annotation `layer` fields.
  */
 export function joinLayers(local: SongLayers | undefined, remote: SongLayers | undefined): { layers: SongLayers | undefined; map: Map<string, string> } {
@@ -212,7 +212,7 @@ export function joinLayers(local: SongLayers | undefined, remote: SongLayers | u
 }
 
 /**
- * Re-key L's annotation pages to R (§10.3): file ids by position, layers through `layerMap`, items
+ * Re-key L's annotation pages to R: file ids by position, layers through `layerMap`, items
  * unioned with R's page (annotation ids differ, so nothing collides; R's items stay below L's).
  */
 export function joinPages(

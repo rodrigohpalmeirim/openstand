@@ -1,5 +1,5 @@
 /**
- * Storage key builders and parsers (docs/SYNC.md §3). Keys are relative to the backend root
+ * Storage key builders and parsers. Keys are relative to the backend root
  * (bucket + user prefix). Builders throw on invalid parts, so a bug can never write a stray key;
  * parsers return `null` for anything that isn't a well-formed key.
  *
@@ -41,12 +41,12 @@ export function parse10(s: string): number | null {
 const lib = (libraryId: string) => `${ROOT}/${check(LIBRARY_ID, libraryId, 'libraryId')}/`
 const dev = (deviceId: string) => check(DEVICE_ID, deviceId, 'deviceId')
 
-/** `os1/<libraryId>/`: everything a library owns (used by "Delete synced data", §10.5). */
+/** `os1/<libraryId>/`: everything a library owns (used by "Delete synced data"). */
 export const libraryPrefix = (libraryId: string) => lib(libraryId)
 export const metaKey = (libraryId: string) => `${lib(libraryId)}meta`
 export const devicesPrefix = (libraryId: string) => `${lib(libraryId)}devices/`
 export const deviceKey = (libraryId: string, deviceId: string) => `${devicesPrefix(libraryId)}${dev(deviceId)}`
-/** All devices' heads (one LIST per poll, §3), or one device's. */
+/** All devices' heads (one LIST per poll), or one device's. */
 export const headsPrefix = (libraryId: string, deviceId?: string) =>
   `${lib(libraryId)}heads/${deviceId === undefined ? '' : dev(deviceId) + '/'}`
 export const headKey = (libraryId: string, deviceId: string, seq: number) => `${headsPrefix(libraryId, deviceId)}${pad10(seq)}`
@@ -59,7 +59,7 @@ export const snapKey = (libraryId: string, deviceId: string, n: number) => `${sn
 export const blobsPrefix = (libraryId: string) => `${lib(libraryId)}blobs/`
 export const blobKey = (libraryId: string, name: string) => `${blobsPrefix(libraryId)}${check(BLOB_NAME, name, 'blobName')}`
 
-/** `os1/.check-<rand>`: the scratch object `check()` writes and deletes (§7.1). Outside every library. */
+/** `os1/.check-<rand>`: the scratch object `check()` writes and deletes. Outside every library. */
 export const checkKey = (rand: string) => `${ROOT}/.check-${check(/^[a-z0-9]{1,32}$/, rand, 'check id')}`
 
 export type ParsedKey =
@@ -86,7 +86,7 @@ export function parseKey(key: string): ParsedKey | null {
 }
 
 /**
- * Reduces a `heads/` listing to each device's latest seq (readers take the max, §3.2). Keys that aren't
+ * Reduces a `heads/` listing to each device's latest seq (readers take the max). Keys that aren't
  * heads of `libraryId` are ignored.
  */
 export function latestHeads(libraryId: string, keys: Iterable<string>): Record<string, number> {

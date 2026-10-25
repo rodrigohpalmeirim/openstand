@@ -393,7 +393,7 @@ describe('Dropbox upload sessions', () => {
 describe('Dropbox error mapping', () => {
   const body = (summary: string, error: unknown) => JSON.stringify({ error_summary: summary + '/...', error })
 
-  it('maps statuses and error summaries (§4.1 table)', () => {
+  it('maps statuses and error summaries', () => {
     const cases: [number, string, string, string | undefined][] = [
       [400, 'Error in call to API function "files/upload": bad arg', 'unknown', 'BadRequest'],
       [401, body('expired_access_token', { '.tag': 'expired_access_token' }), 'reauth', 'expired_access_token'],

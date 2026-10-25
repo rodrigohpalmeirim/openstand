@@ -1,4 +1,4 @@
-/** Wording and number formatting for the library-sync UI (docs/SYNC.md §12.3). Pure. */
+/** Wording and number formatting for the library-sync UI. Pure. */
 import { LibSyncFailure, type BackendKind, type BlobState, type OAuthKind, type LibSyncError, type LibSyncErrorCode, type LibSyncStatus, type TransferProgress } from '../api'
 import { drive, isDrive, wrongAccountText } from './signin'
 
@@ -168,12 +168,12 @@ const FIXED: Record<LibSyncErrorCode, Omit<ErrorText, 'actionLabel' | 'secondary
   network: { message: OFFLINE_LINE, warning: true },
   server: { message: 'Your storage had a problem answering. Sync will try again.', action: 'retry' },
   unknown: { message: 'Something went wrong while syncing.', action: 'retry' },
-  // Cloud drives (SYNC-DRIVES.md §7.4); `errorText` names the provider when it knows the backend kind.
+  // Cloud drives; `errorText` names the provider when it knows the backend kind.
   reauth: { message: 'Sign in to your storage again to keep syncing. Your changes are kept on this device until then.', action: 'signIn' },
   wrongAccount: { message: 'This library isn’t in the account you signed in with.', action: 'chooseAccount' },
 }
 
-/** SYNC-DRIVES.md §7.4: the drive's name in the messages, and sign-in actions instead of storage keys. */
+/** Cloud drives: the drive's name in the messages, and sign-in actions instead of storage keys. */
 function driveText(e: Pick<LibSyncError, 'code' | 'message' | 'detail'>, kind: OAuthKind, want?: string): Omit<ErrorText, 'actionLabel' | 'secondaryLabel'> | undefined {
   const name = drive(kind).name
   switch (e.code) {
@@ -197,7 +197,7 @@ function driveText(e: Pick<LibSyncError, 'code' | 'message' | 'detail'>, kind: O
 }
 
 /**
- * §12.3: fixed wording and action per error code. `kind` (the status's `backendKind`) switches to the cloud
+ * Fixed wording and action per error code. `kind` (the status's `backendKind`) switches to the cloud
  * drive wording; `want` is the account the library is in (from the pairing payload), for `wrongAccount`.
  */
 export function errorText(e: Pick<LibSyncError, 'code' | 'message' | 'detail'>, kind?: BackendKind, want?: string): ErrorText {
@@ -216,7 +216,7 @@ export function errorText(e: Pick<LibSyncError, 'code' | 'message' | 'detail'>, 
 }
 
 /**
- * Toast wording for a failed action: the §12.3 sentence for a `LibSyncFailure`, an engine sentence as is,
+ * Toast wording for a failed action: the fixed sentence for a `LibSyncFailure`, an engine sentence as is,
  * and never a bare identifier ("unknown", "libraryGone").
  */
 export function failureText(e: unknown, fallback = 'Something went wrong. Try again.', kind?: BackendKind): string {
@@ -360,7 +360,7 @@ const S3_WARNING = 'Anyone with this code can read and change your library and u
 
 /**
  * What the code gives away, per backend. A drive code holds the library key and the account email, never
- * sign-in tokens (SYNC-DRIVES.md §2): the other device still signs in itself.
+ * sign-in tokens: the other device still signs in itself.
  */
 export function pairingWarning(kind?: BackendKind): string {
   if (!isDrive(kind)) return S3_WARNING

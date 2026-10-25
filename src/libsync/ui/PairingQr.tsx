@@ -1,5 +1,5 @@
 /**
- * "Add a device": the pairing QR and text code (§11). Shown only on request; hides after 2 minutes, and is
+ * "Add a device": the pairing QR and text code. Shown only on request; hides after 2 minutes, and is
  * covered the moment the page is hidden or loses focus (so app-switcher snapshots don't capture it).
  */
 import { Copy, Eye, EyeOff, Loader2, QrCode, ShieldAlert } from 'lucide-react'

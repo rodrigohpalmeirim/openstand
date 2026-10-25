@@ -1,5 +1,5 @@
 /**
- * In-process fake of the Dropbox API v2 subset the backend uses (docs/SYNC-DRIVES.md §9.1). Test-only.
+ * In-process fake of the Dropbox API v2 subset the backend uses. Test-only.
  *
  * Enforces what real Dropbox enforces, so a wrong request fails in tests rather than in production:
  * a bearer token on every call; RPC bodies are JSON with `Content-Type: application/json`; content calls

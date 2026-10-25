@@ -1,5 +1,5 @@
 /**
- * Library-sync capture middleware (docs/SYNC.md §8.1).
+ * Library-sync capture middleware.
  *
  * A DBCore middleware installed on every OpenStandDB. While the capture flag for the database is on, every
  * write to a synced table also marks the written record dirty (`syncDirty`) inside the same IndexedDB

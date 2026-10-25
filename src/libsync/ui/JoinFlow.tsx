@@ -1,6 +1,6 @@
 /**
- * "Join from another device" (§10.3, §12.2): scan or paste → preview → mode → progress. A cloud-drive code
- * (SYNC-DRIVES.md §7.2) signs in first: scan → sign in (redirect and back) → preview → mode → progress.
+ * "Join from another device": scan or paste → preview → mode → progress. A cloud-drive code
+ * signs in first: scan → sign in (redirect and back) → preview → mode → progress.
  */
 import { Check, Library, Loader2, Merge, ShieldAlert } from 'lucide-react'
 import { useEffect, useReducer, useRef, type ReactNode } from 'react'
@@ -51,7 +51,7 @@ function TargetBox({ t }: { t: JoinTarget }) {
 const driveOf = (p?: PairingPayload): { kind: OAuthKind; account?: string } | undefined =>
   p && isDrive(p.b.kind) ? { kind: p.b.kind, account: (p.b as { account?: string }).account } : undefined
 
-/** §7.2: the sign-in step for a cloud-drive code, before and after the redirect. */
+/** The sign-in step for a cloud-drive code, before and after the redirect. */
 function DriveJoinStep({
   s,
   onSignIn,
@@ -143,7 +143,7 @@ export function JoinFlow({
   onClose: () => void
   rejoin?: boolean
   reason?: 'libraryGone'
-  /** A drive sign-in for a join came back from the provider (§7.2 step 3): resume with its code. */
+  /** A drive sign-in for a join came back from the provider: resume with its code. */
   resume?: SignInReturn
   /** Start with this code, as if pasted (dev mocks). */
   code?: string
@@ -186,7 +186,7 @@ export function JoinFlow({
         const problem =
           f.code === 'wrongAccount'
             ? {
-                // The facade's §7.3 sentence; `detail` is the account the code was made for.
+                // The facade's wrong-account sentence; `detail` is the account the code was made for.
                 message: /\s/.test(f.message?.trim() ?? '') ? f.message.trim() : joinWrongAccountText(d.kind, accountLabel(sRef.current.account), f.detail ?? d.account),
                 action: 'chooseAccount' as const,
               }
@@ -203,7 +203,7 @@ export function JoinFlow({
     try {
       const payload = await parsePairingCode(text)
       if (!alive.current) return
-      // A drive code: sign in first (§7.2); nothing can be read before that.
+      // A drive code: sign in first; nothing can be read before that.
       if (isDrive(payload.b.kind)) return dispatch({ type: 'needsSignIn', payload, code: codeIn(text) })
       dispatch({ type: 'parsed', payload })
       await preview(payload)
@@ -220,7 +220,7 @@ export function JoinFlow({
     void onCode(code)
   }) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Back from the provider: complete the sign-in, then check the account and preview (§7.2 step 3–4).
+  // Back from the provider: complete the sign-in, then check the account and preview.
   useEffect(() => {
     if (!resume || resume.intent.type !== 'join') return
     let live = true

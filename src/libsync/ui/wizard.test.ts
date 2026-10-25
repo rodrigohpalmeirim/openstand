@@ -33,7 +33,7 @@ describe('validateForm', () => {
 })
 
 describe('toConfig', () => {
-  it('fills the §7.1 presets', () => {
+  it('fills the S3 provider presets', () => {
     expect(toConfig(form({ accountId: R2_ID.toUpperCase(), prefix: 'openstand/' }))).toEqual({
       kind: 's3',
       provider: 'r2',
@@ -125,7 +125,7 @@ describe('check results', () => {
   })
 })
 
-describe('drive steps (SYNC-DRIVES.md §7.1)', () => {
+describe('drive steps', () => {
   const ok = { ok: true, steps: (['reach', 'auth', 'cors', 'list', 'write', 'etag', 'delete'] as const).map((id) => ({ id, ok: true })) }
   const cfg = { kind: 'dropbox' as const, root: '', account: 'rod@example.com', accountId: 'dbid:1' }
 

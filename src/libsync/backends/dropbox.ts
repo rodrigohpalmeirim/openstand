@@ -1,5 +1,5 @@
 /**
- * Dropbox API v2 in the app folder (docs/SYNC-DRIVES.md §4.1). Owned by WP-D.
+ * Dropbox API v2 in the app folder.
  *
  * Keys are real paths under `/<root>/` in the app folder (`root` is '' in practice). RPC calls go to
  * `api.dropboxapi.com` with a JSON body; content calls go to `content.dropboxapi.com` with their arguments
@@ -91,7 +91,7 @@ function summaryOf(b: DropboxErrorBody): string {
 
 const hasTag = (summary: string, tag: string) => new RegExp(`(^|/)${tag}(/|$)`).test(summary)
 
-/** Maps a Dropbox error answer (status, body text, headers) to a `BackendError` (§4.1 error table). */
+/** Maps a Dropbox error answer (status, body text, headers) to a `BackendError`. */
 export function dropboxError(status: number, text: string, headers?: Headers): BackendError {
   const body = parseErrorBody(text)
   const summary = summaryOf(body)
@@ -138,7 +138,7 @@ async function readJson<T>(res: Response): Promise<T> {
   }
 }
 
-/** Adds the key to an error's message (messages carry the key and the provider's code only, §3). */
+/** Adds the key to an error's message (messages carry the key and the provider's code only). */
 function withKey(e: unknown, key: string): unknown {
   if (e instanceof BackendError && !e.message.includes(key)) e.message = `${e.message} (${key})`
   return e
@@ -290,7 +290,7 @@ export class DropboxBackend implements StorageBackend {
       r = await this.rpc<ListFolderResult>('files/list_folder/continue', { cursor: page.cursor }, { signal: o.signal, allow409: true })
     }
     items.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0))
-    // One page without a cursor (§3): `limit` is a hint, `startAfter` filters.
+    // One page without a cursor: `limit` is a hint, `startAfter` filters.
     const after = o.startAfter
     return { items: after ? items.filter((i) => i.key > after) : items }
   }

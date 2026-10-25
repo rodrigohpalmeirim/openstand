@@ -1,4 +1,4 @@
-/** Library-sync status icon for the sidebar (§12.2). Hidden when sync isn't set up. */
+/** Library-sync status icon for the sidebar. Hidden when sync isn't set up. */
 import { Cloud, CloudAlert, CloudDownload, CloudOff, CloudUpload, Loader2, LogIn, RefreshCw, Settings, TriangleAlert } from 'lucide-react'
 import { useState } from 'react'
 import { useLibSync } from '../api'
@@ -33,7 +33,7 @@ export function SyncIndicator({ className }: { className?: string }) {
   const Icon = ICONS[st.icon]
   const { warning } = syncProblem(s)
   const c = controls(s)
-  // Cloud drives (§7.4): this device must sign in again, or as the account the library is in.
+  // Cloud drives: this device must sign in again, or as the account the library is in.
   const code = s.phase === 'error' ? s.error?.code : undefined
   const signIn = isDrive(s.backendKind) && (code === 'reauth' || code === 'wrongAccount') ? { kind: s.backendKind, choose: code === 'wrongAccount' } : undefined
 

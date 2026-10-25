@@ -1,5 +1,5 @@
 /**
- * The two transactional halves of library sync (docs/SYNC.md §8.2, §8.3):
+ * The two transactional halves of library sync:
  *
  * - `capture`: dirty records → per-register ops (state-based diff against `syncShadow`) → the open outbox
  *   batch, in one rw transaction, so the shadow, the dirty marks and the outbox move together.
@@ -224,7 +224,7 @@ export class OutboxWriter {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Capture (§8.2)
+// Capture
 // ---------------------------------------------------------------------------------------------
 
 type CaptureResult = 'op' | 'none' | 'deferred'
@@ -309,7 +309,7 @@ export async function capture(core: Core, o: { pageSize?: number } = {}): Promis
 }
 
 // ---------------------------------------------------------------------------------------------
-// Apply (§8.3)
+// Apply
 // ---------------------------------------------------------------------------------------------
 
 const sameJson = (a: unknown, b: unknown) => canonicalJson(a) === canonicalJson(b)
@@ -390,7 +390,7 @@ export async function applyOpsInTx(core: Core, ops: RecordDelta[], applied: Appl
   return out
 }
 
-/** Downloads for files of `song` this device doesn't hold (§8.3 step 3). */
+/** Downloads for files of `song` this device doesn't hold. */
 async function queueMissing(db: OpenStandDB, song: Song, state: RecordDelta) {
   const prio = songPriority(song)
   for (const w of wireHashes(state)) {

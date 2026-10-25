@@ -1,5 +1,5 @@
 /**
- * Hybrid logical clock (docs/SYNC.md §6.1).
+ * Hybrid logical clock.
  *
  * `${wall 12 hex}${counter 4 hex}${deviceId 16 hex}` = 32 lowercase hex chars. Fixed width, so plain
  * string comparison is the tuple order (wall, counter, device): causal where causality exists, and an

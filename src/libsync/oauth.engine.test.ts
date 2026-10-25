@@ -1,6 +1,6 @@
 // @vitest-environment node
 /**
- * The engine on a drive-like backend (SYNC-DRIVES.md §5.4, §8): requests go through `OAuthHttp` with the real
+ * The engine on a drive-like backend: requests go through `OAuthHttp` with the real
  * token store, against a fake API that accepts one access token at a time.
  */
 import 'fake-indexeddb/auto'

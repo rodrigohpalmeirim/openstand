@@ -1,5 +1,5 @@
 /**
- * Blob transfers (docs/SYNC.md §10.2): a persistent, resumable upload/download queue in `syncTransfers`.
+ * Blob transfers: a persistent, resumable upload/download queue in `syncTransfers`.
  *
  * - Uploads encrypt chunks on demand from the stored `Blob` (memory stays bounded) and resume through the
  *   backend's `UploadState`. Blob ciphertext is deterministic, so a re-sent part is byte-identical. The

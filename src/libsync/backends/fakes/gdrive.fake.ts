@@ -1,5 +1,5 @@
 /**
- * In-process fake of the Google Drive v3 API subset the Drive backend uses (docs/SYNC-DRIVES.md §4.3, §9.1).
+ * In-process fake of the Google Drive v3 API subset the Drive backend uses.
  * Test-only. It enforces Drive's rules so a wrong request fails in tests rather than in production:
  *
  * - Bearer auth on every call (the harness token simulator), Google-style error bodies.

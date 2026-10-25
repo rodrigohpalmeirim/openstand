@@ -239,7 +239,7 @@ describe('mergeDelta', () => {
   })
 })
 
-describe('orderKeys (§5.5)', () => {
+describe('orderKeys', () => {
   it('keeps o order for alive keys, then appends the rest by (born, key)', () => {
     const alive = new Map([['c', H(1)], ['a', H(1)], ['z', H(0)], ['b', H(5)], ['y', H(3)]])
     expect(orderKeys(['b', 'gone', 'a', 'b'], alive)).toEqual(['b', 'a', 'z', 'c', 'y'])
@@ -600,7 +600,7 @@ describe('shadow round-trip and horizons', () => {
   })
 })
 
-describe('rebase (SongEditor save, §8.4)', () => {
+describe('rebase (SongEditor save)', () => {
   const base = () => song('s1', {
     title: 'Base', notes: 'base notes', tags: ['a', 'b'], playCount: 3,
     metronome: { bpm: 100, sound: 'click' },

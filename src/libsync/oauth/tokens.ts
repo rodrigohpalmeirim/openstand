@@ -1,5 +1,5 @@
 /**
- * This device's OAuth tokens for one library (docs/SYNC-DRIVES.md §5.4). Stored in `syncState.oauth[kind]`
+ * This device's OAuth tokens for one library. Stored in `syncState.oauth[kind]`
  * of the library DB: per device and per library, the trust domain of the library secret. Never in pairing
  * codes, backups or sync.
  *
@@ -50,7 +50,7 @@ export async function removeTokens(db: OpenStandDB, kind?: OAuthKind): Promise<v
 
 /**
  * Forget this device's sign-in to `kind` for this library: Dropbox's token is revoked first (best effort,
- * §5.4; Google and Microsoft only delete locally), then the tokens are deleted. `revoke: false` skips the
+ * Google and Microsoft only delete locally), then the tokens are deleted. `revoke: false` skips the
  * revoke. Never throws for the revoke.
  */
 export async function forgetTokens(db: OpenStandDB, kind: OAuthKind, o: TokenDeps & { revoke?: boolean } = {}): Promise<void> {
@@ -67,7 +67,7 @@ export async function forgetTokens(db: OpenStandDB, kind: OAuthKind, o: TokenDep
 
 const withTimeout = <T>(p: Promise<T>, ms: number) => Promise.race([p, new Promise<undefined>((r) => setTimeout(() => r(undefined), ms))])
 
-/** Maps a failed refresh to the error the backends throw (§5.4 "Refresh outcomes"). */
+/** Maps a failed refresh to the error the backends throw. */
 export function refreshError(kind: OAuthKind, e: unknown): BackendError {
   const name = PROVIDERS[kind].name
   if (!(e instanceof TokenEndpointError)) return new BackendError('network', `Can’t reach ${name}`, { cause: e })
@@ -196,7 +196,7 @@ function abortable<T>(p: Promise<T>, signal?: AbortSignal): Promise<T> {
   })
 }
 
-/** The `AccessTokenSource` for `kind` in library `db` (§5.4). Cheap: make one per backend. */
+/** The `AccessTokenSource` for `kind` in library `db`. Cheap: make one per backend. */
 export function tokenSource(db: OpenStandDB, kind: OAuthKind, deps: TokenDeps = {}): AccessTokenSource {
   return new StoredTokenSource(db, kind, deps)
 }

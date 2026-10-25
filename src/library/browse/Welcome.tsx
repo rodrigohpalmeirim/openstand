@@ -65,7 +65,7 @@ const demoHash = (text: string) => {
  * A demo song exactly as `createDemoSongs` made it: demo title, its single text file unchanged, never
  * edited, no annotations. Joining a synced library deletes these first instead of publishing them.
  */
-// oxlint-disable-next-line react/only-export-components -- §5.5 places the demo check next to the demo content
+// oxlint-disable-next-line react/only-export-components -- the demo check belongs next to the demo content
 export async function isUntouchedDemo(song: Song, d: OpenStandDB = db): Promise<boolean> {
   const text = DEMO_TITLES[song.title]
   if (!text || song.files.length !== 1 || song.createdAt !== song.modifiedAt) return false

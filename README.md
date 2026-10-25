@@ -79,16 +79,15 @@ Library sync keeps a whole library (songs, files, annotations, layers, setlists,
 all your devices, and every device keeps a full offline copy. There are no accounts and no OpenStand
 server that holds your music: you bring your own storage, and the app talks to it directly from the
 browser. Edits made offline sync later and merge field by field, so editing different things on two devices
-never loses either change. Set it up in *Settings → Library sync*; the design is in
-[docs/SYNC.md](docs/SYNC.md).
+never loses either change. Set it up in *Settings → Library sync*.
 
-- **Storage:** any S3-compatible bucket — Cloudflare R2, Backblaze B2, Amazon S3, MinIO or others. Use
-  credentials limited to that one bucket; every paired device shares them. (Dropbox, Google Drive and
-  OneDrive are planned.)
+- **Storage:** an app folder in your Dropbox, Google Drive or OneDrive (each device signs in with the same
+  account), or any S3-compatible bucket: Cloudflare R2, Backblaze B2, Amazon S3, MinIO or others. For S3, use
+  credentials limited to that one bucket; every paired device shares them.
 - **End-to-end encrypted:** a random 256-bit library secret is created on the first device, and every
   key is derived from it. Song data, files and file names are encrypted (AES-GCM) before they leave the
-  device. The storage provider sees only the number of devices, object sizes and timing, not titles,
-  contents or which files you have; the relay sees only a random room id.
+  device. The storage provider sees only the number of devices, object sizes and timing, not titles or
+  contents (though an exact file size could hint at a well-known file); the relay sees only a random room id.
 - **Pairing:** on a synced device choose *Add a device*, then scan the QR code with the other device
   (*Join from another device*), or copy the text code and paste it there. The code carries the library
   secret and the storage credentials, so treat it like a password. A device that already has music can

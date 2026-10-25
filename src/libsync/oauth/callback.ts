@@ -1,5 +1,5 @@
 /**
- * The `/oauth/callback` page (docs/SYNC-DRIVES.md §5.2) and the pending sign-in slot. Tiny and
+ * The `/oauth/callback` page and the pending sign-in slot. Tiny and
  * synchronous: `main.tsx` imports it statically and runs `handleOAuthCallback()` before the first render.
  * The exchange itself happens later, lazily, in `completeSignIn` (oauth/flow.ts).
  */
@@ -8,7 +8,7 @@ import type { OAuthKind } from '../backends/types'
 import type { PendingSignIn } from './types'
 
 export const PENDING_KEY = 'openstand-oauth:pending'
-/** A sign-in must come back within this long (§5.2). */
+/** A sign-in must come back within this long. */
 export const PENDING_TTL = 15 * 60 * 1000
 export const CALLBACK_PATH = '/oauth/callback'
 

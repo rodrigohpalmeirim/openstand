@@ -1,4 +1,4 @@
-/** Placeholders for files that synced as references but whose data hasn't arrived yet (§12.2). */
+/** Placeholders for files that synced as references but whose data hasn't arrived yet. */
 import { CloudDownload, CloudOff, FileX, Hourglass } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { prioritizeSongs, type BlobState } from '../api'

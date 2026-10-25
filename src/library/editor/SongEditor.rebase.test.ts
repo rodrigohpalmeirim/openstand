@@ -5,7 +5,7 @@ import { rebaseOnLatest as rebaseOn } from '../../libsync/state'
 
 const rebaseOnLatest = (base: Song, edited: Song) => rebaseOn(db, base, edited)
 
-describe('SongEditor save rebases onto the stored song (§8.4)', () => {
+describe('SongEditor save rebases onto the stored song', () => {
   it('keeps edits that arrived from another device while the editor was open', async () => {
     const base = emptySong({ id: 'ed1', title: 'Old', tags: ['a'], notes: '', rating: 0 })
     base.bookmarks = [{ id: 'b1', name: 'Intro', pageIndex: 0 }]

@@ -1,5 +1,5 @@
 /**
- * Canonical JSON and a fast 64-bit value hash (docs/SYNC.md §1, §6.2). Used only for change detection
+ * Canonical JSON and a fast 64-bit value hash. Used only for change detection
  * (row projection vs. `syncShadow` hashes), never for security.
  */
 import type { Json } from './model'

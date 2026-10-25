@@ -25,7 +25,7 @@ const DEV = '0123456789abcdef'
 const BLOB = 'a'.repeat(52)
 
 describe('paths', () => {
-  it('builds the §3 layout', () => {
+  it('builds the storage layout', () => {
     expect(libraryPrefix(LIB)).toBe(`os1/${LIB}/`)
     expect(metaKey(LIB)).toBe(`os1/${LIB}/meta`)
     expect(devicesPrefix(LIB)).toBe(`os1/${LIB}/devices/`)

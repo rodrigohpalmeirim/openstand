@@ -1,5 +1,5 @@
 /**
- * S3-compatible `StorageBackend` (docs/SYNC.md §7.1): AWS, Cloudflare R2, Backblaze B2, MinIO.
+ * S3-compatible `StorageBackend`: AWS, Cloudflare R2, Backblaze B2, MinIO.
  *
  * SigV4 signing is aws4fetch (`retries: 0`; retrying is the engine's job). XML is parsed with a tiny linear
  * `indexOf` scanner, so this also runs in Node tests. Every response body is read with a byte cap. Large uploads are multipart and resumable through the persisted
@@ -154,7 +154,7 @@ export function parseS3ErrorBody(xml: string): { code?: string; message?: string
 }
 
 // ---------------------------------------------------------------------------------------------
-// Error mapping (§7.1)
+// Error mapping
 // ---------------------------------------------------------------------------------------------
 
 const AUTH_CODES = new Set([
@@ -282,7 +282,7 @@ const amzDate = (ms: number) => new Date(ms).toISOString().replace(/[:-]|\.\d{3}
 const skews = new Map<string, number>()
 
 export interface S3Options {
-  /** Multipart layout; defaults to §7.1 (8 chunks, part 1 + 16 B header). S3 needs parts ≥ 5 MiB. */
+  /** Multipart layout; defaults to 8 chunks per part, part 1 + 16 B header. S3 needs parts ≥ 5 MiB. */
   partSize?: number
   partHead?: number
   /**
@@ -397,7 +397,7 @@ export class S3Backend implements StorageBackend {
     }
   }
 
-  /** A fetch that threw (no response): aborted, offline, or blocked by CORS (§7.1). */
+  /** A fetch that threw (no response): aborted, offline, or blocked by CORS. */
   private async fetchFailure(e: unknown, signal?: AbortSignal): Promise<unknown> {
     if (isAbort(e, signal) || e instanceof BackendError) return e
     if (typeof navigator !== 'undefined' && navigator.onLine === false)
@@ -619,7 +619,7 @@ export class S3Backend implements StorageBackend {
     await this.completeMultipart(key, sess.uploadId, parts, signal)
   }
 
-  // --- check (§7.1) ----------------------------------------------------------------------------
+  // --- check ----------------------------------------------------------------------------
 
   async check(): Promise<BackendCheck> {
     const steps: BackendCheckStep[] = []

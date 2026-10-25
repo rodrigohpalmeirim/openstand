@@ -32,7 +32,7 @@ export default defineConfig({
         globIgnores: ['**/vision_bundle-*.js'],
         // The Cloudflare Worker serves the sync relay's health check and the OAuth token route
         // (/api/oauth/*) here; don't answer them with index.html. /oauth/callback stays on the fallback: the
-        // app shell is the callback handler (docs/SYNC-DRIVES.md §6.3).
+        // app shell is the callback handler.
         navigateFallbackDenylist: [/^\/relay/, /^\/api\//],
       },
       manifest: {

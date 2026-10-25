@@ -1,6 +1,6 @@
 // @vitest-environment node
 /**
- * S3 end-to-end against a real MinIO (docs/SYNC.md §13). Skipped unless LIBSYNC_S3_ENDPOINT is set:
+ * S3 end-to-end against a real MinIO. Skipped unless LIBSYNC_S3_ENDPOINT is set:
  *
  *   docker run -d --rm --name openstand-minio -p 9000:9000 -p 9001:9001 \
  *     -e MINIO_ROOT_USER=openstand -e MINIO_ROOT_PASSWORD=openstand-dev-secret \

@@ -1,5 +1,5 @@
 // @vitest-environment node
-// Step-0 contract guard (docs/SYNC.md §4, §6, §7, §12.1): compile-time shape checks plus the off-state defaults.
+// Contract guard: compile-time shape checks plus the off-state defaults.
 import { describe, expect, expectTypeOf, it } from 'vitest'
 import * as api from './api'
 import { BackendError, type BackendConfig, type StorageBackend } from './backends/types'

@@ -31,11 +31,11 @@
     // any origin; the protocol carries no secrets, but this stops other sites from using your relay.
     // The OAuth route uses the same list, but there empty means the site's own origin only.
     "ALLOWED_ORIGINS": "https://openstand.rodlabs.dev",
-    // OAuth client ids for the token route /api/oauth/<provider>/token (docs/SYNC-DRIVES.md §6). Public;
-    // "" = off. Must equal the app's ids (src/libsync/oauth/config.ts), or the app hides the provider. The
-    // secrets are set with `npx wrangler secret put GDRIVE_CLIENT_SECRET` / `ONEDRIVE_CLIENT_SECRET`.
-    "GDRIVE_CLIENT_ID": "",
-    "ONEDRIVE_CLIENT_ID": ""
+    // OAuth client ids for the token route /api/oauth/<provider>/token (see docs/OPERATIONS.md). Public,
+    // not secrets; "" = off. Must equal the app's ids (src/libsync/oauth/config.ts), or the app hides the
+    // provider. The secrets are set with `npx wrangler secret put GDRIVE_CLIENT_SECRET` / `ONEDRIVE_CLIENT_SECRET`.
+    "GDRIVE_CLIENT_ID": "941966283964-49gajkits27cba91hghkdjl7ujgd2k92.apps.googleusercontent.com",
+    "ONEDRIVE_CLIENT_ID": "355fb297-730d-4c93-ac6c-35368413c885"
   },
   // Abuse limit for the OAuth token route: 30 requests per minute per IP and provider (per location).
   "ratelimits": [{ "name": "OAUTH_LIMITER", "namespace_id": "1001", "simple": { "limit": 30, "period": 60 } }],

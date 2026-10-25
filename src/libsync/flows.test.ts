@@ -188,7 +188,7 @@ describe('leave and delete', () => {
     expect(await getConfig(B)).toBeUndefined()
     expect(isCaptureOn(B.name)).toBe(false)
     expect(await B.songs.count()).toBe(1)
-    // Its stream stays readable for devices that join later (pruned once a snapshot covers it, §3.2).
+    // Its stream stays readable for devices that join later (pruned once a snapshot covers it).
     expect(myHeads()).toEqual(headsBefore)
     const devices = await eA.refreshDevices()
     expect(devices.find((d) => d.id === me)?.retired).toBe(true)
@@ -344,7 +344,7 @@ describe('device names', () => {
   })
 })
 
-describe('blob GC and repair (§3.2)', () => {
+describe('blob GC and repair', () => {
   it('deletes unreferenced blobs after the grace window; repair re-uploads missing ones', async () => {
     const w = world()
     const A = w.db('A')
@@ -369,7 +369,7 @@ describe('blob GC and repair (§3.2)', () => {
   })
 })
 
-describe('prune guard (§8.6)', () => {
+describe('prune guard', () => {
   it('keeps synced pages whose song is missing; prunes never-synced ones and pages of dead songs', async () => {
     const G = openLibrary(`guard-${Date.now()}`)
     await addSong(G, 'alive', 'Alive', { files: [{ id: 'f', data: bytes(1, 10) }] })

@@ -43,7 +43,7 @@ describe('wording', () => {
     expect(joinErrorText(new PairingError('format'))).toMatch(/isn’t an OpenStand pairing code/)
     expect(joinErrorText(new PairingError('version'))).toMatch(/newer OpenStand/)
   })
-  it('uses the §12.3 wording for facade failures', () => {
+  it('uses the fixed wording for facade failures', () => {
     expect(joinErrorText(new LibSyncFailure('wrongSecret'))).toBe('This code doesn’t match the data in that storage.')
     expect(joinErrorText(new LibSyncFailure('libraryGone'))).toBe('The synced library was reset or deleted from another device.')
     expect(joinErrorText(new LibSyncFailure('network'))).toMatch(/Can’t reach/)
@@ -87,7 +87,7 @@ describe('joinTarget', () => {
   })
 })
 
-describe('drive codes (SYNC-DRIVES.md §7.2, §7.3)', () => {
+describe('drive codes', () => {
   const drive = { v: 1, s: 'x', n: 'Band book', b: { kind: 'gdrive', folder: '1AbCdEfGhIjK', account: 'rod@example.com', accountId: 'perm-1' } } as PairingPayload
   const rod = { id: 'perm-1', email: 'rod@example.com' }
   const sam = { id: 'perm-2', email: 'sam@example.org' }

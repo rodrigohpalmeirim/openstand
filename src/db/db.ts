@@ -10,7 +10,7 @@ export class OpenStandDB extends Dexie {
   annotations!: EntityTable<PageAnnotations, 'id'>
   thumbs!: EntityTable<ThumbRecord, 'id'>
   kv!: EntityTable<KV, 'key'>
-  // Library sync (docs/SYNC.md §6.2). Never backed up or synced themselves.
+  // Library sync. Never backed up or synced themselves.
   syncState!: EntityTable<SyncStateRow, 'key'>
   syncDirty!: EntityTable<DirtyRow, 'id'>
   syncShadow!: EntityTable<ShadowRecord, 'id'>
@@ -38,7 +38,7 @@ export class OpenStandDB extends Dexie {
       syncTransfers: '[dir+hash], state, priority',
       syncChunks: '[hash+index]',
     })
-    // Library sync: mark changed records dirty inside the writing transaction (docs/SYNC.md §8.1).
+    // Library sync: mark changed records dirty inside the writing transaction.
     installCapture(this)
   }
 }
@@ -132,7 +132,7 @@ export function setPruneFilter(fn: PruneFilter | null) {
   pruneFilter = fn
 }
 
-/** Count one play: an atomic increment, so it's never based on a stale copy of the song (§8.4). */
+/** Count one play: an atomic increment, so it's never based on a stale copy of the song. */
 export function recordPlay(songId: string, at = Date.now()) {
   return db.songs
     .where('id')

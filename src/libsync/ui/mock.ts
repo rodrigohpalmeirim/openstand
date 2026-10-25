@@ -10,7 +10,7 @@
  * name containing "cors" or an access key containing "bad" makes the connection test fail. In the join flow, a
  * code containing "gone" fails and one containing "insecure" points at plain-http storage.
  *
- * Cloud drives (SYNC-DRIVES.md §7; `&drive=dropbox|gdrive|onedrive` picks the provider, default gdrive). Each
+ * Cloud drives (`&drive=dropbox|gdrive|onedrive` picks the provider, default gdrive). Each
  * opens Settings → Library sync:
  * - drive-storage: the wizard's storage step with all three drives offered;
  * - drive-signin: the wizard's sign-in step (Google's access disclosure, the Dropbox Selective Sync note);
@@ -23,7 +23,7 @@
  * - drive-join: the join flow's sign-in step for a drive code;
  * - drive-join-preview: back from the provider: "Signed in as …", then the preview;
  * - drive-join-mismatch: back as an account other than the code's (warning, "Continue anyway");
- * - drive-join-wrongaccount: the library isn't in the signed-in account (§7.3).
+ * - drive-join-wrongaccount: the library isn't in the signed-in account.
  * "Sign in with …" reloads the page and comes back signed in (phase `drive-return`), as after a provider's
  * consent screen.
  */
@@ -323,7 +323,7 @@ export function applyLibSyncMock(phase: string) {
       const d = /OSJ1\.drive(dropbox|gdrive|onedrive)/.exec(text)?.[1]
       if (isKind(d)) {
         const pl = drivePayload(d)
-        // A code without the account id hint: only the storage check finds the wrong account (§7.3 layer 2).
+        // A code without the account id hint: only the storage check finds the wrong account.
         if (phase === 'drive-join-wrongaccount') delete (pl.b as { accountId?: string }).accountId
         return pl
       }

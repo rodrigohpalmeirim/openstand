@@ -1,4 +1,4 @@
-/** Setup-wizard state: S3 provider presets (§7.1), form validation and the step machine. Pure. */
+/** Setup-wizard state: S3 provider presets, form validation and the step machine. Pure. */
 import type { AccountInfo, BackendCheck, BackendCheckStepId, BackendConfig, BackendDescription, OAuthKind, S3Config, S3Provider } from '../backends/types'
 import { drive, type SignInProblem } from './signin'
 
@@ -162,7 +162,7 @@ const normPrefix = (p: string) => {
   return t === '' ? '' : t.endsWith('/') ? t : `${t}/`
 }
 
-/** The `BackendConfig` a valid form describes (endpoints per the §7.1 presets). */
+/** The `BackendConfig` a valid form describes (endpoints per the presets). */
 export function toConfig(f: S3Form): S3Config {
   const region = f.region.trim()
   const endpoint =
@@ -189,7 +189,7 @@ export function toConfig(f: S3Form): S3Config {
 /* ------------------------------------------------------------------ Steps */
 
 /**
- * S3: storage → form → check → start → pair. Cloud drives (SYNC-DRIVES.md §7.1): storage → signin → (redirect
+ * S3: storage → form → check → start → pair. Cloud drives: storage → signin → (redirect
  * to the provider and back) → check → start → pair.
  */
 export type WizardStep = 'storage' | 'form' | 'signin' | 'check' | 'start' | 'pair'
@@ -326,10 +326,10 @@ export const CHECK_LABEL: Record<BackendCheckStepId, string> = {
 /** Optional steps don't block syncing (conditional puts just aren't used when missing). */
 export const OPTIONAL_STEPS: BackendCheckStepId[] = ['conditional']
 
-/** Steps that only mean something for S3 (§7.1): not shown for a drive. */
+/** Steps that only mean something for S3: not shown for a drive. */
 const S3_ONLY: BackendCheckStepId[] = ['cors', 'etag']
 
-/** The checklist label for a step; drives name the sign-in and their folder (§7.1). */
+/** The checklist label for a step; drives name the sign-in and their folder. */
 export function checkLabel(id: BackendCheckStepId, storage: StorageChoice = 's3'): string {
   if (storage !== 's3' && id === 'auth') return `Signed in to ${drive(storage).name}`
   if (storage !== 's3' && id === 'list') return 'Open the OpenStand folder'

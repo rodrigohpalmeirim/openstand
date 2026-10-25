@@ -1,5 +1,5 @@
 /**
- * Library sync cryptography (docs/SYNC.md §2, §4.1, §4.2, §4.3).
+ * Library sync cryptography.
  *
  * - `deriveLibraryKeys(secret)`: HKDF-SHA256 → libraryId, roomId and separate AES-GCM keys for envelopes,
  *   blob chunks and snapshots, plus HMAC keys (all non-extractable).
@@ -8,7 +8,7 @@
  *   random-access (a `ByteSource` that encrypts only the chunks a read touches), so memory stays bounded.
  * - `blobName`, `sealNotice` / `openNotice`, streaming SHA-256 (`sha256Blob`, `createSha256`).
  *
- * Wire format v2 (§4). v1 objects are never read: they are recognised (only when they authenticate under
+ * Wire format v2. v1 objects are never read: they are recognised (only when they authenticate under
  * the v1 key) and reported as `oldFormat`, which the user resolves with "Reset sync".
  *
  * Everything here is WebCrypto (browsers, workers, Node ≥ 20), except streaming SHA-256 for large files,
@@ -23,13 +23,13 @@ import { pad10 } from './paths'
 // ---------------------------------------------------------------------------------------------
 
 /**
- * Data that can't be read (§4.4). Only authenticated bytes ever produce a format verdict:
+ * Data that can't be read. Only authenticated bytes ever produce a format verdict:
  *
  * - `corrupt`: this one object can't be read: authentication failed, truncated, malformed, a hash
  *   mismatch, or an unknown version/epoch byte (unauthenticated, so it can't be trusted to mean "newer").
  * - `newerFormat`: the object authenticated and its JSON says a newer `v` than this build knows.
  * - `oldFormat`: the object authenticated under the v1 key with the v1 layout: written by a pre-v2 build.
- *   Nothing reads v1; the user has to "Reset sync" (§10.5).
+ *   Nothing reads v1; the user has to "Reset sync".
  */
 export type FormatErrorCode = 'corrupt' | 'newerFormat' | 'oldFormat'
 
@@ -124,10 +124,10 @@ export function fromB64url(s: string): Uint8Array<ArrayBuffer> {
 
 export const randomBytes = (n: number): Uint8Array<ArrayBuffer> => crypto.getRandomValues(new Uint8Array(n))
 
-/** A new 32-byte library secret (§2). */
+/** A new 32-byte library secret. */
 export const newSecret = (): Uint8Array<ArrayBuffer> => randomBytes(32)
 
-/** 16 lowercase hex chars (64 random bits). New on every join, never reused (§2). */
+/** 16 lowercase hex chars (64 random bits). New on every join, never reused. */
 export const newDeviceId = (): string => bytesToHex(randomBytes(8))
 
 export async function sha256Hex(data: Uint8Array | Blob): Promise<string> {
@@ -169,13 +169,13 @@ export async function sha256Blob(data: Blob | readonly Blob[], piece = 1024 * 10
 }
 
 // ---------------------------------------------------------------------------------------------
-// §2 Keys
+// Keys
 // ---------------------------------------------------------------------------------------------
 
 export const SECRET_BYTES = 32
 /** Unchanged since v1, so `libraryId`, `roomId` and blob names stay where they were. */
 const SALT = utf8('openstand-sync-v1')
-/** Current key epoch (§2). Epoch > 0 is reserved for a future keyring. */
+/** Current key epoch. Epoch > 0 is reserved for a future keyring. */
 export const KEY_EPOCH = 0
 
 export interface LibraryKeys {
@@ -240,7 +240,7 @@ async function hmac(key: CryptoKey, data: Uint8Array): Promise<Uint8Array<ArrayB
 
 const SHA256_HEX = /^[0-9a-f]{64}$/
 
-/** `blobs/<blobName>`: base32(HMAC(nameKey, sha256 bytes)), 52 chars (§2). */
+/** `blobs/<blobName>`: base32(HMAC(nameKey, sha256 bytes)), 52 chars. */
 export async function blobName(keys: LibraryKeys, sha256: string): Promise<string> {
   if (!SHA256_HEX.test(sha256)) throw new TypeError('sha256 must be 64 lowercase hex chars')
   return base32(await hmac(keys.name, hexToBytes(sha256)))
@@ -267,7 +267,7 @@ const OLD_FORMAT_MESSAGE = 'written by an older OpenStand sync format (v1); rese
 
 const TAG = 16
 const NONCE = 12
-/** AES-GCM nonce length: a container's first `HEADER_BYTES + NONCE_BYTES` bytes fingerprint a blob (§10.2). */
+/** AES-GCM nonce length: a container's first `HEADER_BYTES + NONCE_BYTES` bytes fingerprint a blob. */
 export const NONCE_BYTES = NONCE
 
 async function gcmEncrypt(key: CryptoKey, nonce: Uint8Array, aad: Uint8Array, pt: Uint8Array): Promise<Uint8Array<ArrayBuffer>> {
@@ -283,7 +283,7 @@ async function gcmDecrypt(key: CryptoKey, nonce: Uint8Array, aad: Uint8Array, ct
 }
 
 // ---------------------------------------------------------------------------------------------
-// §4.1 Sealed envelope
+// Sealed envelope
 // ---------------------------------------------------------------------------------------------
 
 /** What an envelope is bound to (its AAD). `notice` is bound to the relay room instead of the library. */
@@ -312,7 +312,7 @@ export function sealAad(keys: LibraryKeys, ctx: SealContext): string {
 /** v2 AAD: the version and epoch bytes, then the key path. */
 const envelopeAad = (version: number, epoch: number, path: string) => concatBytes([Uint8Array.of(version, epoch), utf8(path)])
 
-/** `[0x02, epoch, nonce(12), AES-GCM(envKey, plaintext) || tag]`. The caller gzips first where §4.1 says so. */
+/** `[0x02, epoch, nonce(12), AES-GCM(envKey, plaintext) || tag]`. The caller gzips first where needed. */
 export async function seal(keys: LibraryKeys, ctx: SealContext, plaintext: Uint8Array): Promise<Uint8Array<ArrayBuffer>> {
   const nonce = randomBytes(NONCE)
   const aad = envelopeAad(ENVELOPE_VERSION, keys.epoch, sealAad(keys, ctx))
@@ -341,7 +341,7 @@ export async function open(keys: LibraryKeys, ctx: SealContext, sealed: Uint8Arr
 }
 
 // ---------------------------------------------------------------------------------------------
-// §4.3 Relay notices
+// Relay notices
 // ---------------------------------------------------------------------------------------------
 
 const DEVICE_ID = /^[0-9a-f]{16}$/
@@ -378,7 +378,7 @@ export async function openNotice(keys: LibraryKeys, frame: string): Promise<Noti
 }
 
 // ---------------------------------------------------------------------------------------------
-// §4.2 Chunked container
+// Chunked container
 // ---------------------------------------------------------------------------------------------
 
 export const CONTAINER_MAGIC = 'OSC1'

@@ -162,7 +162,7 @@ describe('POST /api/oauth/<provider>/token', () => {
     }
   })
 
-  describe('route errors (§6.1 table)', () => {
+  describe('route errors', () => {
     const cases: [string, () => Request, Partial<OAuthEnv>, number, string][] = [
       ['unknown provider', () => post('/api/oauth/dropbox/token', refreshBody), {}, 404, 'not_found'],
       ['unknown path', () => post('/api/oauth/gdrive/tokens', refreshBody), {}, 404, 'not_found'],
