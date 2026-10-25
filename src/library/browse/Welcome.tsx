@@ -126,7 +126,7 @@ export function Welcome() {
           </div>
           <h2 className="text-xl font-semibold">Welcome to OpenStand</h2>
           <p className="max-w-sm text-sm text-muted">
-            Your sheet music, chord charts and setlists — offline, on any device. Everything stays in this browser unless you export it.
+            Your sheet music, chord charts and setlists — offline, on any device. Everything stays in this browser unless you export it or turn on encrypted sync.
           </p>
         </div>
         <div>
@@ -165,6 +165,14 @@ export function Welcome() {
             Start with an empty library
           </Button>
         </div>
+        <a
+          href="/privacy"
+          target="_blank"
+          rel="noopener"
+          className="-my-2 self-center rounded px-2 py-1 text-xs text-muted hover:text-fg hover:underline"
+        >
+          Privacy policy
+        </a>
       </div>
     </Dialog>
   )

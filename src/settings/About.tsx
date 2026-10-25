@@ -32,7 +32,10 @@ export function AboutInfo() {
         </div>
       </div>
       <p className="text-sm text-muted">
-        An open-source, offline-first sheet music reader, library and performance tool. Your music stays on your device.
+        An open-source, offline-first sheet music reader, library and performance tool. Your music stays on your device.{' '}
+        <a href="/privacy" target="_blank" rel="noopener" className="text-accent hover:underline">
+          Privacy policy
+        </a>
       </p>
       <p className="text-sm text-muted">
         Inspired by the features of MobileSheets by Zubersoft. OpenStand is an independent project and is not affiliated with or endorsed by

@@ -1,6 +1,7 @@
 # Library sync: implementation spec
 
 Status: phase 1 (S3-compatible storage) implemented, wire format **v2** (§4.4). Read `AGENTS.md` first.
+Cloud drives (Dropbox, Google Drive, OneDrive) are specified in [`SYNC-DRIVES.md`](SYNC-DRIVES.md).
 
 Library sync keeps a whole library (songs, files, annotations, setlists, layers) identical on all of a
 user's devices. There are no accounts: the user brings their own storage. Everything is end-to-end
@@ -10,7 +11,8 @@ the relay.
 
 Decisions already made by the user, restated so they aren't reopened:
 
-- Storage backends: S3-compatible in phase 1, Dropbox in phase 2, Google Drive and OneDrive in phase 3.
+- Storage backends: S3-compatible in phase 1; Dropbox, Google Drive and OneDrive together in phase 2
+  (`SYNC-DRIVES.md`).
 - Always end-to-end encrypted. A random library secret is turned into keys and ids with HKDF.
 - Storage is append-only, and each device writes only its own keys.
 - The relay sends instant notices; polling is the fallback.
@@ -638,7 +640,11 @@ Provider presets:
 | AWS | `https://s3.<region>.amazonaws.com` | the bucket's region | no | |
 | MinIO / other | free entry | free entry | yes | |
 
-### 7.2 Phases 2 and 3 (interface only)
+### 7.2 Phases 2 and 3 (superseded)
+
+**Superseded by [`SYNC-DRIVES.md`](SYNC-DRIVES.md)**, the binding spec for the cloud-drive backends, the
+OAuth flow and the Worker token route (now `POST /api/oauth/<provider>/token`). The original sketch stays
+below for history.
 
 ```ts
 export interface OAuthProvider {
@@ -1291,7 +1297,7 @@ From then on, the contracts change only by agreement and additive edits.
 5. Docs: a README section, and the "Devices" row in `docs/FEATURES.md`.
 
 Phases 2 and 3 are later WPs that add `backends/dropbox.ts` and so on, plus the Worker OAuth route. They
-must pass `backendContract` unchanged.
+must pass `backendContract` unchanged. Their work breakdown is in `SYNC-DRIVES.md` §11.
 
 ---
 

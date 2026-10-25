@@ -80,7 +80,12 @@ function Bullet({ icon, title, children }: { icon: ReactNode; title: string; chi
 function OffView({ open }: { open: (m: Modal) => void }) {
   return (
     <div className="grid gap-5">
-      <p className="text-sm text-muted">Keep the same songs, files, annotations and setlists on your phone, tablet and computer.</p>
+      <p className="text-sm text-muted">
+        Keep the same songs, files, annotations and setlists on your phone, tablet and computer.{' '}
+        <a href="/privacy" target="_blank" rel="noopener" className="text-accent hover:underline">
+          Privacy policy
+        </a>
+      </p>
       <ul className="grid gap-3">
         <Bullet icon={<HardDrive className="size-4" />} title="Your own storage">
           A bucket you control at Cloudflare R2, Backblaze B2, Amazon S3 or MinIO. No accounts, no OpenStand servers.

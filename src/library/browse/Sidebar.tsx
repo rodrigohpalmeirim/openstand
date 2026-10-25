@@ -200,6 +200,14 @@ export function Sidebar({ onClose }: { onClose?: () => void }) {
           >
             <Settings className="size-[18px] text-muted" /> Settings
           </button>
+          <a
+            href="/privacy"
+            target="_blank"
+            rel="noopener"
+            className="flex h-10 items-center rounded-lg px-2 text-xs text-muted hover:bg-surface-2 hover:text-fg"
+          >
+            Privacy
+          </a>
           <SyncIndicator />
         </div>
       </div>

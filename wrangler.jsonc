@@ -30,5 +30,7 @@
     // any origin; the protocol carries no secrets, but this stops other sites from using your relay.
     "ALLOWED_ORIGINS": "https://openstand.rodlabs.dev"
   },
-  "observability": { "enabled": true }
+  // No per-request invocation logs (they'd record IPs and URLs, e.g. relay room names); errors and
+  // console output can still be inspected live with `wrangler tail`.
+  "observability": { "enabled": true, "logs": { "invocation_logs": false } }
 }
