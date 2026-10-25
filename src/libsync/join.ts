@@ -19,7 +19,7 @@ import { HLC_ZERO } from './hlc'
 import { joinFileMap, joinLayers, joinPages, joinSong, planJoin, remapSetlist } from './joinPlan'
 import { materialize, mergeDelta } from './merge'
 import type { DeviceRecord, JoinCheckpoint, JoinMode, PairingPayload, RecordDelta, SyncConfig } from './model'
-import { devicesPrefix, headsPrefix, latestHeads, libraryPrefix, logKey, logPrefix, metaKey, parseKey, snapPrefix } from './paths'
+import { deviceKey, devicesPrefix, headsPrefix, latestHeads, libraryPrefix, logKey, logPrefix, metaKey, parseKey, snapPrefix } from './paths'
 import { allRecordKeys, clearSyncTables, deleteState, getConfig, getState, markDirty, putState, setCapture } from './state'
 import { PROVIDERS } from './oauth/config'
 import { forgetTokens, readTokens, tokenSource } from './oauth/tokens'
@@ -32,11 +32,18 @@ export interface FlowOptions extends EngineOptions {
   onProgress?: (step: string, done: number, total: number) => void
 }
 
-/** Drives sign in with this device's tokens for library `db`; without `db` they throw `reauth`. */
-const backendFor = (cfg: BackendConfig, o: FlowOptions, db?: OpenStandDB) =>
+/**
+ * Drives sign in with this device's tokens for library `db`; without one they throw `reauth`. `db` is
+ * required (pass `undefined` explicitly where no library applies) so no caller forgets it.
+ */
+const backendFor = (cfg: BackendConfig, o: FlowOptions, db: OpenStandDB | undefined) =>
   o.backend ??
   o.makeBackend?.(cfg) ??
   createBackend(cfg, { now: o.now, auth: db && isOAuthKind(cfg.kind) ? tokenSource(db, cfg.kind, { now: o.now }) : undefined })
+
+/** `p`'s value, or `undefined` once `ms` pass or when it rejects. */
+const withTimeout = <T>(p: Promise<T>, ms: number) =>
+  Promise.race([p, new Promise<undefined>((r) => setTimeout(() => r(undefined), ms))]).catch(() => undefined)
 
 const defaultDemoCheck = async (song: Song, db: OpenStandDB) => (await import('../library/browse/Welcome')).isUntouchedDemo(song, db)
 
@@ -44,47 +51,90 @@ const defaultDemoCheck = async (song: Song, db: OpenStandDB) => (await import('.
 // Enable (first device)
 // ---------------------------------------------------------------------------------------------
 
+/** Where a config stores its data, without credentials or display hints: equal = the same storage. */
+const storageId = (c: BackendConfig) =>
+  JSON.stringify(
+    Object.entries(c)
+      .filter(([k]) => k !== 'accessKeyId' && k !== 'secretAccessKey' && k !== 'account')
+      .sort(([a], [b]) => a.localeCompare(b)),
+  )
+
 /**
  * Enable: create the synced library from this one. Returns the engine; its first `sync()` publishes
  * everything (the dirty marks and upload transfers persist, so an interrupted initial upload resumes).
+ *
+ * Retry-safe: the new library's secret is checkpointed (`syncState.enable`) before `meta` is written, so
+ * enabling again on the same storage reuses that library and adopts its `meta`; a failure after `meta`
+ * removes what this attempt wrote (best effort); the config and the dirty marks are saved in one transaction.
  */
 export async function enable(
   db: OpenStandDB,
   o: FlowOptions & { backendConfig: BackendConfig; relay: string | null; name: string; skipCheck?: boolean },
 ): Promise<Engine> {
   if (await getConfig(db)) throw new SyncError('unknown', 'Library sync is already on for this library')
-  const backend = backendFor(o.backendConfig, o)
+  const backend = backendFor(o.backendConfig, o, db)
   if (!o.skipCheck) {
     const check = await backend.check()
     if (!check.ok) throw check.error ?? new BackendError('unknown', 'The storage check failed')
   }
   const now = o.now ?? Date.now
-  const secret = newSecret()
-  const keys = await deriveLibraryKeys(secret)
-  await backend.put(metaKey(keys.libraryId), await encodeMeta(keys, { v: 1, createdAt: now(), name: o.name }), { ifNoneMatch: true })
+  const prev = await getState(db, 'enable')
+  const cp =
+    prev && storageId(prev.backend) === storageId(o.backendConfig)
+      ? prev
+      : { secret: b64url(newSecret()), deviceId: newDeviceId(), backend: o.backendConfig, createdAt: now() }
+  if (cp !== prev) await putState(db, 'enable', cp)
+  const keys = await deriveLibraryKeys(cp.secret)
+  const meta = metaKey(keys.libraryId)
+  try {
+    await backend.put(meta, await encodeMeta(keys, { v: 1, createdAt: cp.createdAt, name: o.name }), { ifNoneMatch: true })
+  } catch (e) {
+    // An earlier attempt wrote it (or its response was lost): adopt it once it opens with this secret.
+    if (!(e instanceof BackendError && e.code === 'precondition')) throw e
+    const bytes = await backend.get(meta)
+    if (!bytes) throw e
+    await decodeMeta(keys, bytes).catch(() => {
+      throw new SyncError('unknown', 'The storage already holds a different library at this place')
+    })
+  }
   const config: SyncConfig = {
     v: 1,
-    secret: b64url(secret),
+    secret: cp.secret,
     libraryId: keys.libraryId,
     roomId: keys.roomId,
-    deviceId: newDeviceId(),
+    deviceId: cp.deviceId,
     backend: o.backendConfig,
     relay: o.relay,
     name: o.name,
     joinedAt: now(),
     paused: false,
   }
-  const engine = await Engine.fromConfig(db, config, { ...o, backend, keys })
-  await engine.putDevice()
-  await db.transaction('rw', db.syncState, async () => {
-    await putState(db, 'config', config)
-    await putState(db, 'seq', { next: 1 })
-    await putState(db, 'cursors', {})
-    await putState(db, 'clock', HLC_ZERO)
-  })
-  setCapture(db, true)
-  await markDirty(db, await allRecordKeys(db, syncedKv))
-  return engine
+  try {
+    const engine = await Engine.fromConfig(db, config, { ...o, backend, keys })
+    await engine.putDevice()
+    await db.transaction('rw', [db.syncState, db.syncDirty, db.songs, db.setlists, db.annotations, db.kv], async () => {
+      await putState(db, 'config', config)
+      await putState(db, 'seq', { next: 1 })
+      await putState(db, 'cursors', {})
+      await putState(db, 'clock', HLC_ZERO)
+      await deleteState(db, 'enable')
+      // Records are locked for the transaction: none is written between the listing and capture turning on.
+      setCapture(db, true)
+      await markDirty(db, await allRecordKeys(db, syncedKv))
+    })
+    return engine
+  } catch (e) {
+    setCapture(db, false)
+    // Nothing points at this library yet: remove it (best effort). If that fails too, a retry adopts it.
+    await withTimeout(
+      (async () => {
+        await backend.delete(deviceKey(keys.libraryId, cp.deviceId)).catch(() => {})
+        await backend.delete(meta)
+      })(),
+      10_000,
+    )
+    throw e
+  }
 }
 
 /** First-device initial upload: publish, upload every file, then write the first snapshot. */
@@ -426,9 +476,6 @@ async function joinMerge(db: OpenStandDB, stash: Record<string, unknown>, o: Flo
 // ---------------------------------------------------------------------------------------------
 // Leave, delete, reset
 // ---------------------------------------------------------------------------------------------
-
-const withTimeout = <T>(p: Promise<T>, ms: number) =>
-  Promise.race([p, new Promise<undefined>((r) => setTimeout(() => r(undefined), ms))]).catch(() => undefined)
 
 /**
  * After "Stop syncing" or "Delete synced data": this device's drive sign-in for the library goes too, Dropbox's

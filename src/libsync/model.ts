@@ -321,6 +321,17 @@ export interface JoinCheckpoint {
   snapshot?: string
 }
 
+/**
+ * `syncState.enable`: an `enable` that hasn't finished. Saved before `meta` is written, so a retry on the same
+ * storage reuses the library (and adopts a `meta` the failed attempt left behind) instead of orphaning it.
+ */
+export interface EnableCheckpoint {
+  secret: string
+  deviceId: string
+  backend: BackendConfig
+  createdAt: number
+}
+
 /** `syncState.maintenance`: wall ms of the last run of each task. */
 export interface MaintenanceState {
   snapshotAt: number
@@ -346,6 +357,7 @@ export interface SyncStateValues {
   devices: DeviceRecord[]
   maintenance: MaintenanceState
   join: JoinCheckpoint
+  enable: EnableCheckpoint
   /** OAuth tokens. Per device and library, never shared, synced or backed up. */
   oauth: Partial<Record<OAuthKind, TokenSet>>
 }
