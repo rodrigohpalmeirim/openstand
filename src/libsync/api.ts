@@ -75,7 +75,7 @@ export interface LibSyncStatus {
   warning?: LibSyncError
   /** Device streams held back (not fatal), by device id. */
   streams?: Record<string, LibSyncError>
-  /** Connection details for Settings (relay, notices, pulls). */
+  /** What the relay, notices and pulls last did (engine diagnostics; read by tests and when debugging). */
   diag?: SyncDiagnostics
 }
 
@@ -93,13 +93,6 @@ export interface SyncDiagnostics {
   lastPull?: { at: number; trigger: PullTrigger; ms: number; ok: boolean; hidden?: boolean }
   /** Poll interval in effect (ms). */
   pollMs: number
-}
-
-/** "Test instant sync": whether the ping went out and which devices answered, fastest first. */
-export interface InstantSyncTest {
-  relay: LibSyncStatus['relay']
-  sent: boolean
-  answers: { device: string; name: string; rtt: number }[]
 }
 
 export type BlobStateKind = 'local' | 'queued' | 'downloading' | 'waiting' | 'offline' | 'missing'
@@ -261,18 +254,6 @@ export const syncNow = guarded(async (): Promise<void> => {
   const e = svc.currentEngine()
   if (e) await e.sync()
   else svc.requestSyncNow()
-})
-
-/**
- * Ping the other devices through the relay; they answer over the same path a change notice takes. Needs the
- * engine in this tab (the one showing Settings normally is).
- */
-export const testInstantSync = guarded(async (): Promise<InstantSyncTest> => {
-  const e = (await service()).currentEngine()
-  if (!e) throw new LibSyncFailure('unknown', 'Library sync runs in another tab or window. Try there.')
-  const r = await e.testInstantSync()
-  const names = new Map(useLibSync.getState().devices.map((d) => [d.id, d.name]))
-  return { relay: r.relay, sent: r.sent, answers: r.answers.map((a) => ({ device: a.device, name: names.get(a.device) ?? 'Another device', rtt: a.rtt })) }
 })
 
 export const setPaused = guarded(async (paused: boolean): Promise<void> => {

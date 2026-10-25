@@ -305,12 +305,12 @@ Receivers decrypt the notice and ignore their own `d`. If `s > cursor[d]`, they 
 at once, from the socket's message handler rather than through a timer (hidden pages get their timers
 throttled, to once a minute in Chrome after 5 min hidden). A notice during a running pull queues one more.
 
-Connection test ("Test instant sync" in Settings): the same frame and sealing, with the payload
-`{d, s, k: "ping", p}` or `{d, s, k: "pong", p, to}`. `p` is a random nonce (8–32 base64url chars), `to` the
-pinging device; `s` is the sender's head (≥ 0 here, ≥ 1 for plain notices). Every other device answers a
-ping with a pong addressed `to` the pinger echoing `p`; the pinger counts only pongs that decrypt with the
-library key, are addressed to it and carry its current nonce. Both double as notices (`s` is a valid head),
-so devices that predate them treat them as plain notices and never answer.
+Ping and pong: the same frame and sealing, with the payload `{d, s, k: "ping", p}` or
+`{d, s, k: "pong", p, to}`. `p` is a random nonce (8–32 base64url chars), `to` the pinging device; `s` is the
+sender's head (≥ 0 here, ≥ 1 for plain notices). Older builds sent pings from a "Test instant sync" button in
+Settings; current builds no longer send them but still answer: every other device of the library answers a
+ping with a pong addressed `to` the pinger echoing `p`. Both double as notices (`s` is a valid head), so
+devices that predate them treat them as plain notices and never answer.
 
 ### 4.4 Format versions, errors and input validation
 
@@ -1172,8 +1172,9 @@ overwrites `devices/<me>` at once.
     device: 12 songs"), then a mode choice (radio: new library *recommended* / merge), then progress. The
     user can leave the screen; progress continues in the indicator.
   - **On:**
-    - A status card with phase, "Up to date · 2 min ago", pending changes, transfer bars, and "Ready
-      offline: 1,238 of 1,240 files".
+    - A status card with phase, "Up to date · 2 min ago", pending changes, whether instant updates are on
+      ("Instant updates on", "… connecting…", "… reconnecting", "… off: no relay configured"), transfer
+      bars, and "Ready offline: 1,238 of 1,240 files".
     - **Sync now** and **Add a device** (QR plus Copy code).
     - The devices list: name, last seen, a "This device" badge with a rename button; retired devices dimmed.
     - Storage: backend label and **Update storage keys**.

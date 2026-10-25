@@ -39,7 +39,7 @@ import {
   type SyncConfig,
 } from './model'
 import { blobKey, blobsPrefix, deviceKey, devicesPrefix, headKey, headsPrefix, latestHeads, logKey, logPrefix, metaKey, parseKey, snapKey, snapPrefix } from './paths'
-import { NoticeChannel, type NoticeChannelOptions, type PingResult, type RelayState } from './relay'
+import { NoticeChannel, type NoticeChannelOptions, type RelayState } from './relay'
 import { realTimers, type Timers } from './timers'
 import { getConfig, getState, putState, TABLE_OF } from './state'
 import { defaultDeviceName, thisDevice, uniqueDeviceName } from '../sync/deviceName'
@@ -1549,14 +1549,6 @@ export class Engine {
     if (!p.k) this.setDiag({ noticeReceived: { device: p.d, seq: p.s, at: this.core.now(), hidden: !this.env.visible() } })
     const cur = (await getState(this.core.db, 'cursors'))?.[p.d] ?? 0
     if (p.s > cur) this.pullNow('notice')
-  }
-
-  /** "Test instant sync": a sealed ping through the relay room; other devices answer with a sealed pong. */
-  async testInstantSync(): Promise<PingResult & { relay: RelayState }> {
-    const relay = this.relay
-    if (!relay) return { relay: this.status.relay, sent: false, answers: [] }
-    if (relay.state !== 'open') relay.wake()
-    return { relay: relay.state, ...(await relay.testPing()) }
   }
 
   /** Start timers, triggers, transfers and the relay. */

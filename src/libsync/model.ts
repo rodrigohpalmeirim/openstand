@@ -134,8 +134,8 @@ export interface SnapshotHeader {
 /**
  * Plaintext of a relay notice (§4.3): device `d` has written up to seq `s`. A plain notice has no `k`.
  * `k: 'ping'` asks the room's other devices to answer with a `pong` addressed `to` the pinger, echoing the
- * nonce `p` ("Test instant sync"). Both still carry the sender's head in `s` (≥ 0), so devices that predate
- * them read them as plain notices.
+ * nonce `p`. Older builds sent pings from a "Test instant sync" button; current ones only answer them. Both
+ * still carry the sender's head in `s` (≥ 0), so devices that predate them read them as plain notices.
  */
 export interface NoticePayload {
   d: string

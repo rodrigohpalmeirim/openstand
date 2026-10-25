@@ -260,47 +260,29 @@ describe('relay notices (§4.3, §9)', () => {
     a.close()
   })
 
-  it('test ping: other devices of the library answer with sealed pongs; forged, misaddressed and stale pongs do not count', async () => {
+  it('answers a sealed ping from another device of the library with a sealed pong addressed to it', async () => {
     const hub = new Hub()
     const keys = await deriveLibraryKeys(newSecret())
     const other = await deriveLibraryKeys(newSecret())
-    const got: NoticePayload[] = []
-    const a = new NoticeChannel({ base: '/relay', keys, deviceId: dev(0), transport: hub.transport, onNotice: () => {} })
-    const b = new NoticeChannel({ base: '/relay', keys, deviceId: dev(1), transport: hub.transport, onNotice: (p) => got.push(p), head: () => 12 })
+    const gotA: NoticePayload[] = []
+    const gotB: NoticePayload[] = []
+    const a = new NoticeChannel({ base: '/relay', keys, deviceId: dev(0), transport: hub.transport, onNotice: (p) => gotA.push(p) })
+    const b = new NoticeChannel({ base: '/relay', keys, deviceId: dev(1), transport: hub.transport, onNotice: (p) => gotB.push(p), head: () => 12 })
     await tick()
+    // Older builds still send pings ("Test instant sync"); another library's ping goes unanswered.
     const pa = hub.peers()[0]
-    // Forged answers arrive before the real one: another library's pong, a pong for someone else, a wrong nonce.
-    const forge = async () => {
-      const ping = (await notices(keys, pa.sent)).find((p) => p.k === 'ping')
-      if (!ping) return setTimeout(() => void forge(), 5)
-      pa.ev.onMessage(await sealNotice(other, { d: dev(7), s: 1, k: 'pong', p: ping.p, to: dev(0) }))
-      pa.ev.onMessage(await sealNotice(keys, { d: dev(8), s: 1, k: 'pong', p: ping.p, to: dev(5) }))
-      pa.ev.onMessage(await sealNotice(keys, { d: dev(9), s: 1, k: 'pong', p: 'stale-nonce-0000', to: dev(0) }))
-    }
-    void forge()
-    const r = await a.testPing(2000)
-    expect(r.sent).toBe(true)
-    expect(r.answers.map((x) => x.device)).toEqual([dev(1)])
-    expect(r.answers[0].seq).toBe(12)
-    expect(r.answers[0].rtt).toBeGreaterThanOrEqual(0)
-    expect(r.answers[0].rtt).toBeLessThan(1000)
-    // The receiver saw the ping as a notice too (it carries the pinger's head) and answered within limits.
-    expect(got.some((p) => p.k === 'ping' && p.d === dev(0))).toBe(true)
-    const pongs = (await notices(keys, hub.peers()[1].sent)).filter((p) => p.k === 'pong')
-    expect(pongs).toHaveLength(1)
-    expect(hub.peers()[1].sent.every((f) => f.length <= 1024)).toBe(true)
+    pa.t.send(await sealNotice(other, { d: dev(7), s: 0, k: 'ping', p: 'nonce-other-000' }))
+    pa.t.send(await sealNotice(keys, { d: dev(0), s: 0, k: 'ping', p: 'nonce-1234567' }))
+    await tick(50)
+    // The receiver saw the ping as a notice too (it carries the pinger's head) and answered once, within limits.
+    expect(gotB.some((p) => p.k === 'ping' && p.d === dev(0))).toBe(true)
+    const pb = hub.peers()[1]
+    const pongs = (await notices(keys, pb.sent)).filter((p) => p.k === 'pong')
+    expect(pongs).toEqual([{ d: dev(1), s: 12, k: 'pong', p: 'nonce-1234567', to: dev(0) }])
+    expect(pb.sent.every((f) => f.length <= 1024)).toBe(true)
+    expect(gotA.some((p) => p.k === 'pong' && p.d === dev(1))).toBe(true)
     a.close()
     b.close()
-  })
-
-  it('test ping on a closed socket reports it without sending', async () => {
-    const hub = new Hub()
-    hub.down = true
-    const keys = await deriveLibraryKeys(newSecret())
-    const a = new NoticeChannel({ base: '/relay', keys, deviceId: dev(0), transport: hub.transport, onNotice: () => {} })
-    await tick()
-    expect(await a.testPing(100)).toEqual({ sent: false, answers: [] })
-    a.close()
   })
 })
 

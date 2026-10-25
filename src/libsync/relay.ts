@@ -9,10 +9,11 @@
  *   seq (a socket that died silently may have swallowed it).
  * - Keep-alive pings expect the relay's pong: no frame within PONG_TIMEOUT means the socket is dead
  *   (mobile networks drop connections without telling either end), so it reconnects.
- * - `testPing` sends a sealed ping that the room's other devices answer with a sealed pong ("Test instant sync").
+ * - A sealed ping from another device of the library is answered with a sealed pong addressed to it (older
+ *   builds had a "Test instant sync" button that sends them; this build only answers).
  */
 import { RelayTransport, type Transport, type TransportEvents, type TransportStatus } from '../sync/transports'
-import { b64url, openNotice, randomBytes, sealNotice, type LibraryKeys } from './crypto'
+import { openNotice, sealNotice, type LibraryKeys } from './crypto'
 import type { NoticePayload } from './model'
 import { realTimers, type Timers } from './timers'
 
@@ -25,9 +26,6 @@ export const WAKE_PONG_TIMEOUT = 5_000
 const STUCK_CONNECTING = 5_000
 /** Minimum gap between our sealed frames (lib rooms drop a client's frames past 5 per second). */
 export const SEND_GAP = 250
-/** "Test instant sync": answers counted for this long after the first one (at most PING_WAIT in all). */
-const PING_SETTLE = 1_000
-export const PING_WAIT = 5_000
 const PING = '{"ping":1}'
 
 export type RelayState = 'off' | 'connecting' | 'open' | 'error'
@@ -44,28 +42,13 @@ export interface NoticeChannelOptions {
   onState?: (s: RelayState) => void
   /** A plain notice for `seq` actually went out. */
   onSent?: (seq: number) => void
-  /** This device's last pushed seq, carried by pings and pongs. */
+  /** This device's last pushed seq, carried by pongs. */
   head?: () => number | Promise<number>
   log?: (msg: string) => void
   /** Tests inject an in-process transport. */
   transport?: (url: string, room: string, ev: TransportEvents) => Transport
   timers?: Partial<Timers>
   now?: () => number
-}
-
-export interface PingAnswer {
-  /** Answering device id (the pong is sealed with the library key and addressed to us). */
-  device: string
-  /** Round trip in ms. */
-  rtt: number
-  /** Its head seq. */
-  seq: number
-}
-
-export interface PingResult {
-  /** The socket was open, so the ping was sent. */
-  sent: boolean
-  answers: PingAnswer[]
 }
 
 const toState = (s: TransportStatus): RelayState => (s === 'closed' ? 'off' : s)
@@ -87,12 +70,11 @@ export class NoticeChannel {
   /** Highest seq asked to announce, and the highest actually sent on the current socket. */
   private pendingSeq = 0
   private sentSeq = 0
-  /** Sealed ping/pong frames waiting for the send gap. */
-  private queue: { frame: string; sent?: () => void }[] = []
+  /** Sealed pong frames waiting for the send gap. */
+  private queue: string[] = []
   private lastSend = -Infinity
   private sealing = false
   private pumpTimer?: ReturnType<typeof setTimeout>
-  private pings = new Map<string, { at: number; answers: Map<string, PingAnswer>; settle?: () => void }>()
 
   constructor(o: NoticeChannelOptions) {
     this.o = o
@@ -131,19 +113,12 @@ export class NoticeChannel {
     const p = await openNotice(this.o.keys, data)
     if (!p || p.d === this.o.deviceId || this.closed) return
     if (p.k === 'ping') void this.answer(p)
-    if (p.k === 'pong' && p.to === this.o.deviceId) {
-      const t = this.pings.get(p.p!)
-      if (t && !t.answers.has(p.d)) {
-        t.answers.set(p.d, { device: p.d, rtt: this.now() - t.at, seq: p.s })
-        t.settle?.()
-      }
-    }
     this.o.onNotice(p)
   }
 
   private async answer(ping: NoticePayload) {
     const head = Math.max(0, (await this.o.head?.()) ?? 0)
-    this.queue.push({ frame: await sealNotice(this.o.keys, { d: this.o.deviceId, s: head, k: 'pong', p: ping.p, to: ping.d }) })
+    this.queue.push(await sealNotice(this.o.keys, { d: this.o.deviceId, s: head, k: 'pong', p: ping.p, to: ping.d }))
     this.pump()
   }
 
@@ -162,9 +137,7 @@ export class NoticeChannel {
     }
     this.lastSend = this.now()
     if (!notice) {
-      const q = this.queue.shift()!
-      this.t.send(q.frame)
-      q.sent?.()
+      this.t.send(this.queue.shift()!)
       return this.pump()
     }
     const seq = this.pendingSeq
@@ -217,33 +190,6 @@ export class NoticeChannel {
   /** When the current state began (wall ms). */
   get since() {
     return this.stateAt
-  }
-
-  /**
-   * "Test instant sync": a sealed ping through the room. Other devices of this library answer with a sealed
-   * pong addressed to us that echoes the nonce, so only live answers from the same library count.
-   */
-  async testPing(wait = PING_WAIT): Promise<PingResult> {
-    if (this.closed || this.t.status !== 'open') return { sent: false, answers: [] }
-    const nonce = b64url(randomBytes(12))
-    const entry: { at: number; answers: Map<string, PingAnswer>; settle?: () => void } = { at: this.now(), answers: new Map() }
-    this.pings.set(nonce, entry)
-    const head = Math.max(0, (await this.o.head?.()) ?? 0)
-    // The round trip counts from the moment the ping actually goes out (it may wait out the send gap).
-    this.queue.push({ frame: await sealNotice(this.o.keys, { d: this.o.deviceId, s: head, k: 'ping', p: nonce }), sent: () => (entry.at = this.now()) })
-    this.pump()
-    await new Promise<void>((resolve) => {
-      const all = this.timers.setTimeout(resolve, wait)
-      entry.settle = () => {
-        entry.settle = undefined
-        this.timers.setTimeout(() => {
-          this.timers.clearTimeout(all)
-          resolve()
-        }, PING_SETTLE)
-      }
-    })
-    this.pings.delete(nonce)
-    return { sent: true, answers: [...entry.answers.values()].sort((a, b) => a.rtt - b.rtt) }
   }
 
   close() {
