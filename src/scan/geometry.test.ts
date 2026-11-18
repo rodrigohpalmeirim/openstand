@@ -1,16 +1,23 @@
 import { describe, expect, it } from 'vitest'
 import {
   applyH,
+  BEND_POINTS,
+  bendAt,
+  bendPoint,
   homography,
   invert3,
   isConvexQuad,
+  isStraight,
+  NO_BEND,
   orderQuad,
   outputSize,
   pageSizeFor,
   paperAspect,
   PAPER,
+  rotateBend,
   rotateQuad,
   snapAspect,
+  type Bend,
   type Pt,
   type Quad,
 } from './geometry'
@@ -179,5 +186,81 @@ describe('paper aspect', () => {
     const capped = outputSize(q, 4000, 3000, 1000)
     expect(capped.h).toBe(1000)
     expect(capped.w).toBe(Math.round(1000 * A4))
+  })
+})
+
+describe('bends', () => {
+  const B = (t: number[], r: number[], b: number[], l: number[]): Bend => [t, r, b, l]
+
+  it('bendAt is zero at the ends and passes through the control values', () => {
+    expect(BEND_POINTS === 2 || BEND_POINTS === 3).toBe(true)
+    const vals = Array.from({ length: BEND_POINTS }, (_, k) => 0.03 * (k + 1) * (k % 2 ? -1 : 1))
+    expect(bendAt(vals, 0)).toBeCloseTo(0, 12)
+    expect(bendAt(vals, 1)).toBeCloseTo(0, 12)
+    vals.forEach((v, k) => expect(bendAt(vals, (k + 1) / (BEND_POINTS + 1))).toBeCloseTo(v, 12))
+    expect(bendAt([], 0.4)).toBe(0)
+  })
+
+  it('bendAt is linear in the values (fit by least squares)', () => {
+    const a = Array.from({ length: BEND_POINTS }, (_, k) => 0.02 + 0.01 * k)
+    const b = Array.from({ length: BEND_POINTS }, (_, k) => -0.05 + 0.03 * k)
+    for (const t of [0.1, 0.27, 0.5, 0.81]) {
+      expect(bendAt(a.map((x, i) => x + b[i]), t)).toBeCloseTo(bendAt(a, t) + bendAt(b, t), 12)
+      expect(bendAt(a.map((x) => 3 * x), t)).toBeCloseTo(3 * bendAt(a, t), 12)
+    }
+    // A constant bow stays between the ends without wild overshoot.
+    const flat = new Array<number>(BEND_POINTS).fill(0.05)
+    for (let t = 0; t <= 1; t += 0.05) expect(Math.abs(bendAt(flat, t))).toBeLessThan(0.08)
+  })
+
+  it('bendPoint is the identity without a bend', () => {
+    const zeros = new Array<number>(BEND_POINTS).fill(0)
+    for (const [u, v] of [[0, 0], [0.3, 0.7], [1, 1], [0.5, 0.01]]) {
+      expect(bendPoint(NO_BEND, u, v)).toEqual({ x: u, y: v })
+      expect(bendPoint(B(zeros, zeros, zeros, zeros), u, v)).toEqual({ x: u, y: v })
+    }
+    expect(isStraight(undefined)).toBe(true)
+    expect(isStraight(NO_BEND)).toBe(true)
+    expect(isStraight(B(zeros, [], [], []))).toBe(true)
+    expect(isStraight(B([0.01, 0], [], [], []))).toBe(false)
+  })
+
+  it('bendPoint moves the sides outwards and keeps the corners', () => {
+    const v = new Array<number>(BEND_POINTS).fill(0.05)
+    const bend = B(v, v, v, v)
+    for (const [u, w] of [[0, 0], [1, 0], [1, 1], [0, 1]]) close(bendPoint(bend, u, w), { x: u, y: w }, 1e-12)
+    expect(bendPoint(bend, 0.5, 0).y).toBeLessThan(0) // top bows up
+    expect(bendPoint(bend, 1, 0.5).x).toBeGreaterThan(1) // right bows right
+    expect(bendPoint(bend, 0.5, 1).y).toBeGreaterThan(1) // bottom bows down
+    expect(bendPoint(bend, 0, 0.5).x).toBeLessThan(0) // left bows left
+    // Control t runs from corner i towards corner i+1: the bottom runs right to left.
+    const bottom = B([], [], [0.1, ...new Array<number>(BEND_POINTS - 1).fill(0)], [])
+    close(bendPoint(bottom, 1 - 1 / (BEND_POINTS + 1), 1), { x: 1 - 1 / (BEND_POINTS + 1), y: 1.1 }, 1e-12)
+  })
+
+  it('rotateBend follows rotateQuad through quarter turns', () => {
+    const q: Quad = [
+      { x: 0.1, y: 0.15 },
+      { x: 0.85, y: 0.1 },
+      { x: 0.9, y: 0.88 },
+      { x: 0.12, y: 0.95 },
+    ]
+    const mk = (s: number) => Array.from({ length: BEND_POINTS }, (_, k) => s * (k + 1) * 0.02)
+    const bend = B(mk(1), mk(-0.5), mk(2), mk(0.7))
+    const square: Quad = [
+      { x: 0, y: 0 },
+      { x: 1, y: 0 },
+      { x: 1, y: 1 },
+      { x: 0, y: 1 },
+    ]
+    const photo = (qq: Quad, b: Bend, u: number, v: number) => applyH(homography(square, qq)!, bendPoint(b, u, v))
+    // Output point (u,v) after one clockwise quarter turn shows the unrotated page point (v, 1 − u).
+    const back = (k: number, u: number, v: number): [number, number] => (k ? back(k - 1, v, 1 - u) : [u, v])
+    for (let k = 0; k < 4; k++)
+      for (const [u, v] of [[0.2, 0], [0.5, 0.5], [1, 0.3], [0.7, 1], [0, 0.6], [0.33, 0.9]]) {
+        close(photo(rotateQuad(q, k), rotateBend(bend, k), u, v), photo(q, bend, ...back(k, u, v)), 1e-9)
+      }
+    expect(rotateBend(bend, 4)).toEqual(bend)
+    expect(rotateBend(bend, -1)).toEqual(rotateBend(bend, 3))
   })
 })

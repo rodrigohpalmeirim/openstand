@@ -2,7 +2,7 @@
  * Pixel processing for scans, on plain typed arrays so it runs in a worker or under vitest:
  * perspective warp, colour adjustments, illumination flattening and the sheet-music B&W filter.
  */
-import { homography, type Quad } from './geometry'
+import { bendWeights, FULL_QUAD, homography, isStraight, type Bend, type Quad } from './geometry'
 
 /** RGBA image (same layout as ImageData). */
 export interface Rgba {
@@ -28,8 +28,10 @@ export const DEFAULT_PARAMS: FilterParams = { filter: 'bw', brightness: 0, contr
 /**
  * Warp the region `quad` (pixel coordinates in `src`) onto an outW×outH rectangle, bilinear sampling.
  * The inverse mapping is evaluated incrementally along each row (two adds per pixel and a divide).
+ * With a non-straight `bend` the paper's curved edges are flattened too (see `bendPoint`).
  */
-export function warpPerspective(src: Rgba, quad: Quad, outW: number, outH: number): Rgba {
+export function warpPerspective(src: Rgba, quad: Quad, outW: number, outH: number, bend?: Bend): Rgba {
+  if (!isStraight(bend)) return warpBent(src, quad, outW, outH, bend!)
   const out = new Uint8ClampedArray(outW * outH * 4)
   const rect = [
     { x: 0, y: 0 },
@@ -74,6 +76,81 @@ export function warpPerspective(src: Rgba, quad: Quad, outW: number, outH: numbe
       const w01 = ax * (1 - ay)
       const w10 = (1 - ax) * ay
       const w11 = ax * ay
+      out[o] = s[i00] * w00 + s[i01] * w01 + s[i10] * w10 + s[i11] * w11
+      out[o + 1] = s[i00 + 1] * w00 + s[i01 + 1] * w01 + s[i10 + 1] * w10 + s[i11 + 1] * w11
+      out[o + 2] = s[i00 + 2] * w00 + s[i01 + 2] * w01 + s[i10 + 2] * w10 + s[i11 + 2] * w11
+      out[o + 3] = 255
+      o += 4
+    }
+  }
+  return { data: out, width: outW, height: outH }
+}
+
+/** Offsets of one bent side at the pixel centres of an n-pixel run; `flip` runs t from 1 to 0. */
+function sideOffsets(values: readonly number[], n: number, flip: boolean): Float64Array {
+  const out = new Float64Array(n)
+  const k = values.length
+  if (!k) return out
+  const w = new Array<number>(k)
+  for (let i = 0; i < n; i++) {
+    const t = (i + 0.5) / n
+    bendWeights(k, flip ? 1 - t : t, w)
+    let s = 0
+    for (let j = 0; j < k; j++) s += w[j] * values[j]
+    out[i] = s
+  }
+  return out
+}
+
+/**
+ * The warp with bent paper edges: output (u,v) samples the photo at H(bendPoint(bend, u, v)), where H maps
+ * the unit square onto `quad`. The side offsets are tabulated once per column (top, bottom) and per row
+ * (left, right), so each pixel costs a few multiply-adds more than the straight warp.
+ */
+function warpBent(src: Rgba, quad: Quad, outW: number, outH: number, bend: Bend): Rgba {
+  const out = new Uint8ClampedArray(outW * outH * 4)
+  const h = homography(FULL_QUAD, quad)
+  if (!h) return { data: out.fill(255), width: outW, height: outH }
+  const top = sideOffsets(bend[0], outW, false)
+  const bottom = sideOffsets(bend[2], outW, true)
+  const right = sideOffsets(bend[1], outH, false)
+  const left = sideOffsets(bend[3], outH, true)
+  const us = new Float64Array(outW)
+  for (let x = 0; x < outW; x++) us[x] = (x + 0.5) / outW
+  const { data: s, width: sw, height: sh } = src
+  const maxX = sw - 1
+  const maxY = sh - 1
+  let o = 0
+  for (let y = 0; y < outH; y++) {
+    const v = (y + 0.5) / outH
+    // x = u + u·R − (1 − u)·L = u·(1 + R + L) − L
+    const ax = 1 + right[y] + left[y]
+    const bx = -left[y]
+    const v1 = 1 - v
+    for (let x = 0; x < outW; x++) {
+      const px = us[x] * ax + bx
+      const py = v - v1 * top[x] + v * bottom[x]
+      const d = h[6] * px + h[7] * py + h[8]
+      let fx = (h[0] * px + h[1] * py + h[2]) / d - 0.5
+      let fy = (h[3] * px + h[4] * py + h[5]) / d - 0.5
+      if (fx < 0) fx = 0
+      else if (fx > maxX) fx = maxX
+      if (fy < 0) fy = 0
+      else if (fy > maxY) fy = maxY
+      const x0 = fx | 0
+      const y0 = fy | 0
+      const tx = fx - x0
+      const ty = fy - y0
+      const x1 = x0 < maxX ? 4 : 0
+      const y1 = y0 < maxY ? sw * 4 : 0
+      const i00 = (y0 * sw + x0) * 4
+      const i01 = i00 + x1
+      const i10 = i00 + y1
+      const i11 = i10 + x1
+      const w00 = (1 - tx) * (1 - ty)
+      const w01 = tx * (1 - ty)
+      const w10 = (1 - tx) * ty
+      const w11 = tx * ty
       out[o] = s[i00] * w00 + s[i01] * w01 + s[i10] * w10 + s[i11] * w11
       out[o + 1] = s[i00 + 1] * w00 + s[i01 + 1] * w01 + s[i10 + 1] * w10 + s[i11 + 1] * w11
       out[o + 2] = s[i00 + 2] * w00 + s[i01 + 2] * w01 + s[i10 + 2] * w10 + s[i11 + 2] * w11

@@ -3,8 +3,9 @@
  * full-resolution output. Runs inside the scan worker, or in-process where workers can't use
  * OffscreenCanvas.
  */
+import { estimateBend, type BendEstimate } from './dewarp'
 import { detectQuad } from './detect'
-import { outputSize, rotateQuad, scaleQuad, type Quad } from './geometry'
+import { outputSize, rotateBend, rotateQuad, scaleQuad, type Bend, type Quad } from './geometry'
 import { applyFilter, downscaleGrey, greyToRgba, packBits, toGrey, warpPerspective, type FilterParams, type Rgba } from './image'
 import type { EncodedPage } from './pdf'
 
@@ -13,6 +14,10 @@ export interface RenderParams extends FilterParams {
   quad: Quad
   /** Quarter turns clockwise applied to the output. */
   rotation: number
+  /** Curved paper edges, in the same un-rotated photo frame as `quad`. Absent = straight. */
+  bend?: Bend
+  /** Exact output width/height (after rotation), instead of the measured paper aspect snapped to A4/Letter. */
+  aspect?: number
 }
 
 export type Request =
@@ -20,6 +25,7 @@ export type Request =
   | { op: 'render'; page: string; params: RenderParams; maxLong: number }
   | { op: 'export'; page: string; params: RenderParams }
   | { op: 'drop'; page: string }
+  | { op: 'bend'; page: string; quad: Quad; rotation: number; bend?: Bend }
 
 export interface LoadResult {
   width: number
@@ -122,20 +128,27 @@ export async function load(id: string, blob: Blob): Promise<LoadResult> {
 }
 
 /** Corrected size of the page in full-resolution pixels, and the quad in `img` pixel coordinates. */
-function geometry(e: Entry, img: Rgba, params: RenderParams, maxLong: number, minLong = 0) {
-  const q = rotateQuad(params.quad, params.rotation)
-  const size = outputSize(scaleQuad(q, e.width, e.height), e.width, e.height, maxLong, minLong)
-  return { size, quad: scaleQuad(q, img.width, img.height) }
+/** Same long side, exact ratio. */
+function withAspect(s: { w: number; h: number }, ratio: number) {
+  const long = Math.max(s.w, s.h)
+  return ratio >= 1 ? { w: long, h: Math.max(1, Math.round(long / ratio)), ratio } : { w: Math.max(1, Math.round(long * ratio)), h: long, ratio }
 }
 
-function process(img: Rgba, quad: Quad, w: number, h: number, params: FilterParams) {
-  return applyFilter(warpPerspective(img, quad, w, h), params)
+function geometry(e: Entry, img: Rgba, params: RenderParams, maxLong: number, minLong = 0) {
+  const q = rotateQuad(params.quad, params.rotation)
+  let size = outputSize(scaleQuad(q, e.width, e.height), e.width, e.height, maxLong, minLong)
+  if (params.aspect) size = withAspect(size, params.aspect)
+  return { size, quad: scaleQuad(q, img.width, img.height), bend: params.bend && rotateBend(params.bend, params.rotation) }
+}
+
+function process(img: Rgba, quad: Quad, w: number, h: number, params: FilterParams, bend?: Bend) {
+  return applyFilter(warpPerspective(img, quad, w, h, bend), params)
 }
 
 export async function render(id: string, params: RenderParams, maxLong: number): Promise<ImageBitmap> {
   const { e, proxy } = await proxyOf(id)
-  const { size, quad } = geometry(e, proxy, params, maxLong)
-  const r = process(proxy, quad, size.w, size.h, params)
+  const { size, quad, bend } = geometry(e, proxy, params, maxLong)
+  const r = process(proxy, quad, size.w, size.h, params, bend)
   return toBitmap('rgba' in r ? r.rgba : greyToRgba(r.grey, size.w, size.h))
 }
 
@@ -146,8 +159,8 @@ export async function exportPage(id: string, params: RenderParams): Promise<Enco
   const full = rasterize(bmp, FULL_LONG)
   bmp.close()
   const f = params.filter
-  const { size, quad } = geometry(e, full, params, OUT_LONG[f], OUT_MIN_LONG[f])
-  const r = process(full, quad, size.w, size.h, params)
+  const { size, quad, bend } = geometry(e, full, params, OUT_LONG[f], OUT_MIN_LONG[f])
+  const r = process(full, quad, size.w, size.h, params, bend)
   if ('grey' in r && r.binary) return { kind: 'bits', bytes: packBits(r.grey, size.w, size.h), width: size.w, height: size.h }
   const rgba = 'rgba' in r ? r.rgba : greyToRgba(r.grey, size.w, size.h)
   const c = newCanvas(size.w, size.h)
@@ -160,6 +173,12 @@ export function drop(id: string) {
   pages.delete(id)
   const i = recent.indexOf(id)
   if (i >= 0) recent.splice(i, 1)
+}
+
+/** Estimate the curvature of a page of sheet music from its staff lines (null when it can't tell). */
+export async function bendOf(id: string, quad: Quad, rotation: number, bend?: Bend): Promise<BendEstimate | null> {
+  const { proxy } = await proxyOf(id)
+  return estimateBend(toGrey(proxy), proxy.width, proxy.height, scaleQuad(quad, proxy.width, proxy.height), rotation, bend)
 }
 
 /** Dispatch a request; returns the result and the buffers/bitmaps to transfer back. */
@@ -178,5 +197,7 @@ export async function handle(req: Request): Promise<{ result: unknown; transfer:
     case 'drop':
       drop(req.page)
       return { result: null, transfer: [] }
+    case 'bend':
+      return { result: await bendOf(req.page, req.quad, req.rotation, req.bend), transfer: [] }
   }
 }

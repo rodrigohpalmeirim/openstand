@@ -1,4 +1,4 @@
-import { Camera, Check, Crop, Images, Loader2, Maximize, Plus, RotateCw, Sparkles, Trash2, Wand2, Zap, ZapOff } from 'lucide-react'
+import { Camera, Check, Crop, Images, Loader2, Maximize, Plus, RotateCw, Sparkles, Spline, Trash2, Undo2, Wand2, Zap, ZapOff } from 'lucide-react'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useDragSort, moveItem } from '../library/editor/useDragSort'
 import { Sheet } from '../library/editor/Sheet'
@@ -7,10 +7,11 @@ import { cameraApiAvailable, hasCamera, openCamera, type CameraSession } from '.
 import { CornerEditor } from './CornerEditor'
 import { detectQuad } from './detect'
 import { scanEngine } from './engine'
-import { FULL_QUAD, type Quad } from './geometry'
+import { FULL_QUAD, isStraight, NO_BEND, type Bend, type Quad } from './geometry'
 import { DEFAULT_PARAMS, toGrey, type Filter, type FilterParams } from './image'
 import { buildScanPdf, type EncodedPage } from './pdf'
 import type { RenderParams } from './processor'
+import type { CorrectSession } from './correct'
 
 interface Page {
   id: string
@@ -22,6 +23,8 @@ interface Page {
   /** The automatically detected outline (null when detection failed). */
   auto: Quad | null
   rotation: number
+  /** Curved paper edges (same photo frame as `quad`); absent or empty = straight. */
+  bend?: Bend
   status: 'loading' | 'ready' | 'error'
   thumb?: string
 }
@@ -30,6 +33,8 @@ type Mode = 'camera' | 'pick' | 'edit'
 type View = 'corners' | 'result'
 
 const PREFS_KEY = 'openstand:scan'
+/** Filter a correction starts with: the page unchanged. */
+const CORRECT_START: Partial<FilterParams> = { filter: 'color', brightness: 0, contrast: 0 }
 let nextId = 0
 
 function loadPrefs(): FilterParams {
@@ -53,14 +58,26 @@ const photoChoice = () => (isTouch() ? 'take or choose photos' : 'choose photos'
  * Camera scanner for paper sheet music: capture (or pick) photos, mark each page's corners,
  * straighten and clean them up, and get back one PDF.
  */
-export function Scanner({ title = 'Scan sheet music', onDone, onCancel }: { title?: string; onDone: (file: File) => void; onCancel: () => void }) {
+export function Scanner({
+  title = 'Scan sheet music',
+  onDone,
+  onCancel,
+  correct,
+}: {
+  title?: string
+  onDone: (file: File) => void
+  onCancel: () => void
+  /** Correct the given pages of an existing file: no camera, no adding/removing/reordering pages. */
+  correct?: CorrectSession
+}) {
   const [pages, setPages] = useState<Page[]>([])
   const [sel, setSel] = useState<string | null>(null)
-  const [mode, setMode] = useState<Mode | null>(null)
+  const [mode, setMode] = useState<Mode | null>(correct ? 'edit' : null)
   const [cameraOk, setCameraOk] = useState(false)
   const [cameraError, setCameraError] = useState<string | null>(null)
   const [replaceId, setReplaceId] = useState<string | null>(null)
-  const [params, setParams] = useState<FilterParams>(loadPrefs)
+  // Correcting starts from the page as it is (original colours) and leaves the scanner's preferences alone.
+  const [params, setParams] = useState<FilterParams>(() => (correct ? { ...loadPrefs(), ...CORRECT_START } : loadPrefs()))
   const [view, setView] = useState<View>('result')
   const [saving, setSaving] = useState<{ done: number; total: number } | null>(null)
   const pickInput = useRef<HTMLInputElement>(null)
@@ -71,6 +88,7 @@ export function Scanner({ title = 'Scan sheet music', onDone, onCancel }: { titl
   })
 
   useEffect(() => {
+    if (correct) return
     let live = true
     hasCamera().then((ok) => {
       if (!live) return
@@ -80,7 +98,7 @@ export function Scanner({ title = 'Scan sheet music', onDone, onCancel }: { titl
     return () => {
       live = false
     }
-  }, [])
+  }, [correct])
 
   // Release photos and worker memory when the scanner closes.
   useEffect(
@@ -94,12 +112,13 @@ export function Scanner({ title = 'Scan sheet music', onDone, onCancel }: { titl
   )
 
   useEffect(() => {
+    if (correct) return
     try {
       localStorage.setItem(PREFS_KEY, JSON.stringify(params))
     } catch {
       /* private mode */
     }
-  }, [params])
+  }, [params, correct])
 
   const patch = useCallback((id: string, p: Partial<Page>) => setPages((ps) => ps.map((x) => (x.id === id ? { ...x, ...p } : x))), [])
 
@@ -138,6 +157,47 @@ export function Scanner({ title = 'Scan sheet music', onDone, onCancel }: { titl
     [patch],
   )
 
+  // Correcting: the file's pages, each starting with the whole page as its outline (Detect stays
+  // available) and its saved rotation. Loaded one at a time so long PDFs don't decode all at once.
+  const started = useRef(false)
+  const closed = useRef(false)
+  useEffect(() => {
+    closed.current = false
+    return () => {
+      closed.current = true
+    }
+  }, [])
+  useEffect(() => {
+    if (!correct || started.current) return
+    started.current = true
+    const fresh: Page[] = correct.pages.map((src) => ({
+      id: `p${Date.now().toString(36)}${nextId++}`,
+      blob: src.blob,
+      url: URL.createObjectURL(src.blob),
+      width: 0,
+      height: 0,
+      quad: FULL_QUAD,
+      auto: null,
+      rotation: ((src.rotation % 4) + 4) % 4,
+      status: 'loading',
+    }))
+    setPages(fresh)
+    setSel(fresh[0]?.id ?? null)
+    void (async () => {
+      for (const p of fresh) {
+        if (closed.current) return
+        try {
+          const r = await scanEngine.load(p.id, p.blob)
+          if (closed.current) return scanEngine.drop(p.id)
+          patch(p.id, { width: r.width, height: r.height, auto: r.quad, status: 'ready' })
+        } catch (e) {
+          console.warn('correct: could not load page', e)
+          patch(p.id, { status: 'error' })
+        }
+      }
+    })()
+  }, [correct, patch])
+
   const picked = (files: FileList | null) => {
     const list = [...(files ?? [])].filter((f) => f.type.startsWith('image/') || /\.(jpe?g|png|webp|heic|heif|avif|bmp|gif)$/i.test(f.name))
     if (!list.length) return
@@ -155,8 +215,8 @@ export function Scanner({ title = 'Scan sheet music', onDone, onCancel }: { titl
   useEffect(() => {
     if (!page || page.status !== 'ready' || lastSel.current === page.id) return
     lastSel.current = page.id
-    setView(page.auto ? 'result' : 'corners')
-  }, [page])
+    setView(page.auto || correct ? 'result' : 'corners')
+  }, [page, correct])
 
   const remove = (id: string) => {
     const ps = pagesRef.current
@@ -183,12 +243,43 @@ export function Scanner({ title = 'Scan sheet music', onDone, onCancel }: { titl
 
   const close = async () => {
     if (saving) return
+    if (correct) {
+      const start = { ...params, ...CORRECT_START }
+      const edited =
+        JSON.stringify(params) !== JSON.stringify(start) ||
+        pagesRef.current.some((p, i) => JSON.stringify(p.quad) !== JSON.stringify(FULL_QUAD) || !isStraight(p.bend) || p.rotation !== (((correct.pages[i]?.rotation ?? 0) % 4) + 4) % 4)
+      if (edited && !(await confirmDialog({ title: 'Discard your corrections?', message: 'The file stays as it was.', confirmLabel: 'Discard', danger: true }))) return
+      return onCancel()
+    }
     if (pagesRef.current.length && !(await confirmDialog({ title: 'Discard this scan?', message: 'The pages of this scan will be lost.', confirmLabel: 'Discard', danger: true })))
       return
     onCancel()
   }
 
+  const saveBusy = useRef(false)
+  const saveCorrections = async (session: CorrectSession) => {
+    if (saveBusy.current) return
+    saveBusy.current = true
+    const ps = pagesRef.current
+    try {
+      const ok = await session.save({
+        edits: ps.map((p) => ({ quad: p.quad, bend: p.bend, rotation: p.rotation, ready: p.status === 'ready' })),
+        params,
+        exportPage: (i, extra) => scanEngine.exportPage(ps[i].id, { ...params, quad: ps[i].quad, bend: ps[i].bend, rotation: 0, ...extra }),
+        progress: (done, total) => setSaving({ done, total }),
+      })
+      if (!ok) setSaving(null)
+    } catch (e) {
+      console.error(e)
+      toast(`Couldn't save the corrected pages: ${(e as Error).message}`, 'error')
+      setSaving(null)
+    } finally {
+      saveBusy.current = false
+    }
+  }
+
   const save = async () => {
+    if (correct) return saveCorrections(correct)
     const ready = pages.filter((p) => p.status === 'ready')
     if (!ready.length) return
     const bad = pages.filter((p) => p.status === 'error').length
@@ -205,7 +296,7 @@ export function Scanner({ title = 'Scan sheet music', onDone, onCancel }: { titl
     try {
       const out: EncodedPage[] = []
       for (const p of ready) {
-        out.push(await scanEngine.exportPage(p.id, { ...params, quad: p.quad, rotation: p.rotation }))
+        out.push(await scanEngine.exportPage(p.id, { ...params, quad: p.quad, rotation: p.rotation, bend: p.bend }))
         setSaving({ done: out.length, total: ready.length })
       }
       const name = scanName()
@@ -231,7 +322,7 @@ export function Scanner({ title = 'Scan sheet music', onDone, onCancel }: { titl
       actions={
         mode === 'edit' && (
           <Button variant="primary" onClick={save} disabled={!ready || loading || !!saving} icon={<Check className="size-4" />}>
-            Save PDF
+            {correct ? correct.saveLabel : 'Save PDF'}
           </Button>
         )
       }
@@ -301,14 +392,22 @@ export function Scanner({ title = 'Scan sheet music', onDone, onCancel }: { titl
           params={params}
           setParams={setParams}
           onQuad={(q) => patch(page.id, { quad: q })}
+          onBend={(bend) => patch(page.id, { bend })}
           onRotate={() => patch(page.id, { rotation: (page.rotation + 1) % 4 })}
           onRetake={() => retake(page.id)}
           onDelete={() => remove(page.id)}
-          canRetake={cameraOk || isTouch()}
+          canRetake={!correct && (cameraOk || isTouch())}
+          correcting={!!correct}
         />
       )}
       {mode === 'edit' && (
-        <PageStrip pages={pages} selected={page?.id ?? null} onSelect={setSel} onReorder={(from, to) => setPages((ps) => moveItem(ps, from, to))} onAdd={addMore} />
+        <PageStrip
+          pages={pages}
+          selected={page?.id ?? null}
+          onSelect={setSel}
+          onReorder={correct ? undefined : (from, to) => setPages((ps) => moveItem(ps, from, to))}
+          onAdd={correct ? undefined : addMore}
+        />
       )}
       <ThumbRenderer pages={pages} params={params} onThumb={(id, thumb) => patch(id, { thumb })} />
 
@@ -316,7 +415,7 @@ export function Scanner({ title = 'Scan sheet music', onDone, onCancel }: { titl
         <div className="absolute inset-0 z-10 flex items-center justify-center bg-black/50">
           <div className="flex items-center gap-3 rounded-xl bg-surface px-5 py-4 text-sm shadow-xl" role="status">
             <Loader2 className="size-5 animate-spin text-accent" />
-            {saving.done < saving.total ? `Processing page ${saving.done + 1} of ${saving.total}…` : 'Creating PDF…'}
+            {saving.done < saving.total ? `${correct ? 'Correcting' : 'Processing'} page ${saving.done + 1} of ${saving.total}…` : correct ? 'Replacing the file…' : 'Creating PDF…'}
           </div>
         </div>
       )}
@@ -516,10 +615,12 @@ function EditStage({
   params,
   setParams,
   onQuad,
+  onBend,
   onRotate,
   onRetake,
   onDelete,
   canRetake,
+  correcting = false,
 }: {
   page: Page
   view: View
@@ -527,22 +628,51 @@ function EditStage({
   params: FilterParams
   setParams: (p: FilterParams) => void
   onQuad: (q: Quad) => void
+  onBend: (b: Bend) => void
   onRotate: () => void
   onRetake: () => void
   onDelete: () => void
   canRetake: boolean
+  /** Pages of an existing file: they can't be deleted. */
+  correcting?: boolean
 }) {
   const set = (p: Partial<FilterParams>) => setParams({ ...params, ...p })
+  // Curvature from the staff lines: only on request, and only applied if the page and corners haven't moved meanwhile.
+  const [bending, setBending] = useState(false)
+  const latest = useRef(page)
+  useLayoutEffect(() => {
+    latest.current = page
+  })
+  const findCurve = async () => {
+    const { id, quad, rotation, bend } = page
+    setBending(true)
+    try {
+      const est = await scanEngine.estimateBend(id, quad, rotation, bend)
+      const now = latest.current
+      if (now.id !== id || now.quad !== quad || now.rotation !== rotation || now.bend !== bend) return
+      if (!est) toast("Couldn't measure the curve: it needs clear staff lines and corners placed on the paper's corners. You can pull the small dots onto the page edges instead.")
+      else {
+        onBend(est.bend)
+        if (est.flat) toast('The staff lines already look straight')
+      }
+    } catch {
+      toast("Couldn't measure the curve", 'error')
+    } finally {
+      setBending(false)
+    }
+  }
   return (
     <>
       <div className="relative min-h-0 flex-1 bg-surface-2">
-        {page.status === 'loading' && <Spinner label="Reading photo…" />}
+        {page.status === 'loading' && <Spinner label={correcting ? 'Reading page…' : 'Reading photo…'} />}
         {page.status === 'error' && (
-          <div className="flex h-full items-center justify-center p-6 text-center text-sm text-muted">This photo couldn't be read. {canRetake ? 'Retake it or delete the page.' : 'Delete the page, or add another photo.'}</div>
+          <div className="flex h-full items-center justify-center p-6 text-center text-sm text-muted">
+            {correcting ? "This page couldn't be read here. It will be kept as it is." : <>This photo couldn't be read. {canRetake ? 'Retake it or delete the page.' : 'Delete the page, or add another photo.'}</>}
+          </div>
         )}
         {page.status === 'ready' &&
           (view === 'corners' ? (
-            <CornerEditor url={page.url} width={page.width} height={page.height} quad={page.quad} onChange={onQuad} />
+            <CornerEditor url={page.url} width={page.width} height={page.height} quad={page.quad} onChange={onQuad} bend={page.bend} onBendChange={onBend} rotation={page.rotation} />
           ) : (
             <ResultView page={page} params={params} />
           ))}
@@ -566,9 +696,11 @@ function EditStage({
               <Camera className="size-5" />
             </IconButton>
           )}
-          <IconButton label="Delete page" onClick={onDelete}>
-            <Trash2 className="size-5" />
-          </IconButton>
+          {!correcting && (
+            <IconButton label="Delete page" onClick={onDelete}>
+              <Trash2 className="size-5" />
+            </IconButton>
+          )}
         </div>
         {view === 'corners' ? (
           <div className="flex min-h-10 flex-wrap items-center gap-2">
@@ -576,14 +708,30 @@ function EditStage({
               size="sm"
               icon={<Wand2 className="size-4" />}
               disabled={page.status !== 'ready'}
-              onClick={() => (page.auto ? onQuad(page.auto) : toast("Couldn't find the page edges — drag the corners instead"))}
+              onClick={() => (page.auto ? (onQuad(page.auto), onBend(NO_BEND)) : toast("Couldn't find the page edges — drag the corners instead"))}
             >
               Detect
             </Button>
-            <Button size="sm" icon={<Maximize className="size-4" />} disabled={page.status !== 'ready'} onClick={() => onQuad(FULL_QUAD)}>
-              Whole photo
+            <Button size="sm" icon={<Maximize className="size-4" />} disabled={page.status !== 'ready'} onClick={() => (onQuad(FULL_QUAD), onBend(NO_BEND))}>
+              {correcting ? 'Whole page' : 'Whole photo'}
             </Button>
-            <span className="text-xs text-muted max-sm:hidden">Drag the handles onto the corners of the paper.</span>
+            <Button
+              size="sm"
+              icon={bending ? <Loader2 className="size-4 animate-spin" /> : <Spline className="size-4" />}
+              disabled={page.status !== 'ready' || bending}
+              onClick={findCurve}
+              title="Bend the top and bottom edges to straighten the staff lines (sheet music only)"
+              aria-label="Find curve"
+            >
+              <span className="max-sm:hidden">Find curve</span>
+            </Button>
+            {!isStraight(page.bend) && (
+              // Icon-only on phones so it fits the existing row: a new row would shrink the photo mid-drag.
+              <Button size="sm" icon={<Undo2 className="size-4" />} onClick={() => onBend(NO_BEND)} title="Make the page edges straight again" aria-label="Straight edges">
+                <span className="max-sm:hidden">Straight edges</span>
+              </Button>
+            )}
+            <span className="text-xs text-muted max-sm:hidden">Drag the corners onto the paper. Curved page? Pull the small dots onto its edge.</span>
           </div>
         ) : (
           <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
@@ -631,7 +779,7 @@ function ResultView({ page, params }: { page: Page; params: FilterParams }) {
   const [zoom, setZoom] = useState(false)
   const [bmp, setBmp] = useState<ImageBitmap | null>(null)
   const [boxSize, setBoxSize] = useState({ w: 0, h: 0 })
-  const want = useMemo<{ id: string; p: RenderParams }>(() => ({ id: page.id, p: { ...params, quad: page.quad, rotation: page.rotation } }), [page.id, page.quad, page.rotation, params])
+  const want = useMemo<{ id: string; p: RenderParams }>(() => ({ id: page.id, p: { ...params, quad: page.quad, rotation: page.rotation, bend: page.bend } }), [page.id, page.quad, page.rotation, page.bend, params])
   const wantRef = useRef(want)
   const running = useRef(false)
   const again = useRef(false)
@@ -731,10 +879,11 @@ function PageStrip({
   pages: Page[]
   selected: string | null
   onSelect: (id: string) => void
-  onReorder: (from: number, to: number) => void
-  onAdd: () => void
+  /** Absent: the order is fixed (correcting a file's pages). */
+  onReorder?: (from: number, to: number) => void
+  onAdd?: () => void
 }) {
-  const sort = useDragSort(onReorder, { longPress: true })
+  const sort = useDragSort(onReorder ?? (() => {}), { longPress: true })
   return (
     <div data-bottom-bar className="shrink-0 border-t border-line bg-surface" style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}>
       <ol ref={sort.ref} className="flex gap-2 overflow-x-auto px-3 py-2" aria-label="Scanned pages">
@@ -742,7 +891,7 @@ function PageStrip({
           <li key={p.id} data-sort-index={i} className="shrink-0">
             <button
               type="button"
-              onPointerDown={sort.onPointerDown(i)}
+              onPointerDown={onReorder && sort.onPointerDown(i)}
               onClick={() => onSelect(p.id)}
               aria-label={`Page ${i + 1}`}
               aria-current={p.id === selected ? 'true' : undefined}
@@ -757,16 +906,18 @@ function PageStrip({
             </button>
           </li>
         ))}
-        <li className="shrink-0">
-          <button
-            type="button"
-            onClick={onAdd}
-            className="flex h-[76px] w-14 flex-col items-center justify-center gap-1 rounded-md border-2 border-dashed border-line text-muted transition hover:border-accent hover:text-accent"
-          >
-            <Plus className="size-5" />
-            <span className="text-[10px] font-medium">Add</span>
-          </button>
-        </li>
+        {onAdd && (
+          <li className="shrink-0">
+            <button
+              type="button"
+              onClick={onAdd}
+              className="flex h-[76px] w-14 flex-col items-center justify-center gap-1 rounded-md border-2 border-dashed border-line text-muted transition hover:border-accent hover:text-accent"
+            >
+              <Plus className="size-5" />
+              <span className="text-[10px] font-medium">Add</span>
+            </button>
+          </li>
+        )}
       </ol>
     </div>
   )
@@ -798,7 +949,7 @@ function ThumbRenderer({ pages, params, onThumb }: { pages: Page[]; params: Filt
           const now = latest.current.pages.find((p) => p.id === todo!.id)
           if (!now || key(now, latest.current.params) !== k) continue
           try {
-            const bmp = await scanEngine.render(now.id, { ...latest.current.params, quad: now.quad, rotation: now.rotation }, 520)
+            const bmp = await scanEngine.render(now.id, { ...latest.current.params, quad: now.quad, rotation: now.rotation, bend: now.bend }, 520)
             const c = document.createElement('canvas')
             c.width = bmp.width
             c.height = bmp.height
@@ -821,4 +972,4 @@ function ThumbRenderer({ pages, params, onThumb }: { pages: Page[]; params: Filt
   return null
 }
 
-const key = (p: Page, pr: FilterParams) => JSON.stringify([p.quad, p.rotation, pr])
+const key = (p: Page, pr: FilterParams) => JSON.stringify([p.quad, p.rotation, pr, isStraight(p.bend) ? null : p.bend])

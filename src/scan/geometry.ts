@@ -203,3 +203,62 @@ export function outputSize(q: Quad, imgW: number, imgH: number, maxLong: number,
   const long = Math.round(Math.max(minLong, Math.min(maxLong, measured)))
   return ratio >= 1 ? { w: long, h: Math.max(1, Math.round(long / ratio)), ratio } : { w: Math.max(1, Math.round(long * ratio)), h: long, ratio }
 }
+
+// ---------------------------------------------------------------------------------------------
+// Curvature ("bend") of the paper edges, for pages of a bound book that bow towards the spine.
+
+/**
+ * How far each side of the paper bows away from the straight line between its corners.
+ * bend[i] belongs to the side from corner i to corner (i+1)%4: top, right, bottom, left in Quad order
+ * (Quad is TL, TR, BR, BL). Each entry holds offsets at BEND_POINTS evenly spaced interior points
+ * (t = k/(BEND_POINTS+1), k = 1..BEND_POINTS, running from corner i towards corner i+1), measured in the
+ * rectified unit square (the quad's homography maps it onto [0,1]²), perpendicular to the side,
+ * positive = outwards (away from the page centre). An empty array means a straight side.
+ */
+export type Bend = [number[], number[], number[], number[]]
+export const NO_BEND: Bend = Object.freeze([0, 1, 2, 3].map(() => Object.freeze([]))) as unknown as Bend
+/** Two interior points (t = 1/3, 2/3): enough for an asymmetric bow, and clear of the side-midpoint handles. */
+export const BEND_POINTS = 2
+
+export function isStraight(b: Bend | undefined): boolean {
+  return !b || b.every((s) => s.every((v) => v === 0))
+}
+
+/**
+ * Lagrange weights at t for the interior knots of an n-point side (knots 0, 1/(n+1), …, 1 with zero ends):
+ * bendAt(values, t) = Σ w[k]·values[k]. A single polynomial through the points: smooth and linear in values.
+ */
+export function bendWeights(n: number, t: number, out: number[] = new Array<number>(n)): number[] {
+  const m = n + 1
+  for (let k = 1; k <= n; k++) {
+    let w = 1
+    for (let j = 0; j <= m; j++) if (j !== k) w *= (t * m - j) / (k - j)
+    out[k - 1] = w
+  }
+  return out
+}
+
+/** Offset along one side at t in [0,1]; 0 at both ends; passes through the control values; linear in values. */
+export function bendAt(values: readonly number[], t: number): number {
+  const n = values.length
+  if (!n) return 0
+  const w = bendWeights(n, t)
+  let s = 0
+  for (let k = 0; k < n; k++) s += w[k] * values[k]
+  return s
+}
+
+/** Where the flat page point (u,v) in [0,1]² sits in the rectified unit square of the quad. */
+export function bendPoint(bend: Bend, u: number, v: number): Pt {
+  const T = bendAt(bend[0], u)
+  const R = bendAt(bend[1], v)
+  const B = bendAt(bend[2], 1 - u)
+  const L = bendAt(bend[3], 1 - v)
+  return { x: u + u * R - (1 - u) * L, y: v - (1 - v) * T + v * B }
+}
+
+/** Same index shift as rotateQuad, so a bend follows its quad through quarter turns. */
+export function rotateBend(b: Bend, quarterTurns: number): Bend {
+  const k = ((quarterTurns % 4) + 4) % 4
+  return [0, 1, 2, 3].map((i) => [...b[(i - k + 4) % 4]]) as Bend
+}

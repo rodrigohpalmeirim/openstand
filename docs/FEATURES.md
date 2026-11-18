@@ -29,6 +29,9 @@ workspace). This table tracks where OpenStand stands. ✅ = implemented, ◐ = p
 | Title/caption format templates | — | Captions show configurable fields; numbers or keys can go in the title itself |
 | Find missing files / fix broken paths | ◐ | Files live inside the app, so paths can't break |
 | Camera scanning: multi-page, corner adjustment, perspective correction, colour / grey / clean B&W | ✅ | Existing photos work too |
+| Curvature correction for pages of bound books | ✅ | Bend the top and bottom edges onto the paper; "Find curve" estimates the bend from the staff lines (5-line staves, needs well-placed corners) |
+| Image correction of existing PDF / image files | ✅ | "Correct pages" in the Files tab: outline, rotation and filter per page. Untouched pages stay as they are; changed pages become images |
+| Sharpen (per song) | — | PDFs render at screen resolution; the clean B&W filter does more for faint scans |
 | Combine a song's files into one PDF | ✅ | Keeps crop, rotation and annotations |
 | Convert PDF to images | — | Not needed: PDFs render directly |
 | Cloud providers (Dropbox, Drive, OneDrive, Nextcloud) | ◐ | Dropbox, Google Drive and OneDrive for library sync; importing from them uses the OS file picker / File System Access |

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { applyH, homography, type Quad } from './geometry'
+import { applyH, bendPoint, FULL_QUAD, homography, NO_BEND, type Bend, type Quad } from './geometry'
 import { cleanBW, cleanGrey, despeckle, flatten, packBits, toGrey, warpPerspective, type Rgba } from './image'
 
 function rgba(w: number, h: number, f: (x: number, y: number) => number): Rgba {
@@ -61,6 +61,77 @@ describe('warpPerspective', () => {
     let wrong = 0
     for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) if (Math.abs(out.data[(y * W + x) * 4] - page(x + 0.5, y + 0.5)) > 128) wrong++
     expect(wrong / (W * H)).toBeLessThan(0.03)
+  })
+})
+
+describe('warpPerspective with bent edges', () => {
+  const quad: Quad = [
+    { x: 70, y: 90 },
+    { x: 420, y: 70 },
+    { x: 450, y: 540 },
+    { x: 40, y: 520 },
+  ]
+  // A book page: top and bottom bow towards the spine on the left, unevenly.
+  const bend: Bend = [[0.07, 0.035], [], [0.02, 0.06], []]
+  const W = 300
+  const H = 400
+  const LINES = [0.12, 0.25, 0.4, 0.55, 0.7, 0.85].map((v) => v * H)
+
+  /** Photograph straight horizontal lines on a curved page: plot each line through the forward model. */
+  function bentPhoto() {
+    const pw = 500
+    const ph = 620
+    const ink = new Float32Array(pw * ph)
+    const h = homography(FULL_QUAD, quad)!
+    for (const ly of LINES)
+      for (let s = 0; s <= W * 6; s++) {
+        const p = applyH(h, bendPoint(bend, s / (W * 6), ly / H))
+        // A ~3px wide anti-aliased stroke.
+        for (let y = Math.floor(p.y - 3); y <= p.y + 3; y++)
+          for (let x = Math.floor(p.x - 3); x <= p.x + 3; x++) {
+            const d = Math.hypot(x + 0.5 - p.x, y + 0.5 - p.y)
+            const a = Math.max(0, Math.min(1, 2.5 - d))
+            if (a > ink[y * pw + x]) ink[y * pw + x] = a
+          }
+      }
+    return rgba(pw, ph, (x, y) => 240 - 220 * ink[y * pw + x])
+  }
+
+  /** Darkness-weighted centre of each line in every column of the output; returns the worst deviation. */
+  function worstDeviation(out: Rgba) {
+    let worst = 0
+    for (let x = 6; x < W - 6; x += 3)
+      for (const ly of LINES) {
+        let sw = 0
+        let sy = 0
+        for (let y = Math.round(ly - 12); y <= ly + 12; y++) {
+          const w = Math.max(0, 200 - out.data[(y * W + x) * 4])
+          sw += w
+          sy += w * (y + 0.5)
+        }
+        worst = Math.max(worst, sw ? Math.abs(sy / sw - ly) : Infinity)
+      }
+    return worst
+  }
+
+  it('straightens lines on a curved page to within a pixel', () => {
+    const photo = bentPhoto()
+    expect(worstDeviation(warpPerspective(photo, quad, W, H))).toBeGreaterThan(5) // the bend is real
+    expect(worstDeviation(warpPerspective(photo, quad, W, H, bend))).toBeLessThan(1)
+  })
+
+  it('takes the straight path, bit for bit, when there is no bend', () => {
+    const photo = bentPhoto()
+    const plain = warpPerspective(photo, quad, W, H)
+    // Compared in a loop: toEqual on half a million bytes is slow enough to time out under a loaded suite.
+    const differs = (a: Uint8ClampedArray) => a.length !== plain.data.length || a.some((v, i) => v !== plain.data[i])
+    expect(differs(warpPerspective(photo, quad, W, H, NO_BEND).data)).toBe(false)
+    expect(differs(warpPerspective(photo, quad, W, H, [[0, 0], [], [0, 0], []]).data)).toBe(false)
+    // A vanishing bend through the curved path lands on the same pixels (to rounding).
+    const tiny = warpPerspective(photo, quad, W, H, [[1e-12, 0], [], [], []]).data
+    let maxDiff = 0
+    for (let i = 0; i < tiny.length; i++) maxDiff = Math.max(maxDiff, Math.abs(tiny[i] - plain.data[i]))
+    expect(maxDiff).toBeLessThanOrEqual(1)
   })
 })
 

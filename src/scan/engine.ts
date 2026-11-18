@@ -1,5 +1,7 @@
 /** Main-thread client for the scan processor: a worker when possible, in-process otherwise. */
 import type { EncodedPage } from './pdf'
+import type { BendEstimate } from './dewarp'
+import type { Bend, Quad } from './geometry'
 import type { LoadResult, RenderParams, Request } from './processor'
 
 type Pending = { resolve: (v: unknown) => void; reject: (e: Error) => void }
@@ -78,4 +80,6 @@ export const scanEngine = {
   render: (page: string, params: RenderParams, maxLong: number) => call<ImageBitmap>({ op: 'render', page, params, maxLong }),
   exportPage: (page: string, params: RenderParams) => call<EncodedPage>({ op: 'export', page, params }),
   drop: (page: string) => void call<null>({ op: 'drop', page }).catch(() => {}),
+  /** Estimated page curvature from the staff lines, for the quad as given (null = not confident). */
+  estimateBend: (page: string, quad: Quad, rotation: number, bend?: Bend) => call<BendEstimate | null>({ op: 'bend', page, quad, rotation, bend }),
 }

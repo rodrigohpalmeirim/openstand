@@ -19,6 +19,7 @@ import {
   RotateCw,
   ScanLine,
   Trash2,
+  Wand2,
 } from 'lucide-react'
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react'
 import type { FileKind, Song, SongFile } from '../../db/schema'
@@ -33,6 +34,7 @@ import { useTerms } from '../browse/terms'
 import type { SongPatch } from './FieldsTab'
 import { formatPageOrder, normalizePageOrder, parsePageOrder } from './pageOrder'
 import { PageThumb } from './PageThumb'
+import { correctable, useCorrectPages } from './correctPages'
 import { Section } from './Sheet'
 import { addFiles, formatBytes, pageKey, removeFile, reorderFiles, replaceFile, rotatePages, tidySettings } from './songEdit'
 import { moveItem, useDragSort } from './useDragSort'
@@ -65,6 +67,7 @@ export function FilesTab({
   const [combining, setCombining] = useState(false)
   const capitalize = useSettings((s) => s.s.editor.capitalizeWords)
   const terms = useTerms()
+  const corrector = useCorrectPages(song, update)
 
   // Takes a copy: clearing the input's value empties its live FileList (Chromium) mid-loop.
   const add = async (list: File[]) => {
@@ -216,6 +219,7 @@ export function FilesTab({
                   replaceInput.current?.click()
                 }}
                 onRemove={() => update((s) => removeFile(s, f.id))}
+                onCorrect={correctable(f) ? () => corrector.start(f) : undefined}
               />
             ))}
           </ul>
@@ -226,7 +230,7 @@ export function FilesTab({
         <Section
           title={`Pages (${totalPages})`}
           actions={
-            <div className="flex gap-2">
+            <div className="flex flex-wrap gap-2">
               <Button size="sm" variant="ghost" onClick={onPageOrder} icon={<LayoutGrid className="size-4" />}>
                 Arrange
               </Button>
@@ -234,6 +238,7 @@ export function FilesTab({
                 Crop
               </Button>
               <AutoCropMenu song={song} update={update} />
+              <CorrectButton files={song.files.filter(correctable)} busy={corrector.busy} onStart={corrector.start} />
             </div>
           }
         >
@@ -241,6 +246,7 @@ export function FilesTab({
           <PageStrip song={song} update={update} onCrop={onCrop} />
         </Section>
       )}
+      {corrector.dialog}
     </div>
   )
 }
@@ -255,6 +261,7 @@ function FileRow({
   onRename,
   onReplace,
   onRemove,
+  onCorrect,
 }: {
   file: SongFile
   index: number
@@ -265,6 +272,8 @@ function FileRow({
   onRename: () => void
   onReplace: () => void
   onRemove: () => void
+  /** Image correction (PDF and image files). */
+  onCorrect?: () => void
 }) {
   const m = useMenu()
   const terms = useTerms()
@@ -306,6 +315,7 @@ function FileRow({
         items={[
           { label: 'Rename', icon: <Pencil className="size-4" />, onSelect: onRename },
           { label: 'Replace with another file…', icon: <Replace className="size-4" />, onSelect: onReplace },
+          ...(onCorrect ? [{ label: 'Correct pages…', icon: <Wand2 className="size-4" />, hint: 'Straighten, rotate, clean up', onSelect: onCorrect }] : []),
           { divider: true, label: '' },
           { label: 'Move up', icon: <ArrowUp className="size-4" />, disabled: index === 0, onSelect: () => onMove(-1) },
           { label: 'Move down', icon: <ArrowDown className="size-4" />, disabled: index === count - 1, onSelect: () => onMove(1) },
@@ -414,6 +424,35 @@ function PageStrip({ song, update, onCrop }: { song: Song; update: (p: SongPatch
         })}
       </ol>
     </div>
+  )
+}
+
+/** Image correction of a PDF/image file: opens directly with one such file, else asks which. */
+function CorrectButton({ files, busy, onStart }: { files: SongFile[]; busy: boolean; onStart: (f: SongFile) => void }) {
+  const m = useMenu()
+  if (!files.length) return null
+  return (
+    <>
+      <Button
+        size="sm"
+        variant="ghost"
+        ref={m.ref}
+        disabled={busy}
+        onClick={files.length === 1 ? () => onStart(files[0]) : m.toggle}
+        icon={<Wand2 className="size-4" />}
+        title="Straighten, rotate and clean up the pages of a PDF or image (image correction)"
+      >
+        Correct pages
+      </Button>
+      {files.length > 1 && (
+        <Menu
+          anchor={m.anchor}
+          open={m.open}
+          onClose={m.close}
+          items={files.map((f) => ({ label: f.name, icon: <KindIcon kind={f.kind} className="size-4" />, hint: `${f.pageCount} page${f.pageCount === 1 ? '' : 's'}`, onSelect: () => onStart(f) }))}
+        />
+      )}
+    </>
   )
 }
 
