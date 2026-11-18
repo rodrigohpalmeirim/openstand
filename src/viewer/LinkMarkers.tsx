@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react'
+import { usePen } from '../annotations/pen'
 import type { Song } from '../db/schema'
 import { useSettings } from '../state/settings'
 import { runAction } from './actions'
@@ -19,6 +20,11 @@ export function LinkMarkers({ song, pageIndex, onFollow }: { song: Song; pageInd
   const night = useSettings((st) => st.s.display.nightMode)
   const lp = useSettings((st) => st.s.linkPoints)
   const ref = useStopStagePointer<HTMLDivElement>()
+  // Fingers and the mouse follow links and press smart buttons. A pen never does: a stroke that starts on
+  // a marker draws (the annotation layer takes it first). While a pen is present, touches on the page are
+  // a resting hand, so the markers let them through to be ignored like the rest of the page.
+  const palm = useSettings((st) => st.s.annotations.palmRejection)
+  const tappable = !usePen((p) => p.present && palm) ? 'pointer-events-auto' : 'pointer-events-none'
 
   const froms = song.links.map((l, i) => ({ l, i })).filter(({ l }) => l.from.pageIndex === pageIndex)
   const tos = lp.showDestinations || pick ? song.links.map((l, i) => ({ l, i })).filter(({ l }) => l.to.pageIndex === pageIndex) : []
@@ -48,7 +54,7 @@ export function LinkMarkers({ song, pageIndex, onFollow }: { song: Song; pageInd
           title={l.label || `To page ${l.to.pageIndex + 1}`}
           disabled={!!pick}
           onClick={() => followLink(song, i, onFollow)}
-          className="pointer-events-auto absolute flex items-center justify-center rounded-full border-2 border-white text-xs font-bold text-white shadow-md transition active:scale-90"
+          className={`${tappable} absolute flex items-center justify-center rounded-full border-2 border-white text-xs font-bold text-white shadow-md transition active:scale-90`}
           style={{
             left: `${l.from.x * 100}%`,
             top: `${l.from.y * 100}%`,
@@ -75,7 +81,7 @@ export function LinkMarkers({ song, pageIndex, onFollow }: { song: Song; pageInd
           type="button"
           disabled={!!pick}
           onClick={() => void runSmartButton(song, b)}
-          className={`pointer-events-auto absolute max-w-[40%] truncate rounded-full border border-white/70 bg-[var(--os-accent)] font-semibold text-[var(--os-accent-fg)] shadow-lg transition active:scale-95 ${BUTTON_SIZE[b.size ?? 'md']}`}
+          className={`${tappable} absolute max-w-[40%] truncate rounded-full border border-white/70 bg-[var(--os-accent)] font-semibold text-[var(--os-accent-fg)] shadow-lg transition active:scale-95 ${BUTTON_SIZE[b.size ?? 'md']}`}
           style={{ left: `${b.x * 100}%`, top: `${b.y * 100}%`, transform: 'translate(-50%,-50%)', opacity: 0.92 }}
         >
           {b.label || 'Button'}

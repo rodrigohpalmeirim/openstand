@@ -6,6 +6,7 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { ChordDiagram } from '../music/ChordDiagram'
 import { loadInstrument, lookupDiagram, type Diagram, type Shape } from '../music/diagrams'
+import { penWrites, touchBlockedByPen } from '../annotations/pen'
 import { settings } from '../state/settings'
 import { useViewer } from '../state/viewer'
 import { Popover } from '../ui/primitives'
@@ -26,7 +27,8 @@ function chordAt(x: number, y: number): HTMLElement | null {
 
 function onDown(e: PointerEvent) {
   downAt = null
-  if (!settings().text.diagramTap || useViewer.getState().annotating || e.button > 0) return
+  // A pen writes on the page, and a hand resting under it is not a tap: neither opens a chord diagram.
+  if (!settings().text.diagramTap || useViewer.getState().annotating || penWrites(e) || touchBlockedByPen(e) || e.button > 0) return
   const el = chordAt(e.clientX, e.clientY)
   if (!el) return
   e.stopPropagation()

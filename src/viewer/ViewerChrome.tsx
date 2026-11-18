@@ -19,6 +19,7 @@ import {
 } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { AnnotationToolbar } from '../annotations/AnnotationToolbar'
+import { PenPalette } from '../annotations/PenPalette'
 import { chordContext } from '../chordpro/render'
 import { formatKey, makeTransposer } from '../music/chords'
 import type { DisplayMode, Song } from '../db/schema'
@@ -117,6 +118,8 @@ export function ViewerChrome(props: Props) {
   const narrow = useNarrow()
   // While annotating on small screens the drawing area matters more than the title row.
   const compactAnnot = useMedia('(max-width: 639px), (max-height: 500px)') && v.annotating
+  // The full pen palette needs about 500 px; below that its least used controls fold into its menu.
+  const compactPalette = useMedia('(max-width: 519px)')
   const keyText = useMemo(() => keyLabel(song, pages), [song, pages])
   const showChrome = v.toolbar || v.annotating
 
@@ -311,6 +314,9 @@ export function ViewerChrome(props: Props) {
           </div>
         </div>
       )}
+
+      {/* Quick palette while a pen is near (reading mode); floats over the page */}
+      <PenPalette compact={compactPalette} />
 
       {scrub && pages[scrub.index] && <PagePreview dp={pages[scrub.index]} index={scrub.index} total={pages.length} left={scrub.left} />}
 

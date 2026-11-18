@@ -41,12 +41,12 @@ workspace). This table tracks where OpenStand stands. ✅ = implemented, ◐ = p
 | Feature | Status | Notes |
 | --- | --- | --- |
 | Single page, two pages (2-page / 1-page / alternate turns), half-page turns, vertical scroll | ✅ | Plus horizontal scroll |
-| Fit page / width / height, pinch zoom, two-finger reset | ✅ | |
+| Fit page / width / height, pinch zoom | ✅ | "Reset zoom" is an action for any gesture or key |
 | Per-song display overrides, separate landscape default | ✅ | |
 | Night mode, page colour tones, dimming | ✅ | |
 | Page turn animation (or none) | ✅ | Slide, fade |
-| Touch zones, swipes, double tap, long press, two/three-finger taps → configurable actions | ✅ | 3×3 zone grid |
-| Bluetooth pedals / keyboard with tap + long-press bindings, presets, debounce | ✅ | Pedals that emulate a keyboard |
+| Touch zones, swipes, double tap, long press, two/three-finger taps → configurable actions | ✅ | 3×3 zone grid. Two/three-finger taps undo/redo annotations by default. All of them also work in Annotate mode with "stylus only" |
+| Bluetooth pedals / keyboard with tap + long-press bindings, presets, debounce | ✅ | Pedals that emulate a keyboard. They keep working while annotating |
 | AirTurn Direct Mode (BLE) | — | Not possible from a browser |
 | Face gestures (wink, smile, head turn/tilt, eyebrows, mouth, lips) | ✅ | All 11, each mapped to any action, with a live tuning view |
 | Setlist navigation, next-up hint, setlist panel | ✅ | |
@@ -65,11 +65,13 @@ workspace). This table tracks where OpenStand stands. ✅ = implemented, ◐ = p
 
 | Feature | Status | Notes |
 | --- | --- | --- |
+| A pen writes while reading, no mode switch | ✅ | Fingers, pedals and keys keep navigating. A quick palette wakes when the pen hovers or touches and sleeps a few seconds after it was last seen (the tool goes back to the pen). Off under performance lock |
+| Annotate mode (full toolbar) for finger and mouse drawing | ✅ | "Stylus only" leaves fingers to navigate there too |
 | Pen (pressure), highlighter, eraser (stroke-partial / object / box) | ✅ | |
 | Line, arrow, rectangle, ellipse, crescendo/decrescendo, text, stamps | ✅ | Stamps are original SVG artwork |
 | Select, lasso, move, resize, recolour, copy/paste | ✅ | |
-| Layers, presets/favorites, undo/redo | ✅ | |
-| Stylus-only mode, palm rejection, pen eraser button | ✅ | |
+| Layers, presets/favorites, undo/redo | ✅ | Undo and redo are actions for any gesture, key or pedal; the history lasts while the song is open |
+| Palm rejection, pen eraser button | ✅ | Touches on the page are ignored while a pen touches or hovers |
 | Export/print with annotations burned in | ✅ | |
 | Snipping tool, piano staff, snap to grid | ✅ | Snips work on every page type, not only PDFs |
 

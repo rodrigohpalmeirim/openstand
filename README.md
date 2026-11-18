@@ -17,9 +17,11 @@ modernised interface.
 - 🦶 **Hands-free page turning** — configurable 3×3 touch zones, swipes, keyboard and Bluetooth pedals
   (AirTurn, PageFlip, …) with tap and long-press bindings, MIDI messages, and face gestures (wink, smile,
   head turn/tilt and more, on-device).
-- ✍️ **Annotations** — pressure-sensitive pen, highlighter, shapes, piano staves, text, musical stamps,
-  eraser, selection, snap to grid, layers, undo/redo; a snipping tool to copy bars between pages;
-  stylus-only mode.
+- ✍️ **Annotations** — a pen writes straight on the page while you read, with a small palette that
+  appears when the pen comes near; fingers, pedals and keys keep turning pages. Annotate mode adds
+  finger and mouse drawing. Pressure-sensitive pen, highlighter, shapes, piano staves, text, musical
+  stamps, eraser, selection, snap to grid, layers, undo/redo (two- and three-finger tap); a snipping
+  tool to copy bars between pages; palm rejection.
 - 🎸 **Chord sheets** — ChordPro rendering with transposition (key-aware spelling), capo, chord naming
   systems (English, German, Czech, Scandinavian, Latin, Nashville), chord diagrams, column layout and an
   editor with live preview. ABC notation rendering and playback.

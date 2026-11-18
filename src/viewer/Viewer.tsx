@@ -1,6 +1,8 @@
 import { useLiveQuery } from 'dexie-react-hooks'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
-import { AnnotationLayer } from '../annotations/AnnotationLayer'
+import { AnnotationLayer, type LayerInput } from '../annotations/AnnotationLayer'
+import { usePen, usePenPresence } from '../annotations/pen'
+import { flush as flushAnnotations, redo as redoAnnotation, resetHistory, undo as undoAnnotation, useAnnotUI } from '../annotations/store'
 import { AbcView } from '../abc/AbcView'
 import { textContainerStyle } from '../chordpro/render'
 import { db, recordPlay, updateSong } from '../db/db'
@@ -9,6 +11,7 @@ import { terms } from '../library/browse/terms'
 import { BlobPending } from '../libsync/ui/BlobPending'
 import { settings, useSettings } from '../state/settings'
 import { useViewer } from '../state/viewer'
+import { useTools } from '../tools/store'
 import { toast } from '../ui/primitives'
 import { registerActions, runAction } from './actions'
 import { setViewerApi, ZOOM_PREVIEW_ATTR } from './api'
@@ -179,7 +182,37 @@ export function Viewer() {
   }, [song, currentPage, pos])
 
   useWakeLock(s.display.keepScreenOn)
-  useKeyBindings(!annotating)
+  // Keys and pedals navigate in every state, also while marking up (the annotation toolbar claims its own hotkeys).
+  useKeyBindings()
+
+  // A pen always writes: it draws on the page while reading, and coming near wakes the quick palette.
+  // Not under performance lock, and not while a tap places a link point or smart button.
+  const picking = useTools((t) => !!t.pick)
+  const penInk = !s.display.performanceLock && !picking
+  usePenPresence(!!songId && penInk)
+  const penAwake = usePen((p) => p.awake)
+  // Palm rejection: while a pen is present, touches on the stage are ignored, so nothing may pan natively either.
+  const penBlocksTouch = usePen((p) => p.present) && s.annotations.palmRejection
+
+  // The undo history covers what was done since this song was opened.
+  useEffect(() => {
+    if (!songId) return
+    resetHistory()
+    return () => {
+      useAnnotUI.setState({ selection: null, tempEraser: false })
+      // Let an open text editor commit first.
+      setTimeout(() => {
+        useAnnotUI.setState({ editing: null })
+        void flushAnnotations()
+        resetHistory()
+      }, 20)
+    }
+  }, [songId])
+
+  // Performance lock ends the annotation mode too.
+  useEffect(() => {
+    if (s.display.performanceLock && annotating) setV({ annotating: false })
+  }, [s.display.performanceLock, annotating, setV])
 
   /* ------------------------------------------------------------ navigation */
 
@@ -417,9 +450,9 @@ export function Viewer() {
   useEffect(() => cancelPreview, [cancelPreview])
 
   useStageGestures(stageRef, {
-    enabled: !annotating,
-    pinchOnly: annotating,
-    fingerTurns: annotating && s.annotations.stylusOnly,
+    annotating,
+    stylusOnly: s.annotations.stylusOnly,
+    penInk,
     zoomed: zoom > 1.01,
     onPinch: (scale, cx, cy, sx, sy) => {
       if (pinchDead.current) return
@@ -513,11 +546,23 @@ export function Viewer() {
         zoomIn: () => locked() || setZoomNow((z) => Math.min(4, z * 1.25)),
         zoomOut: () => locked() || setZoomNow((z) => Math.max(1, z / 1.25)),
         resetZoom: () => setZoomNow(() => 1),
-        toggleToolbar: () => setV({ toolbar: !useViewer.getState().toolbar }),
+        // The bars can't hide while annotating; flipping the flag there would only surprise on the way out.
+        toggleToolbar: () => useViewer.getState().annotating || setV({ toolbar: !useViewer.getState().toolbar }),
         toggleAnnotations: () => setV({ hideAnnotations: !useViewer.getState().hideAnnotations }),
         toggleAnnotate: () => {
           if (s.display.performanceLock) return toast('Performance lock is on')
           setV({ annotating: !useViewer.getState().annotating, toolbar: true })
+        },
+        // Bound to gestures, keys and pedals: with nothing to undo or redo they stay silent.
+        undoAnnotation: () => {
+          if (locked()) return
+          const label = undoAnnotation()
+          if (label) toast(`Undid: ${label}`)
+        },
+        redoAnnotation: () => {
+          if (locked()) return
+          const label = redoAnnotation()
+          if (label) toast(`Redid: ${label}`)
         },
         goBack: () => {
           const v = useViewer.getState()
@@ -581,15 +626,17 @@ export function Viewer() {
   useEffect(() => {
     if (!s.display.hideCursor) return
     let t = window.setTimeout(() => setCursorHidden(true), 2500)
-    const onMove = () => {
+    // Pointer events, not mousemove: a hovering pen sends mousemove too, and it is not the mouse.
+    const onMove = (e: PointerEvent) => {
+      if (e.pointerType !== 'mouse') return
       setCursorHidden(false)
       clearTimeout(t)
       t = window.setTimeout(() => setCursorHidden(true), 2500)
     }
-    window.addEventListener('mousemove', onMove)
+    window.addEventListener('pointermove', onMove)
     return () => {
       clearTimeout(t)
-      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('pointermove', onMove)
     }
   }, [s.display.hideCursor])
 
@@ -607,8 +654,9 @@ export function Viewer() {
   // A scroller lets its children pan again whatever its ancestors say, so the stage's touch-action
   // doesn't reach the pages: their wrappers repeat it. Panning is left only along the axis that can
   // overflow, so swipes the other way reach the gesture handler instead of scrolling (pointercancel).
-  const contentTouch: CSSProperties['touchAction'] =
-    zoom > 1 ? 'pan-x pan-y' : !paged ? (mode === 'horizontalScroll' ? 'pan-x' : 'pan-y') : fit === 'width' ? 'pan-y' : fit === 'height' ? 'pan-x' : 'none'
+  const contentTouch: CSSProperties['touchAction'] = penBlocksTouch
+    ? 'none'
+    : zoom > 1 ? 'pan-x pan-y' : !paged ? (mode === 'horizontalScroll' ? 'pan-x' : 'pan-y') : fit === 'width' ? 'pan-y' : fit === 'height' ? 'pan-x' : 'none'
   const night = s.display.nightMode
   const stageBg = night ? '#000' : 'var(--os-stage, #1a1a1c)'
   const ctx: PageCtx = {
@@ -617,7 +665,9 @@ export function Viewer() {
     night,
     paper: s.display.paperTone,
     annotating,
-    showAnnotations: !hideAnnotations && (s.annotations.showWhilePerforming || annotating),
+    ink: annotating ? 'all' : penInk ? 'pen' : 'none',
+    // A pen in use shows the annotations even when they are hidden or not shown while performing.
+    showAnnotations: penAwake || (!hideAnnotations && (s.annotations.showWhilePerforming || annotating)),
     onFollowLink: (target) => {
       const v = useViewer.getState()
       setV({ linkReturn: [...v.linkReturn, v.position] })
@@ -627,7 +677,7 @@ export function Viewer() {
 
   return (
     <div className="fixed inset-0 z-40 flex flex-col bg-black text-white no-select" style={{ cursor: cursorHidden && !toolbar && !annotating ? 'none' : undefined, filter: s.display.brightness < 1 ? `brightness(${s.display.brightness})` : undefined }}>
-      <div ref={stageRef} className="relative min-h-0 flex-1 overflow-hidden" style={{ background: stageBg, touchAction: zoom > 1 || !paged || fit !== 'page' ? 'pan-x pan-y' : 'none' }}>
+      <div ref={stageRef} className="relative min-h-0 flex-1 overflow-hidden" style={{ background: stageBg, touchAction: !penBlocksTouch && (zoom > 1 || !paged || fit !== 'page') ? 'pan-x pan-y' : 'none' }}>
         {song && pages.length > 0 && box.width > 0 && (
           paged ? (
             <div ref={scrollRef} className="absolute inset-x-0 bottom-0 overflow-auto" style={{ scrollbarWidth: 'none', top: topInset, touchAction: contentTouch }}>
@@ -848,6 +898,8 @@ export interface PageCtx {
   night: boolean
   paper: string
   annotating: boolean
+  /** Who draws on the pages: everyone (annotation mode), only a pen (reading), nobody (performance lock). */
+  ink: LayerInput
   showAnnotations: boolean
   onFollowLink: (page: number) => void
 }
@@ -857,8 +909,15 @@ export function DisplayPageView({ dp, index, size, ctx, priority = true, clip }:
   // Annotations can be hidden while link points and smart buttons stay usable.
   const overlay = ctx.song ? (
     <>
-      {(ctx.showAnnotations || ctx.annotating) && (
-        <AnnotationLayer songId={ctx.song.id} fileId={dp.file.id} page={dp.type === 'file' ? dp.page : dp.type === 'text' ? 1000 + dp.page : dp.type === 'abc' ? 2000 + (dp.page ?? 0) : -1} editable={ctx.annotating} />
+      {/* Mounted whenever something can draw, also with the annotations hidden: the first pen contact must write. */}
+      {(ctx.showAnnotations || ctx.ink !== 'none') && (
+        <AnnotationLayer
+          songId={ctx.song.id}
+          fileId={dp.file.id}
+          page={dp.type === 'file' ? dp.page : dp.type === 'text' ? 1000 + dp.page : dp.type === 'abc' ? 2000 + (dp.page ?? 0) : -1}
+          input={ctx.ink}
+          show={ctx.showAnnotations || ctx.annotating}
+        />
       )}
       {!ctx.annotating && <LinkMarkers song={ctx.song} pageIndex={index} onFollow={ctx.onFollowLink} />}
     </>
@@ -986,7 +1045,7 @@ function Prefetch({ stops, pos, pages, box, fit, gap }: { stops: Stop[]; pos: nu
   const items = prefetchPages(stops, pos)
     .filter(({ page }) => pages[page]?.type === 'file')
     .map(({ stop, slot, page }) => ({ dp: pages[page], i: page, size: stopBoxes(stops[stop], pages, box, fit, gap, 1)[slot] }))
-  const ctx: PageCtx = { song: undefined, textLayoutWidth: 0, night: false, paper: 'white', annotating: false, showAnnotations: false, onFollowLink: () => {} }
+  const ctx: PageCtx = { song: undefined, textLayoutWidth: 0, night: false, paper: 'white', annotating: false, ink: 'none', showAnnotations: false, onFollowLink: () => {} }
   return (
     <div aria-hidden className="pointer-events-none fixed -left-[20000px] top-0 opacity-0">
       {items.map(({ dp, i, size }) => (

@@ -1,4 +1,6 @@
 import { useEffect, useRef } from 'react'
+import { touchBlockedByPen } from '../annotations/pen'
+import { useAnnotUI } from '../annotations/store'
 import { settings, type KeyBinding, type TouchZone } from '../state/settings'
 import { runAction, type ActionId } from './actions'
 
@@ -111,6 +113,16 @@ export const isTyping = (t: EventTarget | null) =>
 const physicalKey = (e: KeyboardEvent) => (e.code && e.code !== 'Unidentified' ? e.code : e.key)
 
 /**
+ * Keydowns another handler took for itself (the annotation toolbar's tool hotkeys, undo, nudging a
+ * selection): the binding for that key must not run as well. Claim from a listener that runs before the
+ * bindings' one, which is on the window in the bubble phase (so: on the document, or capturing).
+ */
+const claimedKeys = new WeakSet<KeyboardEvent>()
+export function claimKey(e: KeyboardEvent) {
+  claimedKeys.add(e)
+}
+
+/**
  * Keydown/keyup handlers for the bindings in settings. A key with both a press and a hold binding
  * waits: released before 500ms it runs the press action, held longer the hold action.
  */
@@ -118,7 +130,7 @@ export function keyBindingHandlers(run: (a: ActionId) => void = (a) => runAction
   // Keyed by physical key: the binding id of a modifier differs between its keydown ("Shift+ShiftLeft") and keyup ("ShiftLeft").
   const held = new Map<string, { timer: number; fired: boolean; short?: KeyBinding }>()
   const down = (e: KeyboardEvent) => {
-    if (isTyping(e.target)) return
+    if (isTyping(e.target) || claimedKeys.has(e)) return
     const id = keyId(e)
     const binds = settings().pageTurn.keys.filter((k) => k.key === id || k.key === e.key)
     if (!binds.length) return
@@ -153,7 +165,7 @@ export function keyBindingHandlers(run: (a: ActionId) => void = (a) => runAction
  * Keyboard / Bluetooth page-turner pedals. Most pedals (AirTurn, PageFlip, Donner, …) emulate a
  * keyboard sending arrow keys, PageUp/PageDown or Space. Long-press bindings fire after 500ms hold.
  */
-export function useKeyBindings(enabled: boolean) {
+export function useKeyBindings(enabled = true) {
   useEffect(() => {
     if (!enabled) return
     const { down, up, dispose } = keyBindingHandlers()
@@ -167,13 +179,42 @@ export function useKeyBindings(enabled: boolean) {
   }, [enabled])
 }
 
-interface GestureOpts {
-  /** Disabled while annotating so strokes don't turn pages. */
-  enabled: boolean
-  /** When disabled, still allow two-finger pinch zoom (used while annotating). */
-  pinchOnly?: boolean
-  /** When disabled, finger taps and swipes outside the page still turn pages (annotating with stylus only). */
-  fingerTurns?: boolean
+/** The viewer state that decides what a pointer on the stage may do. */
+export interface StageMode {
+  /** The full annotation mode (docked toolbar) is on. */
+  annotating: boolean
+  /** In the full mode only a pen draws; fingers keep navigating. */
+  stylusOnly: boolean
+  /** A pen writes on the pages (always, except under performance lock), so it never navigates. */
+  penInk: boolean
+}
+
+/**
+ * `full`: every binding (zone taps, swipes, double tap, long press, pinch, multi-finger taps) ·
+ * `multi`: only pinch and multi-finger taps, a single pointer belongs to the drawing · `none`: not a gesture.
+ */
+export type StageRole = 'full' | 'multi' | 'none'
+
+export function stageRole(pointerType: string, m: StageMode): StageRole {
+  if (pointerType === 'pen') return m.penInk || m.annotating ? 'none' : 'full'
+  if (!m.annotating) return 'full'
+  // Annotating: the mouse draws; fingers draw too unless only the pen does.
+  if (pointerType === 'touch') return m.stylusOnly ? 'full' : 'multi'
+  return 'none'
+}
+
+/**
+ * Pointers the stage must not read a gesture from: a palm, or a finger that scrolled the page by hand
+ * (the annotation layer does that while it holds touch-action, see `fingerMove` there).
+ */
+const deadPointers = new Set<number>()
+export function ignorePointer(pointerId: number) {
+  deadPointers.add(pointerId)
+}
+/** Forget a pointer that lifted, once everything handling this event has seen that it was dead. */
+const buryPointer = (pointerId: number) => deadPointers.has(pointerId) && queueMicrotask(() => deadPointers.delete(pointerId))
+
+interface GestureOpts extends StageMode {
   /** Current zoom; swipes are disabled when zoomed in so panning works. */
   zoomed: boolean
   /** `scale` is relative to the finger distance at the start; (sx, sy) is the start midpoint. */
@@ -182,8 +223,6 @@ interface GestureOpts {
   onPinchEnd?: () => void
 }
 
-const TURN_ACTION = /^(next|prev)(Page|OnePage|TwoPages|PageLoop|HalfPage|Song)$|^(first|last)Page$|^scroll(Up|Down)$|^activateLinkOrTurn$/
-
 /** Pointer gestures on the performance stage: zone taps, swipes, double tap, long press, pinch. */
 export function useStageGestures(ref: React.RefObject<HTMLElement | null>, opts: GestureOpts) {
   const o = useRef(opts)
@@ -191,8 +230,8 @@ export function useStageGestures(ref: React.RefObject<HTMLElement | null>, opts:
   useEffect(() => {
     const el = ref.current
     if (!el) return
-    // `turn`: this pointer may fire tap/swipe actions (always, unless the stage is disabled).
-    const pts = new Map<number, { x: number; y: number; t: number; sx: number; sy: number; turn: boolean }>()
+    // `single`: this pointer may fire tap/swipe/long-press actions. `dead`: it turned out not to be a gesture.
+    const pts = new Map<number, { x: number; y: number; t: number; sx: number; sy: number; single: boolean; dead: boolean }>()
     let pinchStart = 0
     let pinchMid = { x: 0, y: 0 }
     let longTimer = 0
@@ -213,13 +252,21 @@ export function useStageGestures(ref: React.RefObject<HTMLElement | null>, opts:
       pinchStart = 0
       o.current.onPinchEnd?.()
     }
+    /** Nothing that is down now is a gesture any more (a pen landed: those are palms). */
+    const killAll = () => {
+      clearTimeout(longTimer)
+      for (const p of pts.values()) p.dead = true
+      multiMoved = true
+      endPinch()
+    }
 
     const down = (e: PointerEvent) => {
-      const touch = e.pointerType === 'touch'
-      const fingerTurn = touch && !!o.current.fingerTurns && !(e.target instanceof Element && e.target.closest('[data-annot-key]'))
-      if (!o.current.enabled && !fingerTurn && !(o.current.pinchOnly && touch)) return
       if (e.pointerType === 'mouse' && e.button !== 0) return
-      pts.set(e.pointerId, { x: e.clientX, y: e.clientY, t: performance.now(), sx: e.clientX, sy: e.clientY, turn: o.current.enabled || fingerTurn })
+      const role = stageRole(e.pointerType, o.current)
+      // A palm or a touch under a present pen is ignored for good. So is a pointer while a text annotation
+      // is being typed: it places the caret or closes the text, and must not turn the page as well.
+      if (role === 'none' || deadPointers.has(e.pointerId) || touchBlockedByPen(e) || isTyping(e.target) || useAnnotUI.getState().editing) return
+      pts.set(e.pointerId, { x: e.clientX, y: e.clientY, t: performance.now(), sx: e.clientX, sy: e.clientY, single: role === 'full', dead: false })
       maxPts = Math.max(maxPts, pts.size)
       if (pts.size === 2) {
         multi = true
@@ -236,10 +283,11 @@ export function useStageGestures(ref: React.RefObject<HTMLElement | null>, opts:
         maxPts = 1
         longFired = false
         clearTimeout(longTimer)
-        if (!o.current.enabled) return
+        if (role !== 'full') return
+        const id = e.pointerId
         longTimer = window.setTimeout(() => {
           const lp = settings().pageTurn.longPress
-          if (lp !== 'none') {
+          if (lp !== 'none' && !deadPointers.has(id) && !pts.get(id)?.dead) {
             longFired = true
             fire(lp)
           }
@@ -264,15 +312,18 @@ export function useStageGestures(ref: React.RefObject<HTMLElement | null>, opts:
     const up = (e: PointerEvent) => {
       const p = pts.get(e.pointerId)
       pts.delete(e.pointerId)
-      clearTimeout(longTimer)
+      const dead = deadPointers.has(e.pointerId) || !!p?.dead
+      buryPointer(e.pointerId)
       if (!p) return
+      clearTimeout(longTimer)
       // Lifting one finger ends the pinch even while the other stays down.
       if (pts.size < 2) endPinch()
-      if (!p.turn && !multi) return
       if (multi) {
+        if (dead) multiMoved = true
         if (pts.size === 0) {
           multi = false
-          if (o.current.enabled && !multiMoved && performance.now() - multiStart < 350) {
+          // Multi-finger taps work in every state, also while fingers draw (a second finger cancels the stroke).
+          if (!multiMoved && performance.now() - multiStart < 350) {
             const cfg = settings().pageTurn
             fire(maxPts >= 3 ? cfg.threeFingerTap : cfg.twoFingerTap)
           }
@@ -280,10 +331,7 @@ export function useStageGestures(ref: React.RefObject<HTMLElement | null>, opts:
         }
         return
       }
-      if (longFired) return
-      // A disabled stage (annotating) only turns pages.
-      const enabled = o.current.enabled
-      const go = (a: ActionId) => (enabled || TURN_ACTION.test(a)) && fire(a)
+      if (!p.single || dead || longFired) return
       const dx = p.x - p.sx
       const dy = p.y - p.sy
       const dt = performance.now() - p.t
@@ -294,7 +342,7 @@ export function useStageGestures(ref: React.RefObject<HTMLElement | null>, opts:
         const horiz = Math.abs(dx) > Math.abs(dy) * 1.3
         const vert = Math.abs(dy) > Math.abs(dx) * 1.3
         const a = horiz ? (dx < 0 ? cfg.swipeLeft : cfg.swipeRight) : vert ? (dy < 0 ? cfg.swipeUp : cfg.swipeDown) : 'none'
-        if (a !== 'none') go(a)
+        if (a !== 'none') fire(a)
         return
       }
       if (dist > 12 || dt > 600) return
@@ -302,8 +350,8 @@ export function useStageGestures(ref: React.RefObject<HTMLElement | null>, opts:
       const x = p.x - rect.left
       const y = p.y - rect.top
       const zoneAction = cfg.zones[zoneAt(x, y, rect.width, rect.height)]
-      if (cfg.doubleTap === 'none' || !enabled) {
-        go(zoneAction)
+      if (cfg.doubleTap === 'none') {
+        fire(zoneAction)
         return
       }
       const now = performance.now()
@@ -317,17 +365,24 @@ export function useStageGestures(ref: React.RefObject<HTMLElement | null>, opts:
       tapTimer = window.setTimeout(() => fire(zoneAction), 280)
     }
     const cancel = (e: PointerEvent) => {
+      buryPointer(e.pointerId)
       if (!pts.delete(e.pointerId)) return
       clearTimeout(longTimer)
       if (pts.size < 2) endPinch()
       if (pts.size === 0) multi = false
     }
+    // A pen touching down while fingers are on the stage: that is a hand resting, not a gesture.
+    const penDown = (e: PointerEvent) => {
+      if (e.pointerType === 'pen' && pts.size && o.current.penInk && settings().annotations.palmRejection) killAll()
+    }
     el.addEventListener('pointerdown', down)
+    window.addEventListener('pointerdown', penDown, true)
     window.addEventListener('pointermove', move)
     window.addEventListener('pointerup', up)
     window.addEventListener('pointercancel', cancel)
     return () => {
       el.removeEventListener('pointerdown', down)
+      window.removeEventListener('pointerdown', penDown, true)
       window.removeEventListener('pointermove', move)
       window.removeEventListener('pointerup', up)
       window.removeEventListener('pointercancel', cancel)

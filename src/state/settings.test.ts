@@ -70,6 +70,40 @@ describe('migrateSettings', () => {
     ])
   })
 
+  it('moves the old default two- and three-finger taps to undo and redo', () => {
+    const v2 = { pageTurn: { twoFingerTap: 'resetZoom', threeFingerTap: 'toggleAnnotate', swipeUp: 'resetZoom' } }
+    const s = migrateSettings(v2, 2)
+    expect(s.pageTurn.twoFingerTap).toBe('undoAnnotation')
+    expect(s.pageTurn.threeFingerTap).toBe('redoAnnotation')
+    // Only those two bindings move.
+    expect(s.pageTurn.swipeUp).toBe('resetZoom')
+    // Older data goes through every step.
+    expect(migrateSettings(v2, 1).pageTurn.twoFingerTap).toBe('undoAnnotation')
+  })
+
+  it('keeps multi-finger taps the user chose', () => {
+    const s = migrateSettings({ pageTurn: { twoFingerTap: 'toggleNightMode', threeFingerTap: 'none' } }, 2)
+    expect(s.pageTurn.twoFingerTap).toBe('toggleNightMode')
+    expect(s.pageTurn.threeFingerTap).toBe('none')
+    // Each binding on its own: one changed, one still the old default.
+    const mixed = migrateSettings({ pageTurn: { twoFingerTap: 'resetZoom', threeFingerTap: 'nextSong' } }, 2)
+    expect(mixed.pageTurn.twoFingerTap).toBe('undoAnnotation')
+    expect(mixed.pageTurn.threeFingerTap).toBe('nextSong')
+  })
+
+  it('does not touch the taps of data already at the current version', () => {
+    // Someone who picks "reset zoom" again after the upgrade keeps it.
+    const s = migrateSettings({ pageTurn: { twoFingerTap: 'resetZoom', threeFingerTap: 'toggleAnnotate' } }, SETTINGS_VERSION)
+    expect(s.pageTurn.twoFingerTap).toBe('resetZoom')
+    expect(s.pageTurn.threeFingerTap).toBe('toggleAnnotate')
+  })
+
+  it('gives new installs the new defaults', () => {
+    expect(DEFAULT_SETTINGS.pageTurn.twoFingerTap).toBe('undoAnnotation')
+    expect(DEFAULT_SETTINGS.pageTurn.threeFingerTap).toBe('redoAnnotation')
+    expect(SETTINGS_VERSION).toBe(3)
+  })
+
   it('is a no-op merge for current data', () => {
     const s = migrateSettings({ ...DEFAULT_SETTINGS, theme: 'light' }, SETTINGS_VERSION)
     expect(s).toEqual({ ...DEFAULT_SETTINGS, theme: 'light' })

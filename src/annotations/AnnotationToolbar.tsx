@@ -44,7 +44,8 @@ import { useTerms } from '../library/browse/terms'
 import { settings, useSettings } from '../state/settings'
 import { confirmDialog, cx, promptDialog, Segmented, Slider, toast, Toggle, useMenu } from '../ui/primitives'
 import { DarkPop } from '../viewer/dark'
-import { registerActions, runAction } from '../viewer/actions'
+import { runAction } from '../viewer/actions'
+import { claimKey } from '../viewer/input'
 import { itemSize } from './geometry'
 import { GRID_RANGE } from './grid'
 import { addLayer, countLayerItems, deleteLayer, moveLayer, renameLayer, setCurrentLayer, setLayerVisible, useSongLayers } from './layers'
@@ -68,7 +69,7 @@ import {
 import { StampGlyph } from './StampGlyph'
 import { STAMP_GROUPS, STAMPS } from './stamps'
 import { clampMeasures } from './staff'
-import { flush, getItems, historySize, NO_PAGE, redo, resetHistory, undo, useAnnotHistory, useAnnotUI, usePageItems, visibleKeys } from './store'
+import { flush, getItems, historySize, NO_PAGE, redo, undo, useAnnotHistory, useAnnotUI, usePageItems, visibleKeys } from './store'
 import { isShapeTool, MEASURES_RANGE, PALETTE, SIZE_RANGE, SHAPE_TOOLS, TOOL_KEYS, TOOL_LABEL, toolConfig, type AnnotationPreset, type ShapeTool, type ToolConfig, type ToolId } from './tools'
 
 /* ------------------------------------------------------------------ Icons */
@@ -160,7 +161,7 @@ function TB({ label, active, disabled, onClick, children, className, btnRef, sty
 
 const Sep = () => <div className="mx-1 h-6 w-px shrink-0 bg-white/15 max-lg:hidden" />
 
-function Swatch({ color, active, onClick, label, size = 'md' }: { color: string; active?: boolean; onClick: () => void; label?: string; size?: 'sm' | 'md' }) {
+export function Swatch({ color, active, onClick, label, size = 'md' }: { color: string; active?: boolean; onClick: () => void; label?: string; size?: 'sm' | 'md' }) {
   return (
     <button
       type="button"
@@ -692,7 +693,7 @@ function MorePopover({ anchor, open, onClose, songId, onPresets, onGrid, selecti
         className={cx(item, 'text-danger')}
         onClick={async () => {
           onClose()
-          if (await confirmDialog({ title: `Clear the whole ${terms.song}?`, message: `Delete all annotations on every page of this ${terms.song}. You can undo this while annotating.`, confirmLabel: 'Clear all', danger: true })) {
+          if (await confirmDialog({ title: `Clear the whole ${terms.song}?`, message: `Delete all annotations on every page of this ${terms.song}. You can undo this until you close the ${terms.song}.`, confirmLabel: 'Clear all', danger: true })) {
             const n = await clearSong(songId)
             toast(n ? `Deleted ${n} annotations` : `No annotations in this ${terms.song}`, 'info', n ? { label: 'Undo', run: () => undo() } : undefined)
           }
@@ -706,16 +707,16 @@ function MorePopover({ anchor, open, onClose, songId, onPresets, onGrid, selecti
         onClick={async () => {
           onClose()
           const n = historySize()
-          if (!n) return toast('No changes in this session')
-          if (await confirmDialog({ title: 'Revert this session?', message: `Undo all ${n} change${n > 1 ? 's' : ''} made since you started annotating.`, confirmLabel: 'Revert', danger: true }))
+          if (!n) return toast(`No changes since this ${terms.song} was opened`)
+          if (await confirmDialog({ title: 'Revert all changes?', message: `Undo all ${n} change${n > 1 ? 's' : ''} made since this ${terms.song} was opened.`, confirmLabel: 'Revert', danger: true }))
             while (undo());
         }}
       >
-        <Undo2 className="size-4 text-muted" /> Revert session…
+        <Undo2 className="size-4 text-muted" /> Revert changes…
       </button>
       <div className="my-1 h-px bg-white/10" />
       <div className="px-3 py-1">
-        <Row label="Stylus only (fingers turn pages)">
+        <Row label="Stylus only (fingers navigate)">
           <Toggle checked={a.stylusOnly} onChange={(v) => setA({ stylusOnly: v })} label="Stylus only" />
         </Row>
         <Row label="Pressure sensitivity">
@@ -811,28 +812,19 @@ export function AnnotationToolbar({ song, onDone }: { song: Song; onDone: () => 
   // Presets, grid, copy and bring-to-front live in More when there's no room for them.
   const inMore = phone || (shortRow && !!selItems)
 
-  const doUndo = () => {
-    const l = undo()
-    if (!l) toast('Nothing to undo')
-  }
-  const doRedo = () => {
-    const l = redo()
-    if (!l) toast('Nothing to redo')
-  }
+  // The buttons show what is possible, so they need no toast. (The undoAnnotation/redoAnnotation actions
+  // for gestures, keys and pedals are the viewer's, and so is the undo history: it lasts while the song is open.)
+  const doUndo = () => void undo()
+  const doRedo = () => void redo()
 
-  // Undo/redo as performable actions while annotating.
-  useEffect(() => registerActions({ undoAnnotation: doUndo, redoAnnotation: doRedo }), [])
-
-  // Session lifecycle: save and forget history when leaving annotation mode.
+  // Leaving annotation mode: drop the selection and save.
   useEffect(() => {
-    resetHistory()
     return () => {
       useAnnotUI.setState({ selection: null, tempEraser: false })
       // Let an open text editor commit first.
       setTimeout(() => {
         useAnnotUI.setState({ editing: null })
         void flush()
-        resetHistory()
       }, 20)
     }
   }, [])
@@ -870,9 +862,7 @@ export function AnnotationToolbar({ song, onDone }: { song: Song; onDone: () => 
       else if (e.code.startsWith('Arrow') && sel) {
         const step = e.shiftKey ? 0.01 : 0.002
         nudgeSelection(e.code === 'ArrowLeft' ? -step : e.code === 'ArrowRight' ? step : 0, e.code === 'ArrowUp' ? -step : e.code === 'ArrowDown' ? step : 0)
-      } else if (['ArrowRight', 'ArrowDown', 'PageDown', 'Space'].includes(e.code)) runAction('nextPage', 'key')
-      else if (['ArrowLeft', 'ArrowUp', 'PageUp'].includes(e.code)) runAction('prevPage', 'key')
-      else if (/^Digit[1-9]$/.test(e.code)) {
+      } else if (/^Digit[1-9]$/.test(e.code)) {
         const p = settings().annotations.presets[Number(e.code.slice(5)) - 1]
         if (p) applyPreset(p)
         else handled = false
@@ -887,10 +877,16 @@ export function AnnotationToolbar({ song, onDone }: { song: Song; onDone: () => 
         toast(g.snap ? 'Snap to grid off' : 'Snap to grid on')
       } else if (TOOL_KEYS[e.code] && !e.altKey) setTool(TOOL_KEYS[e.code]!)
       else handled = false
-      if (handled) e.preventDefault()
+      if (handled) {
+        e.preventDefault()
+        // This key was the toolbar's: the user's binding for it doesn't run as well. Every other key (page
+        // turns, pedals, arrows with nothing selected) is left to the bindings.
+        claimKey(e)
+      }
     }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
+    // On the document, so it runs before the viewer's key bindings (window).
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
   }, [])
 
   const toolBtn = (t: ToolId) => (
@@ -1121,7 +1117,7 @@ export function AnnotationToolbar({ song, onDone }: { song: Song; onDone: () => 
         {doneBtn}
       </div>
       )}
-      {a.stylusOnly && <div className="pointer-events-none px-3 pb-1 text-[11px] text-white/50">Stylus mode · fingers scroll and turn pages</div>}
+      {a.stylusOnly && <div className="pointer-events-none px-3 pb-1 text-[11px] text-white/50">Only the pen draws · fingers scroll and use your gestures</div>}
       {tool === 'snip' && (
         // Floats over the page so choosing the tool doesn't shift the page under the pointer.
         <div className="absolute inset-x-0 top-full z-10 mx-auto mt-2 flex w-fit max-w-[calc(100vw-1rem)] items-center gap-2 rounded-full border border-white/10 bg-neutral-950/90 py-1 pl-3.5 pr-1 text-xs text-white/80 shadow-lg backdrop-blur-md" role="status">

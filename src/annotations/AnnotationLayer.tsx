@@ -1,6 +1,9 @@
 /**
- * Renders (and when `editable`, edits) the annotations of one page. Coordinates are normalised 0..1
- * to the uncropped page box, which is exactly this component's parent box.
+ * Renders and edits the annotations of one page. Coordinates are normalised 0..1 to the uncropped page
+ * box, which is exactly this component's parent box.
+ *
+ * `input` says who draws: `all` in the annotation mode (pen, mouse, and fingers unless "stylus only"),
+ * `pen` while reading (a pen writes, everything else passes through to the stage), `none` shows only.
  *
  * Rendering is SVG (crisp at any zoom). Committed items live in a memoised static layer; the stroke
  * being drawn goes to a separate live layer updated imperatively once per animation frame.
@@ -10,8 +13,8 @@ import { uid } from '../db/db'
 import type { Annotation, Point, SongLayers, TextAnnotation } from '../db/schema'
 import { settings, useSettings } from '../state/settings'
 import { toast } from '../ui/primitives'
-import { runAction } from '../viewer/actions'
 import { ZOOM_PREVIEW_ATTR } from '../viewer/api'
+import { ignorePointer } from '../viewer/input'
 import {
   bboxNorm,
   dist,
@@ -38,10 +41,11 @@ import {
 import { gridPath, itemAnchor, snapDelta, snapPoint, snapScale } from './grid'
 import { isVisible, setCurrentLayer, useSongLayers } from './layers'
 import { hasClipboard, paste, setClipboard, setTool, snapCell } from './ops'
+import { holdAwake, isPenPresent, penContactCount, touchBlockedByPen, usePen } from './pen'
 import { isHighlight, itemNodes, nodeToMarkup, visibleItems, type SvgNode } from './render'
 import { snipRegion, writeSystemClipboard } from './snip'
 import { clampMeasures, DEFAULT_STAFF_SPACE, STAFF_SPACES } from './staff'
-import { commit, getItems, pageKey, registerEditable, saveSoon, setItems, setSelection, undo, useAnnotUI, usePageItems, type TextEdit } from './store'
+import { commit, getItems, pageKey, registerEditable, saveSoon, setItems, setSelection, useAnnotUI, usePageItems, type TextEdit } from './store'
 import { isShapeTool, TOOL_LABEL, toolConfig, type ShapeTool, type ToolConfig, type ToolId } from './tools'
 
 /* ---------------------------------------------------------------- Helpers */
@@ -112,7 +116,9 @@ const StaticLayer = memo(function StaticLayer({ items, H, hiddenId }: { items: A
 
 /* ------------------------------------------------------------------ Layer */
 
-export function AnnotationLayer({ songId, fileId, page, editable }: { songId: string; fileId: string; page: number; editable: boolean }) {
+export type LayerInput = 'none' | 'pen' | 'all'
+
+export function AnnotationLayer({ songId, fileId, page, input, show = true }: { songId: string; fileId: string; page: number; input: LayerInput; /** Draw the stored annotations (the editor works either way). */ show?: boolean }) {
   const key = pageKey(songId, fileId, page)
   const items = usePageItems(key)
   const layers = useSongLayers(songId)
@@ -122,16 +128,20 @@ export function AnnotationLayer({ songId, fileId, page, editable }: { songId: st
   // Drawing (and hit-testing) order follows the layer list.
   const visible = useMemo(() => visibleItems(items, layers.layers), [items, layers])
   const H = size.w > 0 ? Math.round((W * size.h) / size.w * 100) / 100 : W
+  // Reading: native finger scrolling (and its momentum) stays as it is until a pen is around. Touch-action
+  // is read when a pointer lands, so a pen that hovers first is covered before it touches.
+  const penNear = usePen((p) => p.awake || p.present)
+  const holdsTouch = input === 'all' || (input === 'pen' && penNear)
 
   return (
     <div
       ref={ref}
       data-annot-key={key}
       className="absolute inset-0"
-      style={{ pointerEvents: editable ? 'auto' : 'none', touchAction: editable ? 'none' : undefined }}
+      style={{ pointerEvents: input === 'none' ? 'none' : 'auto', touchAction: holdsTouch ? 'none' : undefined }}
     >
-      {size.w > 0 && <StaticLayer items={visible} H={H} hiddenId={editing?.id} />}
-      {editable && size.w > 0 && <Editor pageKey={key} songId={songId} layers={layers} visible={visible} H={H} box={size} rootRef={ref} />}
+      {show && size.w > 0 && <StaticLayer items={visible} H={H} hiddenId={editing?.id} />}
+      {input !== 'none' && size.w > 0 && <Editor pageKey={key} songId={songId} layers={layers} visible={visible} H={H} box={size} rootRef={ref} penOnly={input === 'pen'} />}
     </div>
   )
 }
@@ -162,7 +172,6 @@ type Gesture =
   | { kind: 'lasso'; pts: Point[]; additive: boolean; touch: boolean; holdTimer: number; sx: number; sy: number }
   | { kind: 'snip'; a: Point; b: Point; touch: boolean }
 
-let lastPenAt = 0
 let lastTap = { t: 0, id: '' }
 /** Commit function of the open text editor (pointer input elsewhere closes it first). */
 let activeTextCommit: (() => void) | null = null
@@ -172,10 +181,15 @@ const SMOOTH_TOL_PX = [0, 0.3, 0.6, 1.1]
 /** Pressure change (0..1) that keeps a point when simplifying a pressure stroke. */
 const PRESSURE_TOL = 0.06
 
+/** The scroller a finger drags by hand while the layer holds touch-action. */
 function findScroller(el: HTMLElement | null): HTMLElement | null {
   for (let n = el?.parentElement; n; n = n.parentElement) {
     const cs = getComputedStyle(n)
-    if (/(auto|scroll)/.test(cs.overflow + cs.overflowX + cs.overflowY) && (n.scrollHeight > n.clientHeight + 1 || n.scrollWidth > n.clientWidth + 1)) return n
+    if (/(auto|scroll)/.test(cs.overflow + cs.overflowX + cs.overflowY) && (n.scrollHeight > n.clientHeight + 1 || n.scrollWidth > n.clientWidth + 1)) {
+      // A snapping strip (horizontal scroll mode) re-snaps after every scripted step, so a drag would skip
+      // pages. Leave it alone: the swipe reaches the stage and turns the page through its binding.
+      return cs.scrollSnapType && !cs.scrollSnapType.startsWith('none') ? null : n
+    }
   }
   return null
 }
@@ -188,6 +202,7 @@ function Editor({
   H,
   box,
   rootRef,
+  penOnly,
 }: {
   pageKey: string
   songId: string
@@ -196,6 +211,8 @@ function Editor({
   H: number
   box: { w: number; h: number }
   rootRef: React.RefObject<HTMLDivElement | null>
+  /** Reading: only a pen is handled here; touch and mouse go on to the stage untouched. */
+  penOnly: boolean
 }) {
   const liveRef = useRef<SVGGElement>(null)
   const liveSvgRef = useRef<SVGSVGElement>(null)
@@ -230,9 +247,13 @@ function Editor({
     let gPointer = -1
     let rect = root.getBoundingClientRect()
     let raf = 0
-    const fingers = new Map<number, { x: number; y: number; sx: number; sy: number; t: number }>()
-    let multi: { t: number; moved: number; cx: number; cy: number } | null = null
-    let fingerScroll: { scroller: HTMLElement | null; scrolled: number } | null = null
+    const fingers = new Map<number, { x: number; y: number }>()
+    let multi: { cx: number; cy: number } | null = null
+    let fingerScroll: { scroller: HTMLElement | null; scrolled: number; pens: number } | null = null
+    /** Keeps the quick palette up while a pen gesture runs. */
+    let releaseHold: (() => void) | null = null
+    let penDownAt = -Infinity
+    let penUpAt = -Infinity
 
     const aspect = () => rect.height / Math.max(1, rect.width)
     const norm = (e: { clientX: number; clientY: number }): Point => ({ x: (e.clientX - rect.left) / rect.width, y: (e.clientY - rect.top) / rect.height })
@@ -451,14 +472,21 @@ function Editor({
 
     /* ---------------------------------------------------------- fingers */
 
+    // Fingers that don't draw scroll the page by hand: with touch-action none nothing scrolls natively.
+    // Taps, swipes and every other finger gesture are the stage's (the user's bindings).
+
+    const centroid = () => {
+      const pts = [...fingers.values()]
+      return { cx: pts.reduce((s, p) => s + p.x, 0) / pts.length, cy: pts.reduce((s, p) => s + p.y, 0) / pts.length }
+    }
+
     const fingerDown = (e: PointerEvent) => {
-      fingers.set(e.pointerId, { x: e.clientX, y: e.clientY, sx: e.clientX, sy: e.clientY, t: performance.now() })
+      fingers.set(e.pointerId, { x: e.clientX, y: e.clientY })
       if (fingers.size >= 2) {
         if (g?.touch) cancelGesture()
-        const pts = [...fingers.values()]
-        multi = { t: performance.now(), moved: 0, cx: pts.reduce((s, p) => s + p.x, 0) / pts.length, cy: pts.reduce((s, p) => s + p.y, 0) / pts.length }
-        fingerScroll = { scroller: findScroller(root), scrolled: 0 }
-      } else fingerScroll = { scroller: findScroller(root), scrolled: 0 }
+        multi = centroid()
+      }
+      fingerScroll = { scroller: findScroller(root), scrolled: 0, pens: penContactCount() }
     }
 
     const fingerMove = (e: PointerEvent) => {
@@ -468,50 +496,29 @@ function Editor({
       const dy = e.clientY - f.y
       f.x = e.clientX
       f.y = e.clientY
+      // A pen touched down (on any page) since these fingers landed: they are a resting hand and scroll nothing more.
+      if (fingerScroll && fingerScroll.pens !== penContactCount() && settings().annotations.palmRejection) return
       if (multi) {
-        const pts = [...fingers.values()]
-        const cx = pts.reduce((s, p) => s + p.x, 0) / pts.length
-        const cy = pts.reduce((s, p) => s + p.y, 0) / pts.length
-        multi.moved += Math.hypot(cx - multi.cx, cy - multi.cy)
+        const { cx, cy } = centroid()
         // The viewer's pinch zoom pans too while it previews; scrolling here would fight it.
         const sc = fingerScroll?.scroller
         if (sc && !sc.hasAttribute(ZOOM_PREVIEW_ATTR)) sc.scrollBy(-(cx - multi.cx), -(cy - multi.cy))
-        multi.cx = cx
-        multi.cy = cy
+        multi = { cx, cy }
       } else if (fingerScroll?.scroller) {
         const s = fingerScroll.scroller
         const before = s.scrollLeft + s.scrollTop
         s.scrollBy(-dx, -dy)
+        const was = fingerScroll.scrolled
         fingerScroll.scrolled += Math.abs(s.scrollLeft + s.scrollTop - before)
+        // A drag that scrolled the page is not also a swipe or a tap.
+        if (was <= 20 && fingerScroll.scrolled > 20) ignorePointer(e.pointerId)
       }
     }
 
     const fingerUp = (e: PointerEvent) => {
-      const f = fingers.get(e.pointerId)
       fingers.delete(e.pointerId)
-      if (!f) return
-      if (multi) {
-        if (fingers.size === 0) {
-          if (performance.now() - multi.t < 350 && multi.moved < 14) {
-            const l = undo()
-            toast(l ? `Undid: ${l}` : 'Nothing to undo')
-          }
-          multi = null
-        }
-        return
-      }
-      // One finger in stylus-only mode: swipe or edge tap turns pages.
-      if (e.type !== 'pointerup' || !settings().annotations.stylusOnly) return
-      const dx = f.x - f.sx
-      const dy = f.y - f.sy
-      const dt = performance.now() - f.t
-      if ((fingerScroll?.scrolled ?? 0) > 20) return
-      if (dt < 600 && Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy) * 1.3) runAction(dx < 0 ? 'nextPage' : 'prevPage', 'touch')
-      else if (dt < 350 && Math.hypot(dx, dy) < 12) {
-        const x = f.x / window.innerWidth
-        if (x < 0.25) runAction('prevPage', 'touch')
-        else if (x > 0.75) runAction('nextPage', 'touch')
-      }
+      // The fingers still down carry on from where they are (no jump to the new midpoint).
+      if (multi) multi = fingers.size ? centroid() : null
     }
 
     /* ---------------------------------------------------------- gestures */
@@ -522,15 +529,27 @@ function Editor({
       if (g.kind === 'erase' || g.kind === 'move' || g.kind === 'resize') setItems(key, g.kind === 'erase' ? g.before : g.before, false)
       g = null
       gPointer = -1
+      endHold()
       clearLive()
       if (useAnnotUI.getState().tempEraser) useAnnotUI.setState({ tempEraser: false })
     }
 
+    const endHold = () => {
+      releaseHold?.()
+      releaseHold = null
+    }
+
     const onDown = (e: PointerEvent) => {
       const s = settings().annotations
-      const now = performance.now()
-      if (e.pointerType === 'pen') lastPenAt = now
       if (e.pointerType === 'mouse' && e.button !== 0) return
+
+      if (penOnly && e.pointerType !== 'pen') {
+        // Reading: fingers and the mouse belong to the stage. Only while this layer holds touch-action
+        // (a pen is around) does a finger need scrolling by hand; a hand resting under the pen is ignored.
+        if (e.pointerType === 'touch' && root.style.touchAction === 'none' && !touchBlockedByPen(e)) fingerDown(e)
+        return
+      }
+      if (e.pointerType === 'pen') penDownAt = performance.now()
 
       if (activeTextCommit) {
         e.preventDefault()
@@ -539,9 +558,11 @@ function Editor({
       }
 
       if (e.pointerType === 'touch') {
-        const palm = s.palmRejection && (now - lastPenAt < 800 || e.width > 42 || e.height > 42)
+        const palm = s.palmRejection && (isPenPresent() || e.width > 42 || e.height > 42)
         if (palm) {
           e.preventDefault()
+          // Not a gesture for the stage either (a palm-sized contact brushing the page).
+          ignorePointer(e.pointerId)
           return
         }
         if (s.stylusOnly || fingers.size > 0 || (g && g.touch)) {
@@ -550,12 +571,13 @@ function Editor({
           fingerDown(e)
           return
         }
-        fingers.set(e.pointerId, { x: e.clientX, y: e.clientY, sx: e.clientX, sy: e.clientY, t: now })
+        fingers.set(e.pointerId, { x: e.clientX, y: e.clientY })
       } else if (g && g.touch) cancelGesture() // pen/mouse wins over a resting palm
       if (g) return
 
       e.preventDefault()
       // Touches reach the viewer so a second finger can pinch-zoom (it cancels this stroke, see fingerDown).
+      // A pen or mouse stroke is nobody else's: not the stage's, not a link marker's under it.
       if (e.pointerType !== 'touch') e.stopPropagation()
       rect = root.getBoundingClientRect()
       try {
@@ -564,6 +586,7 @@ function Editor({
         /* synthetic events */
       }
       gPointer = e.pointerId
+      if (penOnly) releaseHold = holdAwake()
       useAnnotUI.setState({ activeKey: key })
 
       const penEraser = e.pointerType === 'pen' && ((e.buttons & 32) !== 0 || (e.buttons & 2) !== 0 || e.button === 5)
@@ -682,11 +705,11 @@ function Editor({
     }
 
     const onMove = (e: PointerEvent) => {
-      if (e.pointerType === 'pen') lastPenAt = performance.now()
       if (fingers.has(e.pointerId) && e.pointerId !== gPointer) {
         fingerMove(e)
         return
       }
+      if (penOnly && e.pointerType !== 'pen') return
       if (!g || e.pointerId !== gPointer) {
         // Hover: eraser cursor.
         const s = settings().annotations
@@ -786,7 +809,9 @@ function Editor({
       }
       fingers.delete(e.pointerId)
       if (!g || e.pointerId !== gPointer) return
+      if (e.pointerType === 'pen') penUpAt = performance.now()
       if (e.type === 'pointercancel') {
+        // The browser took the pointer (a native scroll won the race): nothing half-drawn stays behind.
         cancelGesture()
         return
       }
@@ -795,6 +820,7 @@ function Editor({
       if ((cur.kind === 'move' || cur.kind === 'resize') && cur.preview) setItems(key, cur.preview, false)
       g = null
       gPointer = -1
+      endHold()
       cancelAnimationFrame(raf)
       raf = 0
       const s = settings().annotations
@@ -903,35 +929,69 @@ function Editor({
       saveSoon()
     }
 
-    const onLeave = (e: PointerEvent) => {
+    const onLeave = () => {
       if (!g) showCursor(null)
-      if (e.pointerType === 'pen') lastPenAt = performance.now()
     }
-    const noMenu = (e: Event) => e.preventDefault()
+    const isPen = (e: Event) => (e as PointerEvent).pointerType === 'pen'
+    const noMenu = (e: Event) => {
+      if (!penOnly || isPen(e)) e.preventDefault()
+    }
+    // A pen stroke that started on a link marker or smart button draws; it never follows the link. Where a
+    // click carries no pointer type, one right after a pen lift is the pen's.
+    const noPenClick = (e: Event) => {
+      const type = (e as PointerEvent).pointerType
+      if (type === 'pen' || (!type && performance.now() - penUpAt < 400)) {
+        e.stopPropagation()
+        e.preventDefault()
+      }
+    }
+    // A pen that reports no hover lands while the page may still pan natively (touch-action is unset
+    // until a pen is around). Cancelling its touchstart keeps the browser from turning the stroke into a
+    // scroll; if it does anyway, pointercancel drops the stroke.
+    const noPenScroll = (e: TouchEvent) => {
+      if (!e.cancelable) return
+      const stylus = [...e.changedTouches].some((t) => (t as Touch & { touchType?: string }).touchType === 'stylus')
+      if (stylus || performance.now() - penDownAt < 80) e.preventDefault()
+    }
 
-    root.addEventListener('pointerdown', onDown)
-    root.addEventListener('pointermove', onMove)
-    root.addEventListener('pointerup', onUp)
-    root.addEventListener('pointercancel', onUp)
+    // Reading: the layer is one of several things on the page (link markers sit above it), so it listens
+    // on the page box, capturing, and takes only the pen. Annotating: it covers the page and takes it all.
+    const host: HTMLElement = (penOnly && root.parentElement) || root
+    const capture = penOnly
+    host.addEventListener('pointerdown', onDown, capture)
+    host.addEventListener('pointermove', onMove, capture)
+    host.addEventListener('pointerup', onUp, capture)
+    host.addEventListener('pointercancel', onUp, capture)
     root.addEventListener('pointerleave', onLeave)
-    root.addEventListener('contextmenu', noMenu)
+    host.addEventListener('contextmenu', noMenu, capture)
+    if (penOnly) {
+      host.addEventListener('click', noPenClick, true)
+      host.addEventListener('touchstart', noPenScroll, { capture: true, passive: false })
+    }
     return () => {
-      root.removeEventListener('pointerdown', onDown)
-      root.removeEventListener('pointermove', onMove)
-      root.removeEventListener('pointerup', onUp)
-      root.removeEventListener('pointercancel', onUp)
+      host.removeEventListener('pointerdown', onDown, capture)
+      host.removeEventListener('pointermove', onMove, capture)
+      host.removeEventListener('pointerup', onUp, capture)
+      host.removeEventListener('pointercancel', onUp, capture)
       root.removeEventListener('pointerleave', onLeave)
-      root.removeEventListener('contextmenu', noMenu)
+      host.removeEventListener('contextmenu', noMenu, capture)
+      host.removeEventListener('click', noPenClick, true)
+      host.removeEventListener('touchstart', noPenScroll, true)
       cancelAnimationFrame(raf)
+      endHold()
+      clearLive()
+      showCursor(null)
       if (g?.kind === 'ink' || g?.kind === 'lasso') clearTimeout(g.holdTimer)
       if (g && (g.kind === 'erase' || g.kind === 'move' || g.kind === 'resize')) setItems(key, g.before, false)
     }
-  }, [key, songId, rootRef])
+  }, [key, songId, rootRef, penOnly])
 
   const grid = useSettings((s) => s.s.annotations.grid)
   const activeTool = tempEraser ? 'eraser' : tool
-  const cursor =
-    activeTool === 'select' ? 'default' : activeTool === 'text' ? 'text' : activeTool === 'eraser' ? 'none' : activeTool === 'stamp' ? 'copy' : 'crosshair'
+  // Reading: the mouse is not a drawing tool here, so it keeps its normal cursor.
+  const cursor = penOnly
+    ? undefined
+    : activeTool === 'select' ? 'default' : activeTool === 'text' ? 'text' : activeTool === 'eraser' ? 'none' : activeTool === 'stamp' ? 'copy' : 'crosshair'
 
   // Selection box.
   const selRect = useMemo(() => {
@@ -942,7 +1002,7 @@ function Editor({
 
   return (
     <div className="absolute inset-0" style={{ cursor }}>
-      {grid.show && <GridOverlay cell={grid.size / 1000} H={H} />}
+      {grid.show && !penOnly && <GridOverlay cell={grid.size / 1000} H={H} />}
       <svg ref={liveSvgRef} className="pointer-events-none absolute inset-0 h-full w-full overflow-visible" viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" aria-hidden>
         <g ref={liveRef} />
       </svg>

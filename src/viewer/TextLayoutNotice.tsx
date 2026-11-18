@@ -1,6 +1,7 @@
 import { Info, X } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
-import { getItems, historySize, loadSong, parseKey } from '../annotations/store'
+import { usePen } from '../annotations/pen'
+import { getItems, historyRevision, loadSong, parseKey } from '../annotations/store'
 import { getKV, setKV, updateSong } from '../db/db'
 import type { Song } from '../db/schema'
 import { useViewer } from '../state/viewer'
@@ -60,6 +61,8 @@ export function TextLayoutNotice({ song, pages, currentPage, sig, top, fontScale
   savedTranspose: number
 }) {
   const annotating = useViewer((v) => v.annotating)
+  // Marking up: the annotation mode, or a pen in use while reading.
+  const marking = usePen((p) => p.awake) || annotating
   const setV = useViewer((v) => v.set)
   const [drawn, setDrawn] = useState<TextLayoutSig | null>(null)
   const [hint, setHint] = useState(false)
@@ -75,21 +78,23 @@ export function TextLayoutNotice({ song, pages, currentPage, sig, top, fontScale
     }
   }, [song.id])
 
-  // Leaving annotation mode after changes: remember the layout the text annotations belong to.
+  // Done marking up, with changes: remember the layout the text annotations belong to.
   const sigRef = useRef(sig)
   sigRef.current = sig
-  const wasAnnotating = useRef(annotating)
+  const wasMarking = useRef(marking)
+  const revisionAtStart = useRef(historyRevision())
   useEffect(() => {
-    const was = wasAnnotating.current
-    wasAnnotating.current = annotating
-    if (annotating) {
+    const was = wasMarking.current
+    wasMarking.current = marking
+    if (marking) {
+      if (!was) revisionAtStart.current = historyRevision()
       const t = pages[currentPage]?.type
-      if ((t === 'text' || t === 'abc') && !localStorage.getItem(HINT_KEY)) setHint(true)
+      if (annotating && (t === 'text' || t === 'abc') && !localStorage.getItem(HINT_KEY)) setHint(true)
       return
     }
     setHint(false)
     const now = sigRef.current
-    if (!was || !hasText || !now || historySize() === 0) return
+    if (!was || !hasText || !now || historyRevision() === revisionAtStart.current) return
     const songId = song.id
     void hasTextAnnotations(songId).then(async (any) => {
       const next = any ? now : null
@@ -98,7 +103,7 @@ export function TextLayoutNotice({ song, pages, currentPage, sig, top, fontScale
       setDrawn(next)
     })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [annotating])
+  }, [marking, annotating])
 
   if (!hasText || !sig) return null
 

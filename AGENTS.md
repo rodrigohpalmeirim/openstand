@@ -23,6 +23,10 @@ zustand, pdf.js (`src/files/pdf.ts`), pdf-lib, abcjs, fflate, lucide-react icons
   `events.ts` (`on('songOpened'|'pageChanged'|'songClosed')`), `panels.tsx` (side panels; `PanelProps`).
 - `src/state/` zustand stores: `settings.ts` (persisted Settings; `useSettings`, `settings()`), `viewer.ts`
   (`useViewer`: queue/index/position/panel/…; `open(queue, index, {setlistId})` starts performing), `nav.ts`.
+- `src/annotations/` `AnnotationLayer.tsx` (one per page; `input` = `all` in Annotate mode, `pen` while reading,
+  `none` under performance lock), `pen.ts` (pen presence: pure reducer `penReduce` + `usePenPresence`; `usePen`
+  `awake` shows the quick palette, `present` makes the stage ignore touches), `store.ts` (items, undo history per
+  opened song). A pen always writes; fingers, keys and pedals always navigate through the user's bindings.
 - `src/chordpro/` parser + renderer, `src/music/chords.ts` chord parsing/transposition.
 - `src/scan/` camera scanner (lazy; `openScanner()`/`scanToNewSong()` in `launch.tsx`; image work in a worker).
   `src/faces/` face gestures (pure detector in `gestures.ts`; MediaPipe loads only when used).

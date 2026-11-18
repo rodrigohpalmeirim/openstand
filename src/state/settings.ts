@@ -249,6 +249,8 @@ export interface Settings {
     recentColors: string[]
     /** Annotation grid: snap placed/moved objects, show the grid while annotating, cell size in thousandths of page width. */
     grid: { snap: boolean; show: boolean; size: number }
+    /** Where the quick pen palette floats while reading: fractions (0..1) of its free travel across and down the screen. */
+    palettePos: { x: number; y: number }
   }
 
   /** Names of user-defined annotation layers */
@@ -340,8 +342,8 @@ export const DEFAULT_SETTINGS: Settings = {
     doubleTap: 'none',
     longPress: 'none',
     debounceMs: 250,
-    twoFingerTap: 'resetZoom',
-    threeFingerTap: 'toggleAnnotate',
+    twoFingerTap: 'undoAnnotation',
+    threeFingerTap: 'redoAnnotation',
     pedalStopsAtSongEnd: false,
     continueToNextSong: true,
     backToPrevSong: true,
@@ -427,6 +429,7 @@ export const DEFAULT_SETTINGS: Settings = {
     presets: [],
     recentColors: [],
     grid: { snap: false, show: false, size: 20 },
+    palettePos: { x: 0.5, y: 0 },
   },
 
   recentSearches: [],
@@ -492,6 +495,7 @@ function sanitize(s: Settings): Settings {
       threeFingerTap: fixAction(pt.threeFingerTap),
     },
     faceGestures: sanitizeFaceGestures(fg, fixAction),
+    annotations: { ...s.annotations, palettePos: { x: Math.min(1, Math.max(0, s.annotations.palettePos.x)), y: Math.min(1, Math.max(0, s.annotations.palettePos.y)) } },
     // Nashville numbers used to be a separate switch; they are now one of the note namings.
     text: s.text.nashville ? { ...s.text, naming: 'nashville', nashville: false } : s.text,
   }
@@ -540,7 +544,7 @@ export function mergeSettings(patch: unknown): Settings {
   return sanitize(deepMerge(DEFAULT_SETTINGS, patch))
 }
 
-export const SETTINGS_VERSION = 2
+export const SETTINGS_VERSION = 3
 
 type Raw = Record<string, unknown>
 /** Step n upgrades data written by version n to n + 1. Only structural changes need a step. */
@@ -551,6 +555,16 @@ const MIGRATIONS: Record<number, (s: Raw) => Raw> = {
     if (!Array.isArray(pt?.keys)) return s
     const keys = pt.keys.map((k) => (k && (k.key === ' ' || k.key === 'Spacebar') ? { ...k, key: 'Space' } : k))
     return { ...s, pageTurn: { ...pt, keys } }
+  },
+  // v3 made undo and redo the default two- and three-finger taps (were reset zoom and annotate). Settings
+  // are stored whole, so an untouched default looks like a choice: move it, keep anything the user changed.
+  2: (s) => {
+    const pt = s.pageTurn as { twoFingerTap?: unknown; threeFingerTap?: unknown } | undefined
+    if (!pt || typeof pt !== 'object') return s
+    const next = { ...pt }
+    if (pt.twoFingerTap === 'resetZoom') next.twoFingerTap = 'undoAnnotation'
+    if (pt.threeFingerTap === 'toggleAnnotate') next.threeFingerTap = 'redoAnnotation'
+    return { ...s, pageTurn: next }
   },
 }
 

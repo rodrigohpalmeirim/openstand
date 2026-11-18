@@ -285,9 +285,9 @@ const display = (t: Terms): SectionDef => ({
     {
       title: 'Annotations',
       items: [
-        toggleItem('annotations.showWhilePerforming', 'Show annotations', 'Your markings are shown on the pages.'),
-        toggleItem('annotations.stylusOnly', 'Draw with stylus only', 'Fingers turn pages and scroll; only a pen draws.', 'pen'),
-        toggleItem('annotations.palmRejection', 'Palm rejection', 'Ignores your hand resting on the screen while using a pen.', 'stylus'),
+        toggleItem('annotations.showWhilePerforming', 'Show annotations', 'Your markings are shown on the pages. While you write with a pen they always are.'),
+        toggleItem('annotations.stylusOnly', 'Draw with stylus only', 'In Annotate mode, fingers keep navigating and only a pen draws. While reading, only a pen ever draws.', 'pen finger'),
+        toggleItem('annotations.palmRejection', 'Palm rejection', 'Ignores your hand on the page while a pen touches or hovers over the screen.', 'stylus'),
         toggleItem('annotations.pressure', 'Pressure-sensitive pen', 'Line width follows pen pressure.', 'stylus'),
         segItem('annotations.smoothing', 'Ink smoothing', [
           { value: 0, label: 'Off' },

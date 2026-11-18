@@ -1,6 +1,6 @@
 /**
- * In-memory cache of page annotations with debounced IndexedDB persistence and the session undo
- * stack. Components subscribe per page key; drawing never touches IndexedDB until a short idle.
+ * In-memory cache of page annotations with debounced IndexedDB persistence and the undo stack (the
+ * viewer resets it when a song opens or closes). Components subscribe per page key; drawing never touches IndexedDB until a short idle.
  */
 import { useEffect, useSyncExternalStore } from 'react'
 import { create } from 'zustand'
@@ -221,6 +221,9 @@ function rebased(key: string, before: Annotation[], after: Annotation[]): Annota
 /* ---------------------------------------------------------------- History */
 
 const history = new UndoStack()
+/** Counts every change made through the history (commit, undo, redo); unlike the stack it is never reset. */
+let revision = 0
+export const historyRevision = () => revision
 
 export const useAnnotHistory = create<{ canUndo: boolean; canRedo: boolean; label?: string }>(() => ({ canUndo: false, canRedo: false }))
 const syncHistory = () => useAnnotHistory.setState({ canUndo: history.canUndo, canRedo: history.canRedo })
@@ -234,6 +237,7 @@ export function commit(label: string, changes: PageChange[], effect?: SideEffect
     return
   }
   history.push(cmd)
+  revision++
   // Gestures compute `after` from the items when they started; items synced in meanwhile are kept.
   for (const ch of cmd.changes) setItems(ch.key, rebased(ch.key, ch.before, ch.after))
   syncHistory()
@@ -264,6 +268,7 @@ export function replacePage(key: string, items: Annotation[]) {
 export function undo(): string | undefined {
   const c = history.undo()
   if (!c) return
+  revision++
   for (const ch of c.changes) replay(ch, true)
   c.effect?.undo()
   clearSelection()
@@ -274,6 +279,7 @@ export function undo(): string | undefined {
 export function redo(): string | undefined {
   const c = history.redo()
   if (!c) return
+  revision++
   for (const ch of c.changes) replay(ch, false)
   c.effect?.redo()
   clearSelection()
